@@ -1,0 +1,41 @@
+[package]
+name = "mixnet"
+edition = "2021"
+rust-version = "1.56.1"
+description = "Mixnet protocol for libp2p"
+version = "0.1.0"
+authors = ["Parity Technologies <admin@parity.io>"]
+license = "MIT"
+repository = "https://github.com/paritytech/substrate"
+categories = ["network-programming", "asynchronous"]
+
+[dependencies]
+futures = "0.3.1"
+futures-timer = "3.0.2"
+instant = "0.1.11"
+libp2p-core = { version = "0.30.0", default-features = false }
+libp2p-swarm = "0.31.0"
+log = "0.4.1"
+rand = "0.8.4"
+rand_distr = "0.4.2"
+void = "1.0"
+blake2-rfc = { version = "0.2.18", default-features = false }
+curve25519-dalek = "3.2.0"
+
+#sphinx deps
+x25519-dalek = "1.1.0"
+aes = { version = "0.7.5", features = ["ctr"] }
+sha2 = "0.10.0"
+hkdf = "0.12.0"
+hmac = "0.12.0"
+lioness = "0.1.2"
+arrayref = "0.3.6"
+subtle = "2.4.1"
+
+[dev-dependencies]
+async-std = "1.6.2"
+libp2p-tcp = "0.30.0"
+libp2p-noise = "0.33.0"
+libp2p-yamux = "0.34.0"
+libp2p-mplex = "0.30.0"
+env_logger = "0.9.0"
