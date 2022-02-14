@@ -22,7 +22,7 @@
 // at https://github.com/sphinx-cryptography/rust-sphinxcrypto
 // and loosely follows Katzenpost specification.
 //
-// Notable changes are include:
+// Notable changes include:
 // * Switching to Lioness cipher for payload encryption.
 // * Removing support for SURBs
 // * Simplifying routing commands into a fixed structure.

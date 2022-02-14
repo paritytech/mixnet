@@ -10,7 +10,7 @@ provide anonymous message delivery service. The main intention for this initial 
 ------------------
 The design is losely based on [Loopix](https://www.usenix.org/system/files/conference/usenixsecurity17/sec17-piotrowska.pdf) with some simplification listed below. A packet format based on [Sphinx](http://www0.cs.ucl.ac.uk/staff/G.Danezis/papers/sphinx-eprint.pdf) is utilized. The specification is based on (Katzenpost)[https://github.com/katzenpost/docs/blob/master/specs/sphinx.rst]
 
-The network is heterogeneous. All nodes participate in mix traffic. This allows the following simplifications to the Loopix/sphinx design:
+The network is homogeneous. All nodes participate in mix traffic. This allows the following simplifications to the Loopix/sphinx design:
 
 * No cover loops are generated, just individual cover messages.
 * SURBs are not supported
