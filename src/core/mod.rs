@@ -225,7 +225,7 @@ impl Mixnet {
 				})
 				.collect();
 			let packet =
-				sphinx::new_packet(&mut rng, hops, chunk).map_err(|e| Error::SphinxError(e))?;
+				sphinx::new_packet(&mut rng, hops, chunk, None).map_err(|e| Error::SphinxError(e))?;
 			packets.push((first_id, packet));
 		}
 
@@ -261,6 +261,15 @@ impl Mixnet {
 					log::trace!(target: "mixnet", "Discarded message from {}", peer_id);
 				}
 			},
+			Ok(Unwrapped::SurbsPayload(payload)) => {
+				// TODO fragment on surbs make no sense.
+				if let Some(m) = self.fragments.insert_fragment(payload)? {
+					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.len());
+					return Ok(Some(m))
+				} else {
+					log::trace!(target: "mixnet", "Discarded message from {}", peer_id);
+				}
+			},
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
 				// See if we can forward the message
 				let next_id = to_libp2p_id(next_id)?;
@@ -288,7 +297,7 @@ impl Mixnet {
 
 		let hop =
 			sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None };
-		let packet = sphinx::new_packet(&mut rng, vec![hop], message).ok()?;
+		let packet = sphinx::new_packet(&mut rng, vec![hop], message, None).ok()?;
 		Some((id, packet))
 	}
 
