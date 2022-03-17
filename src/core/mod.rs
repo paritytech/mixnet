@@ -26,22 +26,22 @@ mod fragment;
 mod sphinx;
 mod topology;
 
+pub use crate::core::sphinx::SurbsEncoded;
+use crate::core::sphinx::{SprpKey, SurbsCollection};
+pub use config::Config;
+pub use error::Error;
 use futures::FutureExt;
 use futures_timer::Delay;
 use libp2p_core::{identity::ed25519, PeerId};
 use rand::{prelude::IteratorRandom, CryptoRng, Rng};
 use rand_distr::Distribution;
+pub use sphinx::Error as SphinxError;
 use std::{
 	cmp::Ordering,
 	collections::{BinaryHeap, HashMap},
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
-use crate::core::sphinx::{SurbsCollection, SprpKey};
-pub use crate::core::sphinx::SurbsEncoded;
-pub use config::Config;
-pub use error::Error;
-pub use sphinx::Error as SphinxError;
 pub use topology::Topology;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
@@ -220,7 +220,7 @@ impl Mixnet {
 
 		let mut surbs = if with_surbs {
 			//let ours = (MixPeerId, MixPublicKey);
-			let first_key = SprpKey::new(&mut rng);// TODO could also use last key from path
+			let first_key = SprpKey::new(&mut rng); // TODO could also use last key from path
 			let paths = self.random_paths(&peer_id, 1, true)?.remove(0);
 			let first_node = to_sphinx_id(&paths[0].0).unwrap();
 			let paths: Vec<_> = paths
@@ -248,18 +248,11 @@ impl Mixnet {
 					delay: Some(exp_delay(&mut rng, self.average_hop_delay).as_millis() as u32),
 				})
 				.collect();
-			let chunk_surbs = if n == nb_chunks {
-				surbs.take()
-			} else {
-				None
-			};
-			let (packet, surbs_keys) =
-				sphinx::new_packet(&mut rng, hops, chunk, chunk_surbs).map_err(|e| Error::SphinxError(e))?;
+			let chunk_surbs = if n == nb_chunks { surbs.take() } else { None };
+			let (packet, surbs_keys) = sphinx::new_packet(&mut rng, hops, chunk, chunk_surbs)
+				.map_err(|e| Error::SphinxError(e))?;
 			if let Some((first_key, keys)) = surbs_keys {
-				let persistance = crate::core::sphinx::SurbsPersistance {
-					first_key,
-					keys,
-				};
+				let persistance = crate::core::sphinx::SurbsPersistance { first_key, keys };
 				self.surbs.insert(persistance);
 			}
 			packets.push((first_id, packet));
@@ -352,7 +345,7 @@ impl Mixnet {
 		count: usize,
 		surbs: bool,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-//		unimplemented!("TODO surbs variant: dest local_id from recipient");
+		//		unimplemented!("TODO surbs variant: dest local_id from recipient");
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();

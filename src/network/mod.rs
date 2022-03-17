@@ -25,8 +25,7 @@ mod handler;
 mod protocol;
 
 use crate::{
-	core::{self, Config, MixEvent, PUBLIC_KEY_LEN},
-	core::SurbsEncoded,
+	core::{self, Config, MixEvent, SurbsEncoded, PUBLIC_KEY_LEN},
 	MixPublicKey,
 };
 use futures_timer::Delay;
@@ -81,7 +80,12 @@ impl Mixnet {
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to the specified recipient.
-	pub fn send(&mut self, to: PeerId, message: Vec<u8>, with_surbs: bool) -> std::result::Result<(), core::Error> {
+	pub fn send(
+		&mut self,
+		to: PeerId,
+		message: Vec<u8>,
+		with_surbs: bool,
+	) -> std::result::Result<(), core::Error> {
 		self.mixnet.register_message(Some(to), message, with_surbs)
 	}
 
@@ -151,7 +155,9 @@ impl NetworkBehaviour for Mixnet {
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					if let Ok(Some((message, surbs_reply))) = self.mixnet.import_message(peer_id, message) {
+					if let Ok(Some((message, surbs_reply))) =
+						self.mixnet.import_message(peer_id, message)
+					{
 						self.events.push_front(NetworkEvent::Message(DecodedMessage {
 							peer: peer_id,
 							message,

@@ -32,8 +32,8 @@ mod crypto;
 
 use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
 use rand::{CryptoRng, Rng};
-use subtle::ConstantTimeEq;
 use std::collections::HashMap;
+use subtle::ConstantTimeEq;
 
 pub type StaticSecret = x25519_dalek::StaticSecret;
 pub type PublicKey = x25519_dalek::PublicKey;
@@ -133,9 +133,7 @@ impl SprpKey {
 	pub fn new<T: Rng + CryptoRng>(rng: &mut T) -> Self {
 		let mut raw_key: [u8; SPRP_KEY_SIZE] = [0u8; SPRP_KEY_SIZE];
 		rng.fill_bytes(&mut raw_key);
-		SprpKey {
-			key: raw_key,
-		}
+		SprpKey { key: raw_key }
 	}
 }
 fn blind(pk: PublicKey, factor: [u8; KEY_SIZE]) -> PublicKey {
@@ -187,13 +185,7 @@ impl From<Vec<u8>> for SurbsEncoded {
 		let buf = array_mut_ref![encoded, 0, SURBS_REPLY_SIZE];
 		let (id, first_key, header) =
 			mut_array_refs![buf, NODE_ID_SIZE, SPRP_KEY_SIZE, HEADER_SIZE];
-		SurbsEncoded {
-			id: *id,
-			first_key: SprpKey {
-				key: *first_key,
-			},
-			header: *header,
-		}
+		SurbsEncoded { id: *id, first_key: SprpKey { key: *first_key }, header: *header }
 	}
 }
 
@@ -262,7 +254,8 @@ fn create_header<T: Rng + CryptoRng>(
 	for i in 1..num_hops {
 		shared_secret = secret_key.diffie_hellman(&path[i].public_key).to_bytes();
 		let mut j = 0;
-		while j < i {// TODO double loop is dumb, 
+		while j < i {
+			// TODO double loop is dumb,
 			shared_secret = x25519_dalek::x25519(keys[j].blinding_factor, shared_secret);
 			j += 1;
 		}
@@ -298,7 +291,8 @@ fn create_header<T: Rng + CryptoRng>(
 		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]);
 	}
 	if is_surbs {
-		routing_info[num_hops * PER_HOP_ROUTING_INFO_SIZE..(num_hops * PER_HOP_ROUTING_INFO_SIZE) + NODE_ID_SIZE]
+		routing_info[num_hops * PER_HOP_ROUTING_INFO_SIZE..
+			(num_hops * PER_HOP_ROUTING_INFO_SIZE) + NODE_ID_SIZE]
 			.copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
 	}
 	let mut hop_index = num_hops - 1;
@@ -353,11 +347,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
 		let (header, sprp_keys) = create_header(&mut rng, path, true)?;
 		tagged_payload.resize(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE, 1u8);
-		let encoded = SurbsEncoded {
-			id,
-			first_key: first_key.clone(),
-			header,
-		};
+		let encoded = SurbsEncoded { id, first_key: first_key.clone(), header };
 		encoded.append(&mut tagged_payload);
 		Some((first_key, sprp_keys))
 	} else {
@@ -381,7 +371,11 @@ pub fn new_packet<T: Rng + CryptoRng>(
 }
 
 /// Unwrap one layer of encryption and return next layer information or the final payload.
-pub fn unwrap_packet(private_key: &StaticSecret, mut packet: Vec<u8>, surbs: &mut SurbsCollection) -> Result<Unwrapped, Error> {
+pub fn unwrap_packet(
+	private_key: &StaticSecret,
+	mut packet: Vec<u8>,
+	surbs: &mut SurbsCollection,
+) -> Result<Unwrapped, Error> {
 	// Split into mutable references and validate the AD
 	if packet.len() < HEADER_SIZE {
 		return Err(Error::InvalidPacket)
@@ -435,8 +429,9 @@ pub fn unwrap_packet(private_key: &StaticSecret, mut packet: Vec<u8>, surbs: &mu
 	// Transform the packet for forwarding to the next mix
 	match maybe_next_hop {
 		DoNextHop::Some(next_hop) => {
-			let decrypted_payload = crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
-				.map_err(|_| Error::PayloadDecryptError)?;
+			let decrypted_payload =
+				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
+					.map_err(|_| Error::PayloadDecryptError)?;
 
 			group_element = blind(group_element, keys.blinding_factor);
 			group_element_bytes.copy_from_slice(group_element.as_bytes());
@@ -446,8 +441,9 @@ pub fn unwrap_packet(private_key: &StaticSecret, mut packet: Vec<u8>, surbs: &mu
 			Ok(Unwrapped::Forward((next_hop.id, delay, packet)))
 		},
 		DoNextHop::Query => {
-			let mut decrypted_payload = crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
-				.map_err(|_| Error::PayloadDecryptError)?;
+			let mut decrypted_payload =
+				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
+					.map_err(|_| Error::PayloadDecryptError)?;
 
 			if decrypted_payload[..PAYLOAD_TAG_SIZE] == NO_SURBS {
 				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
@@ -461,15 +457,14 @@ pub fn unwrap_packet(private_key: &StaticSecret, mut packet: Vec<u8>, surbs: &mu
 			}
 		},
 		DoNextHop::Reply => {
-			let index = SprpKey {
-				key: keys.payload_encryption
-			};
+			let index = SprpKey { key: keys.payload_encryption };
 			if let Some(surbs) = surbs.pending.remove(&index) {
-				let mut decrypted_payload = crypto::sprp_decrypt(&surbs.first_key.key, payload.to_vec())
-					.map_err(|_| Error::PayloadDecryptError)?;
+				let mut decrypted_payload =
+					crypto::sprp_decrypt(&surbs.first_key.key, payload.to_vec())
+						.map_err(|_| Error::PayloadDecryptError)?;
 				for key in surbs.keys {
 					decrypted_payload = crypto::sprp_decrypt(&key.key, decrypted_payload)
-					.map_err(|_| Error::PayloadDecryptError)?;
+						.map_err(|_| Error::PayloadDecryptError)?;
 				}
 				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO attach origin message??
 			} else {
@@ -488,9 +483,7 @@ pub struct SurbsCollection {
 
 impl SurbsCollection {
 	pub fn new() -> Self {
-		SurbsCollection {
-			pending: HashMap::new(),
-		}
+		SurbsCollection { pending: HashMap::new() }
 	}
 
 	pub fn insert(&mut self, surb: SurbsPersistance) {
@@ -560,7 +553,9 @@ mod test {
 
 			// Unwrap the packet, validating the output.
 			for i in 0..num_hops {
-				let unwrap_result = super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection).unwrap();
+				let unwrap_result =
+					super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection)
+						.unwrap();
 
 				if i == nodes.len() - 1 {
 					let p = match unwrap_result {
