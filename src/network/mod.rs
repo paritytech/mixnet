@@ -26,6 +26,7 @@ mod protocol;
 
 use crate::{
 	core::{self, Config, MixEvent, PUBLIC_KEY_LEN},
+	core::SurbsEncoded,
 	MixPublicKey,
 };
 use futures_timer::Delay;
@@ -80,8 +81,8 @@ impl Mixnet {
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to the specified recipient.
-	pub fn send(&mut self, to: PeerId, message: Vec<u8>) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_message(Some(to), message)
+	pub fn send(&mut self, to: PeerId, message: Vec<u8>, with_surbs: bool) -> std::result::Result<(), core::Error> {
+		self.mixnet.register_message(Some(to), message, with_surbs)
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
@@ -89,8 +90,9 @@ impl Mixnet {
 	pub fn send_to_random_recipient(
 		&mut self,
 		message: Vec<u8>,
+		with_surbs: bool,
 	) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_message(None, message)
+		self.mixnet.register_message(None, message, with_surbs)
 	}
 
 	fn handshake_message(&self) -> Vec<u8> {
@@ -117,6 +119,8 @@ pub struct DecodedMessage {
 	pub peer: PeerId,
 	/// Message data.
 	pub message: Vec<u8>,
+	/// Enveloppe for a possible surbs reply.
+	pub surbs_reply: Option<SurbsEncoded>,
 }
 
 impl NetworkBehaviour for Mixnet {
@@ -147,10 +151,11 @@ impl NetworkBehaviour for Mixnet {
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					if let Ok(Some(message)) = self.mixnet.import_message(peer_id, message) {
+					if let Ok(Some((message, surbs_reply))) = self.mixnet.import_message(peer_id, message) {
 						self.events.push_front(NetworkEvent::Message(DecodedMessage {
 							peer: peer_id,
 							message,
+							surbs_reply,
 						}))
 					}
 				}

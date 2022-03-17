@@ -37,7 +37,8 @@ use std::{
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
-
+use crate::core::sphinx::{SurbsCollection, SprpKey};
+pub use crate::core::sphinx::SurbsEncoded;
 pub use config::Config;
 pub use error::Error;
 pub use sphinx::Error as SphinxError;
@@ -143,6 +144,8 @@ pub struct Mixnet {
 	connected_peers: HashMap<MixPeerId, MixPublicKey>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
+	// Message waiting for surbs.
+	surbs: SurbsCollection,
 	// Real messages queue, sorted by deadline.
 	packet_queue: BinaryHeap<QueuedPacket>,
 	// Timer for the next poll for messages.
@@ -169,6 +172,7 @@ impl Mixnet {
 			average_traffic_delay: Duration::from_nanos(
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
+			surbs: SurbsCollection::new(),
 		}
 	}
 
@@ -193,6 +197,7 @@ impl Mixnet {
 		&mut self,
 		peer_id: Option<MixPeerId>,
 		message: Vec<u8>,
+		with_surbs: bool,
 	) -> Result<(), Error> {
 		let mut rng = rand::thread_rng();
 
@@ -211,9 +216,28 @@ impl Mixnet {
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
 		let chunks = fragment::create_fragments(message)?;
-		let paths = self.random_paths(&peer_id, chunks.len())?;
+		let paths = self.random_paths(&peer_id, chunks.len(), false)?;
 
-		let mut packets = Vec::with_capacity(chunks.len());
+		let mut surbs = if with_surbs {
+			//let ours = (MixPeerId, MixPublicKey);
+			let first_key = SprpKey::new(&mut rng);// TODO could also use last key from path
+			let paths = self.random_paths(&peer_id, 1, true)?.remove(0);
+			let first_node = to_sphinx_id(&paths[0].0).unwrap();
+			let paths: Vec<_> = paths
+				.into_iter()
+				.map(|(id, key)| sphinx::PathHop {
+					id: to_sphinx_id(&id).unwrap(),
+					public_key: key.into(),
+					delay: Some(exp_delay(&mut rng, self.average_hop_delay).as_millis() as u32),
+				})
+				.collect();
+
+			Some((first_node, first_key, paths))
+		} else {
+			None
+		};
+		let nb_chunks = chunks.len();
+		let mut packets = Vec::with_capacity(nb_chunks);
 		for (n, chunk) in chunks.into_iter().enumerate() {
 			let (first_id, _) = paths[n].first().unwrap().clone();
 			let hops: Vec<_> = paths[n]
@@ -224,8 +248,20 @@ impl Mixnet {
 					delay: Some(exp_delay(&mut rng, self.average_hop_delay).as_millis() as u32),
 				})
 				.collect();
-			let packet =
-				sphinx::new_packet(&mut rng, hops, chunk, None).map_err(|e| Error::SphinxError(e))?;
+			let chunk_surbs = if n == nb_chunks {
+				surbs.take()
+			} else {
+				None
+			};
+			let (packet, surbs_keys) =
+				sphinx::new_packet(&mut rng, hops, chunk, chunk_surbs).map_err(|e| Error::SphinxError(e))?;
+			if let Some((first_key, keys)) = surbs_keys {
+				let persistance = crate::core::sphinx::SurbsPersistance {
+					first_key,
+					keys,
+				};
+				self.surbs.insert(persistance);
+			}
 			packets.push((first_id, packet));
 		}
 
@@ -243,11 +279,11 @@ impl Mixnet {
 		&mut self,
 		peer_id: MixPeerId,
 		message: Vec<u8>,
-	) -> Result<Option<Vec<u8>>, Error> {
+	) -> Result<Option<(Vec<u8>, Option<SurbsEncoded>)>, Error> {
 		if message.len() != PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
-		let result = sphinx::unwrap_packet(&self.secret, message);
+		let result = sphinx::unwrap_packet(&self.secret, message, &mut self.surbs);
 		match result {
 			Err(e) => {
 				log::debug!(target: "mixnet", "Error unpacking message received from {} :{:?}", peer_id, e);
@@ -256,18 +292,27 @@ impl Mixnet {
 			Ok(Unwrapped::Payload(payload)) => {
 				if let Some(m) = self.fragments.insert_fragment(payload)? {
 					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.len());
-					return Ok(Some(m))
+					return Ok(Some((m, None)))
 				} else {
-					log::trace!(target: "mixnet", "Discarded message from {}", peer_id);
+					log::trace!(target: "mixnet", "Inserted fragment message from {}", peer_id);
 				}
 			},
-			Ok(Unwrapped::SurbsPayload(payload)) => {
-				// TODO fragment on surbs make no sense.
+			Ok(Unwrapped::SurbsReply(payload)) => {
+				if let Some(m) = self.fragments.insert_fragment(payload)? {
+					log::debug!(target: "mixnet", "Imported surbs from {} ({} bytes)", peer_id, m.len());
+					// TODO custom return type and attach original message?
+					return Ok(Some((m, None)))
+				} else {
+					log::error!(target: "mixnet", "Surbs fragment from {}", peer_id);
+				}
+			},
+			Ok(Unwrapped::SurbsQuery(encoded_surbs, payload)) => {
+				// TODO return SurbsEncode with message.
 				if let Some(m) = self.fragments.insert_fragment(payload)? {
 					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.len());
-					return Ok(Some(m))
+					return Ok(Some((m, Some(encoded_surbs.into()))))
 				} else {
-					log::trace!(target: "mixnet", "Discarded message from {}", peer_id);
+					log::warn!(target: "mixnet", "Inserted fragment message from {}, dropped surbs enveloppe.", peer_id);
 				}
 			},
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
@@ -297,7 +342,7 @@ impl Mixnet {
 
 		let hop =
 			sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None };
-		let packet = sphinx::new_packet(&mut rng, vec![hop], message, None).ok()?;
+		let (packet, _no_surbs) = sphinx::new_packet(&mut rng, vec![hop], message, None).ok()?;
 		Some((id, packet))
 	}
 
@@ -305,7 +350,9 @@ impl Mixnet {
 		&self,
 		recipient: &MixPeerId,
 		count: usize,
+		surbs: bool,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
+//		unimplemented!("TODO surbs variant: dest local_id from recipient");
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();
@@ -328,6 +375,7 @@ impl Mixnet {
 		let mut rng = rand::thread_rng();
 		let mut result = Vec::new();
 		while result.len() < count {
+			// TODO this path pool looks fishy: should persist or it is very costy for nothing
 			let n: usize = rng.gen_range(0..paths.len());
 			result.push(paths[n].clone());
 		}
