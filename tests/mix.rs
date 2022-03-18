@@ -189,10 +189,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
 						assert_eq!(source_message.as_slice(), message.as_slice());
 						if let Some(reply) = surbs_reply {
-							swarm
-								.behaviour_mut()
-								.send_surbs(b"pong".to_vec(), reply)
-								.unwrap();
+							swarm.behaviour_mut().send_surbs(b"pong".to_vec(), reply).unwrap();
 						}
 						if received == message_count {
 							return swarm
@@ -206,49 +203,60 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	}
 
 	let mut done_futures = Vec::new();
-	let spin_future = async move {
-		let mut expected_surbs = if with_surbs {
-			Some(num_peers - 1)
-		} else {
-			None
-		};
-		loop {
-			match peer0_swarm.select_next_some().await {
-				// TODO have surbs original message (can be small vec id: make it an input param) attached.
-				SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
-					mixnet::DecodedMessage { peer, message, surbs_reply },
-				)) => {
-					assert!(message.as_slice() == b"pong");
-					expected_surbs.as_mut().map(|nb| *nb -= 1);
-					if expected_surbs == Some(0) {
-						return peer0_swarm;
-					}
+	let spin_future =
+		async move {
+			let mut expected_surbs = if with_surbs { Some(num_peers - 1) } else { None };
+			loop {
+				match peer0_swarm.select_next_some().await {
+					// TODO have surbs original message (can be small vec id: make it an input
+					// param) attached.
+					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
+						mixnet::DecodedMessage { peer: _, message, surbs_reply: _ },
+					)) => {
+						assert!(message.as_slice() == b"pong");
+						expected_surbs.as_mut().map(|nb| *nb -= 1);
+						if expected_surbs == Some(0) {
+							return peer0_swarm
+						}
+					},
+					_ => {},
 				}
-				_ => {}
 			}
-		}
-	};
-	if with_surbs {
-		futures.push(Box::pin(spin_future.boxed()));
-	} else {
-		done_futures.push(Box::pin(spin_future.boxed()));
-	}
+		};
+	done_futures.push(Box::pin(spin_future.boxed()));
 
 	while done_futures.len() < num_peers {
 		let result1 = futures::future::select_all(futures.drain(..));
 		let result2 = futures::future::select_all(&mut done_futures);
-		if let Either::Left((t, _)) =
-			async_std::task::block_on(futures::future::select(result1, result2))
-		{
-			let (mut swarm, index, rest) = t;
-			log::trace!(target: "mixnet", "{} Completed", index);
-			futures = rest;
-			let spin_future = async move {
-				loop {
-					swarm.select_next_some().await;
-				}
-			};
-			done_futures.push(Box::pin(spin_future.boxed()));
+		match async_std::task::block_on(futures::future::select(result1, result2)) {
+			Either::Left((t, _)) => {
+				let (mut swarm, index, rest) = t;
+				log::trace!(target: "mixnet", "{} Completed", index);
+				futures = rest;
+				let spin_future = async move {
+					loop {
+						swarm.select_next_some().await;
+					}
+				};
+				done_futures.push(Box::pin(spin_future.boxed()));
+			},
+			Either::Right((t, _)) => {
+				// can only be with surbs of first
+				assert!(with_surbs);
+				let (_swarm, index, _rest) = t;
+				assert_eq!(index, 0);
+				return
+			},
+		}
+	}
+	while with_surbs {
+		// TODO just if?
+		let result2 = futures::future::select_all(&mut done_futures);
+		match async_std::task::block_on(result2) {
+			(_swarm, index, _rest) => {
+				assert_eq!(index, 0);
+				return
+			},
 		}
 	}
 }
@@ -261,6 +269,16 @@ fn message_exchange() {
 #[test]
 fn fragmented_messages() {
 	test_messages(2, 1, 8 * 1024, false);
+}
+
+#[test]
+fn message_exchange_with_surbs() {
+	test_messages(5, 10, 1, true);
+}
+
+#[test]
+fn fragmented_messages_with_surbs() {
+	test_messages(2, 1, 8 * 1024, true);
 }
 
 fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)

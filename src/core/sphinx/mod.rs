@@ -30,6 +30,7 @@
 ///! Sphinx packet format.
 mod crypto;
 
+use crate::core::PACKET_SIZE;
 use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
 use rand::{CryptoRng, Rng};
 use std::collections::HashMap;
@@ -74,13 +75,13 @@ const NO_SURBS: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
 const WITH_SURBS: [u8; PAYLOAD_TAG_SIZE] = [1u8; PAYLOAD_TAG_SIZE];
 
 /// The size of the Sphinx packet header in bytes.
-const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
+pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
 
 /// Size of the surbs definition in payload.
 pub(crate) const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
 
 /// The size in bytes of each routing info slot.
-const PER_HOP_ROUTING_INFO_SIZE: usize = 4 + MAC_SIZE + NODE_ID_SIZE; // TODO wth is this 4
+const PER_HOP_ROUTING_INFO_SIZE: usize = DELAY_SIZE + MAC_SIZE + NODE_ID_SIZE;
 
 /// The size in bytes of the routing info section of the packet
 /// header.
@@ -173,7 +174,7 @@ impl SurbsPersistance {
 }
 
 // TODO rename SurbsEnvelop or SurbsReply?
-#[derive(Debug)]
+#[derive(Eq, PartialEq, Debug)]
 pub struct SurbsEncoded {
 	pub id: [u8; NODE_ID_SIZE], // TODO rename first_node
 	pub first_key: SprpKey,
@@ -288,12 +289,11 @@ fn create_header<T: Rng + CryptoRng>(
 
 	let skipped_hops = MAX_HOPS - num_hops;
 	if skipped_hops > 0 {
-		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]);
+		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]); // TODO isn't this padding?
 	}
 	if is_surbs {
-		routing_info[num_hops * PER_HOP_ROUTING_INFO_SIZE..
-			(num_hops * PER_HOP_ROUTING_INFO_SIZE) + NODE_ID_SIZE]
-			.copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
+		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
+		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
 	}
 	let mut hop_index = num_hops - 1;
 	loop {
@@ -346,9 +346,19 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		// TODO Box<[u8; FIX_LEN]>?? for all packet!!
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
 		let (header, sprp_keys) = create_header(&mut rng, path, true)?;
-		tagged_payload.resize(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE, 1u8);
+		debug_assert!(header.len() == HEADER_SIZE);
+		tagged_payload.resize(PAYLOAD_TAG_SIZE, 1u8);
 		let encoded = SurbsEncoded { id, first_key: first_key.clone(), header };
+		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);
+		debug_assert!(
+			tagged_payload.len() == SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE,
+			"{:?}",
+			(tagged_payload.len(), SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE)
+		);
+		debug_assert!(
+			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURBS_REPLY_SIZE + payload.len()
+		);
 		Some((first_key, sprp_keys))
 	} else {
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + payload.len());
@@ -367,6 +377,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	let mut packet: Vec<u8> = Vec::with_capacity(header.len() + tagged_payload.len());
 	packet.extend_from_slice(&header);
 	packet.extend_from_slice(&tagged_payload);
+	debug_assert!(packet.len() == PACKET_SIZE);
 	return Ok((packet, surbs_key))
 }
 
@@ -376,7 +387,17 @@ pub fn new_surbs_packet(
 	message: Vec<u8>,
 	surbs_header: [u8; HEADER_SIZE],
 ) -> Result<Vec<u8>, Error> {
-	unimplemented!()
+	let mut tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + message.len());
+	tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
+	tagged_payload.extend_from_slice(&message[..]);
+	tagged_payload = crypto::sprp_encrypt(&first_key.key, tagged_payload)
+		.map_err(|_| Error::PayloadEncryptError)?;
+
+	let mut packet = Vec::with_capacity(PACKET_SIZE);
+	packet.extend_from_slice(&surbs_header[..]);
+	packet.extend_from_slice(&tagged_payload);
+	debug_assert!(packet.len() == PACKET_SIZE);
+	Ok(packet)
 }
 
 /// Unwrap one layer of encryption and return next layer information or the final payload.
@@ -429,7 +450,7 @@ pub fn unwrap_packet(
 	// Parse the per-hop routing commands.
 	let hop = EncodedHop(cmd_buf);
 	let maybe_next_hop = hop.next_hop();
-	let delay = hop.delay();
+	let delay = hop.delay(); // TODO remove delay and use our local mix strat?
 
 	// Decrypt the Sphinx Packet Payload.
 	let mut p = vec![0u8; payload.len()];
@@ -459,8 +480,8 @@ pub fn unwrap_packet(
 				Ok(Unwrapped::Payload(decrypted_payload))
 			} else if decrypted_payload[..PAYLOAD_TAG_SIZE] == WITH_SURBS {
 				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				let surbs = decrypted_payload.split_off(SURBS_REPLY_SIZE);
-				Ok(Unwrapped::SurbsQuery(surbs, decrypted_payload))
+				let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
+				Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 			} else {
 				return Err(Error::PayloadError)
 			}
@@ -474,6 +495,11 @@ pub fn unwrap_packet(
 				for key in surbs.keys {
 					decrypted_payload = crypto::sprp_decrypt(&key.key, decrypted_payload)
 						.map_err(|_| Error::PayloadDecryptError)?;
+				}
+				if decrypted_payload[..PAYLOAD_TAG_SIZE] == NO_SURBS {
+					let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
+				} else {
+					return Err(Error::PayloadError)
 				}
 				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO attach origin message??
 			} else {

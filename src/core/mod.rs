@@ -303,29 +303,31 @@ impl Mixnet {
 				return Ok(None)
 			},
 			Ok(Unwrapped::Payload(payload)) => {
-				if let Some(m) = self.fragments.insert_fragment(payload)? {
-					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.len());
-					return Ok(Some((m, None)))
+				if let Some(m) = self.fragments.insert_fragment(payload, None)? {
+					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.0.len());
+					return Ok(Some(m))
 				} else {
 					log::trace!(target: "mixnet", "Inserted fragment message from {}", peer_id);
 				}
 			},
 			Ok(Unwrapped::SurbsReply(payload)) => {
-				if let Some(m) = self.fragments.insert_fragment(payload)? {
-					log::debug!(target: "mixnet", "Imported surbs from {} ({} bytes)", peer_id, m.len());
-					// TODO custom return type and attach original message?
-					return Ok(Some((m, None)))
+				if let Some(m) = self.fragments.insert_fragment(payload, None)? {
+					log::debug!(target: "mixnet", "Imported surbs from {} ({} bytes)", peer_id, m.0.len());
+					return Ok(Some(m))
 				} else {
 					log::error!(target: "mixnet", "Surbs fragment from {}", peer_id);
 				}
 			},
 			Ok(Unwrapped::SurbsQuery(encoded_surbs, payload)) => {
+				debug_assert!(encoded_surbs.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
 				// TODO return SurbsEncode with message.
-				if let Some(m) = self.fragments.insert_fragment(payload)? {
-					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.len());
-					return Ok(Some((m, Some(encoded_surbs.into()))))
+				if let Some(m) =
+					self.fragments.insert_fragment(payload, Some(encoded_surbs.into()))?
+				{
+					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.0.len());
+					return Ok(Some(m))
 				} else {
-					log::warn!(target: "mixnet", "Inserted fragment message from {}, dropped surbs enveloppe.", peer_id);
+					log::warn!(target: "mixnet", "Inserted fragment message from {}, stored surbs enveloppe.", peer_id);
 				}
 			},
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
@@ -349,14 +351,15 @@ impl Mixnet {
 	}
 
 	fn cover_message(&mut self) -> Option<(MixPeerId, Vec<u8>)> {
-		let mut rng = rand::thread_rng();
+		return None
+		/* TODO restore: for debugging		let mut rng = rand::thread_rng();
 		let message = fragment::create_cover_fragment(&mut rng);
 		let (id, key) = self.random_cover_path()?;
 
 		let hop =
 			sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None };
 		let (packet, _no_surbs) = sphinx::new_packet(&mut rng, vec![hop], message, None).ok()?;
-		Some((id, packet))
+		Some((id, packet))*/
 	}
 
 	fn random_paths(

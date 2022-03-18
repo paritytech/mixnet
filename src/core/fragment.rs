@@ -21,7 +21,7 @@
 //! Mix message fragment management
 
 use super::Error;
-use crate::core::sphinx::SURBS_REPLY_SIZE;
+use crate::core::sphinx::{SurbsEncoded, SURBS_REPLY_SIZE};
 use instant::Duration;
 use rand::Rng;
 use std::{
@@ -98,12 +98,18 @@ struct IncompleteMessage {
 	target_len: u32,
 	target_hash: MessageHash,
 	fragments: HashMap<u32, Vec<u8>>,
+	surbs: Option<SurbsEncoded>,
 	expires: Instant,
 }
 
 impl IncompleteMessage {
+	fn current_len(&self) -> usize {
+		let surbs_len = if self.surbs.is_some() { SURBS_REPLY_SIZE } else { 0 };
+		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surbs_len
+	}
+
 	fn is_complete(&self) -> bool {
-		self.fragments.len() * FRAGMENT_PAYLOAD_SIZE >= self.target_len as usize
+		self.current_len() >= self.target_len as usize
 	}
 
 	fn num_fragments(&self) -> usize {
@@ -111,10 +117,10 @@ impl IncompleteMessage {
 	}
 
 	fn total_fragments(&self) -> usize {
-		self.target_len as usize / FRAGMENT_PAYLOAD_SIZE + 1
+		self.target_len as usize / FRAGMENT_PAYLOAD_SIZE + 1 // TODO incorrect with surbs (but only in logs)
 	}
 
-	fn reconstruct(mut self) -> Result<Vec<u8>, Error> {
+	fn reconstruct(mut self) -> Result<(Vec<u8>, Option<SurbsEncoded>), Error> {
 		let mut index = 0;
 		let mut result = Vec::with_capacity(self.target_len as usize);
 		while result.len() < self.target_len as usize {
@@ -130,7 +136,7 @@ impl IncompleteMessage {
 		if hash != self.target_hash {
 			return Err(Error::BadFragment)
 		}
-		Ok(result)
+		Ok((result, self.surbs))
 	}
 }
 
@@ -150,8 +156,13 @@ impl MessageCollection {
 
 	/// Insert a new new message fragment in the collection. If the fragment completes some message,
 	/// full message is returned.
-	pub fn insert_fragment(&mut self, mut fragment: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-		if fragment.len() != FRAGMENT_PACKET_SIZE {
+	pub fn insert_fragment(
+		&mut self,
+		mut fragment: Vec<u8>,
+		surbs: Option<SurbsEncoded>,
+	) -> Result<Option<(Vec<u8>, Option<SurbsEncoded>)>, Error> {
+		let surbs_len = if surbs.is_some() { SURBS_REPLY_SIZE } else { 0 };
+		if fragment.len() + surbs_len != FRAGMENT_PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
 		let (hash, len, index) = {
@@ -163,9 +174,13 @@ impl MessageCollection {
 			(header.hash(), header.message_len(), header.index())
 		};
 
+		// TODO storing by hash is wrong: when two message with same content KO!!
 		match self.messages.entry(hash.clone()) {
 			Entry::Occupied(mut e) => {
 				e.get_mut().fragments.insert(index, fragment);
+				if surbs.is_some() {
+					e.get_mut().surbs = surbs;
+				}
 				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{})", index, e.get().num_fragments(), e.get().total_fragments());
 				if e.get().is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
@@ -177,6 +192,7 @@ impl MessageCollection {
 					target_hash: hash,
 					target_len: len,
 					fragments: Default::default(),
+					surbs,
 					expires: Instant::now() + self.expiration,
 				};
 				message.fragments.insert(index, fragment);
@@ -214,7 +230,8 @@ pub fn create_fragments(mut message: Vec<u8>, with_surbs: bool) -> Result<Vec<Ve
 	}
 	let pad = FRAGMENT_PAYLOAD_SIZE;
 	let hash = hash(&message);
-	message.resize(len + (pad - len % pad) % pad, 0);
+	let message_len = message.len();
+	message.resize(message_len + (pad - len % pad) % pad, 0);
 	let nb_chunks = (message.len() + surbs_len) / FRAGMENT_PAYLOAD_SIZE;
 	debug_assert!((message.len() + surbs_len) % FRAGMENT_PAYLOAD_SIZE == 0);
 	// TODO message.resize(len + (pad - (len % pad)), 0);
@@ -232,7 +249,7 @@ pub fn create_fragments(mut message: Vec<u8>, with_surbs: bool) -> Result<Vec<Ve
 		fragment.resize(FRAGMENT_HEADER_SIZE, 0u8);
 		let mut header = FragmentHeader::new(&mut fragment);
 		header.set_hash(hash);
-		header.set_message_len(len as u32);
+		header.set_message_len(message_len as u32);
 		header.set_index(n as u32);
 		fragment.extend_from_slice(chunk);
 		fragments.push(fragment);
@@ -267,7 +284,10 @@ mod test {
 		let small_fragment = std::mem::take(&mut small_fragment[0]);
 		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE);
 
-		assert_eq!(fragments.insert_fragment(small_fragment).unwrap(), Some(vec![42]));
+		assert_eq!(
+			fragments.insert_fragment(small_fragment, None).unwrap(),
+			Some((vec![42], None))
+		);
 
 		let mut large = Vec::new();
 		large.resize(60000, 0u8);
@@ -277,9 +297,12 @@ mod test {
 
 		large_fragments.shuffle(&mut rng);
 		for fragment in large_fragments.iter().skip(1) {
-			assert_eq!(fragments.insert_fragment(fragment.clone()).unwrap(), None);
+			assert_eq!(fragments.insert_fragment(fragment.clone(), None).unwrap(), None);
 		}
-		assert_eq!(fragments.insert_fragment(large_fragments[0].clone()).unwrap(), Some(large));
+		assert_eq!(
+			fragments.insert_fragment(large_fragments[0].clone(), None).unwrap(),
+			Some((large, None))
+		);
 
 		let mut too_large = Vec::new();
 		too_large.resize(MAX_MESSAGE_SIZE + 1, 0u8);
@@ -289,10 +312,10 @@ mod test {
 	#[test]
 	fn insert_invalid() {
 		let mut fragments = MessageCollection::new();
-		assert_eq!(fragments.insert_fragment(vec![]), Err(Error::BadFragment));
-		assert_eq!(fragments.insert_fragment(vec![42]), Err(Error::BadFragment));
+		assert_eq!(fragments.insert_fragment(vec![], None), Err(Error::BadFragment));
+		assert_eq!(fragments.insert_fragment(vec![42], None), Err(Error::BadFragment));
 		let empty_packet = [0u8; FRAGMENT_PACKET_SIZE].to_vec();
-		assert_eq!(fragments.insert_fragment(empty_packet), Err(Error::BadFragment));
+		assert_eq!(fragments.insert_fragment(empty_packet, None), Err(Error::BadFragment));
 	}
 
 	#[test]
@@ -309,7 +332,7 @@ mod test {
 		let mut message = Vec::new();
 		message.resize(FRAGMENT_PACKET_SIZE * 2, 0u8);
 		let message_fragments = create_fragments(message, false).unwrap();
-		assert_eq!(fragments.insert_fragment(message_fragments[0].clone()).unwrap(), None);
+		assert_eq!(fragments.insert_fragment(message_fragments[0].clone(), None).unwrap(), None);
 		assert_eq!(1, fragments.messages.len());
 		fragments.cleanup();
 		assert_eq!(0, fragments.messages.len());
