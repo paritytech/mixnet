@@ -345,24 +345,27 @@ impl Mixnet {
 		count: usize,
 		surbs: bool,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		//		unimplemented!("TODO surbs variant: dest local_id from recipient");
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();
-		let start = self.local_id.clone();
+		let (start, recipient) = if surbs {
+			(recipient, &self.local_id)
+		} else {
+			(&self.local_id, recipient)
+		};
 
 		if self.topology.is_none() {
 			// No topology is defined. Check if direct connection is possible.
-			match self.connected_peers.get(recipient) {
-				Some(key) if count == 1 => return Ok(vec![vec![(recipient.clone(), key.clone())]]),
-				_ => return Err(Error::NoPath(Some(recipient.clone()))),
+			match self.connected_peers.get(&recipient) {
+				Some(key) if count == 1 => return Ok(vec![vec![(*recipient, key.clone())]]),
+				_ => return Err(Error::NoPath(Some(*recipient))),
 			}
 		}
 
-		self.gen_paths(&mut partial, &mut paths, &start, recipient);
+		self.gen_paths(&mut partial, &mut paths, start, recipient);
 
 		if paths.is_empty() {
-			return Err(Error::NoPath(Some(recipient.clone())))
+			return Err(Error::NoPath(Some(*recipient)))
 		}
 
 		let mut rng = rand::thread_rng();
