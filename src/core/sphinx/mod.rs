@@ -377,7 +377,6 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	let mut packet: Vec<u8> = Vec::with_capacity(header.len() + tagged_payload.len());
 	packet.extend_from_slice(&header);
 	packet.extend_from_slice(&tagged_payload);
-	debug_assert!(packet.len() == PACKET_SIZE);
 	return Ok((packet, surbs_key))
 }
 
