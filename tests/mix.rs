@@ -67,7 +67,7 @@ impl mixnet::Topology for TopologyGraph {
 	}
 }
 
-fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
+fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surbs: bool) {
 	let _ = env_logger::try_init();
 	let mut source_message = Vec::new();
 	source_message.resize(message_size, 0);
@@ -170,7 +170,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
-				.send(recipient.clone(), source_message.to_vec())
+				.send(recipient.clone(), source_message.to_vec(), with_surbs)
 				.unwrap();
 		}
 	}
@@ -183,11 +183,17 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 			loop {
 				match swarm.select_next_some().await {
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
-						mixnet::DecodedMessage { peer, message },
+						mixnet::DecodedMessage { peer, message, surbs_reply },
 					)) => {
 						received += 1;
 						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
 						assert_eq!(source_message.as_slice(), message.as_slice());
+						if let Some(reply) = surbs_reply {
+							swarm
+								.behaviour_mut()
+								.send_surbs(b"pong".to_vec(), reply)
+								.unwrap();
+						}
 						if received == message_count {
 							return swarm
 						}
@@ -196,18 +202,39 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 				}
 			}
 		};
-		futures.push(Box::pin(peer_future));
+		futures.push(Box::pin(peer_future.boxed()));
 	}
 
 	let mut done_futures = Vec::new();
 	let spin_future = async move {
+		let mut expected_surbs = if with_surbs {
+			Some(num_peers - 1)
+		} else {
+			None
+		};
 		loop {
-			peer0_swarm.select_next_some().await;
+			match peer0_swarm.select_next_some().await {
+				// TODO have surbs original message (can be small vec id: make it an input param) attached.
+				SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
+					mixnet::DecodedMessage { peer, message, surbs_reply },
+				)) => {
+					assert!(message.as_slice() == b"pong");
+					expected_surbs.as_mut().map(|nb| *nb -= 1);
+					if expected_surbs == Some(0) {
+						return peer0_swarm;
+					}
+				}
+				_ => {}
+			}
 		}
 	};
-	done_futures.push(Box::pin(spin_future.boxed()));
+	if with_surbs {
+		futures.push(Box::pin(spin_future.boxed()));
+	} else {
+		done_futures.push(Box::pin(spin_future.boxed()));
+	}
 
-	while done_futures.len() < num_peers - 1 {
+	while done_futures.len() < num_peers {
 		let result1 = futures::future::select_all(futures.drain(..));
 		let result2 = futures::future::select_all(&mut done_futures);
 		if let Either::Left((t, _)) =
@@ -228,12 +255,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 
 #[test]
 fn message_exchange() {
-	test_messages(5, 10, 1);
+	test_messages(5, 10, 1, false);
 }
 
 #[test]
 fn fragmented_messages() {
-	test_messages(2, 1, 8 * 1024);
+	test_messages(2, 1, 8 * 1024, false);
 }
 
 fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)

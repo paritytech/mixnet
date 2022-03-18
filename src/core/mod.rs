@@ -215,7 +215,7 @@ impl Mixnet {
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
-		let chunks = fragment::create_fragments(message)?;
+		let chunks = fragment::create_fragments(message, with_surbs)?;
 		let paths = self.random_paths(&peer_id, chunks.len(), false)?;
 
 		let mut surbs = if with_surbs {
@@ -248,9 +248,10 @@ impl Mixnet {
 					delay: Some(exp_delay(&mut rng, self.average_hop_delay).as_millis() as u32),
 				})
 				.collect();
-			let chunk_surbs = if n == nb_chunks { surbs.take() } else { None };
+			let chunk_surbs = if n == 0 { surbs.take() } else { None };
 			let (packet, surbs_keys) = sphinx::new_packet(&mut rng, hops, chunk, chunk_surbs)
 				.map_err(|e| Error::SphinxError(e))?;
+			debug_assert!(packet.len() == PACKET_SIZE);
 			if let Some((first_key, keys)) = surbs_keys {
 				let persistance = crate::core::sphinx::SurbsPersistance { first_key, keys };
 				self.surbs.insert(persistance);
@@ -262,6 +263,25 @@ impl Mixnet {
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(peer_id, packet, delay)?;
 		}
+		Ok(())
+	}
+
+	/// Send a new surbs message to the network.
+	/// Message cannot be bigger than a single fragment.
+	pub fn register_surbs(&mut self, message: Vec<u8>, surbs: SurbsEncoded) -> Result<(), Error> {
+		let SurbsEncoded { id, first_key, header } = surbs;
+		let mut rng = rand::thread_rng(); // TODO get a handle to rng in self.
+
+		let mut chunks = fragment::create_fragments(message, false)?;
+		if chunks.len() != 1 {
+			return Err(Error::BadSurbsLength)
+		}
+
+		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0), header)
+			.map_err(|e| Error::SphinxError(e))?;
+		let delay = exp_delay(&mut rng, self.average_hop_delay);
+		let dest = to_libp2p_id(id)?;
+		self.queue_packet(dest, packet, delay)?;
 		Ok(())
 	}
 
@@ -348,11 +368,8 @@ impl Mixnet {
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();
-		let (start, recipient) = if surbs {
-			(recipient, &self.local_id)
-		} else {
-			(&self.local_id, recipient)
-		};
+		let (start, recipient) =
+			if surbs { (recipient, &self.local_id) } else { (&self.local_id, recipient) };
 
 		if self.topology.is_none() {
 			// No topology is defined. Check if direct connection is possible.

@@ -39,6 +39,8 @@ pub enum Error {
 	BadFragment,
 	/// Packet queue is full.
 	QueueFull,
+	/// Surbs message exceed single fragment length.
+	BadSurbsLength,
 }
 
 impl fmt::Display for Error {
@@ -55,6 +57,7 @@ impl fmt::Display for Error {
 			Error::InvalidSphinxId(id) =>
 				write!(f, "Invalid peer id in the Sphinx packet: {:?}.", id),
 			Error::BadFragment => write!(f, "Bad message fragment."),
+			Error::BadSurbsLength => write!(f, "Surbs message too long."),
 			Error::QueueFull => write!(f, "Packet queue is full."),
 		}
 	}

@@ -99,6 +99,15 @@ impl Mixnet {
 		self.mixnet.register_message(None, message, with_surbs)
 	}
 
+	/// Send surbs reply.
+	pub fn send_surbs(
+		&mut self,
+		message: Vec<u8>,
+		surbs: SurbsEncoded,
+	) -> std::result::Result<(), core::Error> {
+		self.mixnet.register_surbs(message, surbs)
+	}
+
 	fn handshake_message(&self) -> Vec<u8> {
 		self.public_key.to_bytes().to_vec()
 	}

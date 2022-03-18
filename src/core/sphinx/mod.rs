@@ -77,7 +77,7 @@ const WITH_SURBS: [u8; PAYLOAD_TAG_SIZE] = [1u8; PAYLOAD_TAG_SIZE];
 const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
 
 /// Size of the surbs definition in payload.
-const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
+pub(crate) const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
 
 /// The size in bytes of each routing info slot.
 const PER_HOP_ROUTING_INFO_SIZE: usize = 4 + MAC_SIZE + NODE_ID_SIZE; // TODO wth is this 4
@@ -175,7 +175,7 @@ impl SurbsPersistance {
 // TODO rename SurbsEnvelop or SurbsReply?
 #[derive(Debug)]
 pub struct SurbsEncoded {
-	pub id: [u8; NODE_ID_SIZE],
+	pub id: [u8; NODE_ID_SIZE], // TODO rename first_node
 	pub first_key: SprpKey,
 	pub header: [u8; HEADER_SIZE],
 }
@@ -370,6 +370,15 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	return Ok((packet, surbs_key))
 }
 
+/// Create a new sphinx packet from a surbs header.
+pub fn new_surbs_packet(
+	first_key: SprpKey,
+	message: Vec<u8>,
+	surbs_header: [u8; HEADER_SIZE],
+) -> Result<Vec<u8>, Error> {
+	unimplemented!()
+}
+
 /// Unwrap one layer of encryption and return next layer information or the final payload.
 pub fn unwrap_packet(
 	private_key: &StaticSecret,
@@ -546,10 +555,15 @@ mod test {
 			let nodes = _tuple.0;
 			let path = _tuple.1;
 			let path_c = path.clone();
-			let mut surbs_collection = SurbsCollection::new();
+			let mut surbs_collection = super::SurbsCollection::new();
 
 			// Create the packet.
-			let mut packet = super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
+			let (mut packet, surbs_keys) =
+				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
+			if let Some((first_key, keys)) = surbs_keys {
+				let persistance = crate::core::sphinx::SurbsPersistance { first_key, keys };
+				surbs_collection.insert(persistance);
+			}
 
 			// Unwrap the packet, validating the output.
 			for i in 0..num_hops {
