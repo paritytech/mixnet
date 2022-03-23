@@ -348,7 +348,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		let (header, sprp_keys) = create_header(&mut rng, path, true)?;
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 1u8);
-		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone()};
+		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone() };
 		let encoded = SurbsEncoded { id, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);

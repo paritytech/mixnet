@@ -26,8 +26,8 @@ mod fragment;
 mod sphinx;
 mod topology;
 
-pub use crate::core::sphinx::SurbsEncoded;
 use crate::core::sphinx::SurbsCollection;
+pub use crate::core::sphinx::SurbsEncoded;
 pub use config::Config;
 pub use error::Error;
 use futures::FutureExt;
@@ -350,15 +350,14 @@ impl Mixnet {
 	}
 
 	fn cover_message(&mut self) -> Option<(MixPeerId, Vec<u8>)> {
-		return None
-		/* TODO restore: for debugging		let mut rng = rand::thread_rng();
+		let mut rng = rand::thread_rng();
 		let message = fragment::create_cover_fragment(&mut rng);
 		let (id, key) = self.random_cover_path()?;
 
 		let hop =
 			sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None };
 		let (packet, _no_surbs) = sphinx::new_packet(&mut rng, vec![hop], message, None).ok()?;
-		Some((id, packet))*/
+		Some((id, packet))
 	}
 
 	fn random_paths(
