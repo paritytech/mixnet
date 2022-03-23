@@ -27,7 +27,7 @@ mod sphinx;
 mod topology;
 
 pub use crate::core::sphinx::SurbsEncoded;
-use crate::core::sphinx::{SprpKey, SurbsCollection};
+use crate::core::sphinx::SurbsCollection;
 pub use config::Config;
 pub use error::Error;
 use futures::FutureExt;
@@ -220,7 +220,6 @@ impl Mixnet {
 
 		let mut surbs = if with_surbs {
 			//let ours = (MixPeerId, MixPublicKey);
-			let first_key = SprpKey::new(&mut rng); // TODO could also use last key from path
 			let paths = self.random_paths(&peer_id, 1, true)?.remove(0);
 			let first_node = to_sphinx_id(&paths[0].0).unwrap();
 			let paths: Vec<_> = paths
@@ -232,7 +231,7 @@ impl Mixnet {
 				})
 				.collect();
 
-			Some((first_node, first_key, paths))
+			Some((first_node, paths))
 		} else {
 			None
 		};
@@ -252,8 +251,8 @@ impl Mixnet {
 			let (packet, surbs_keys) = sphinx::new_packet(&mut rng, hops, chunk, chunk_surbs)
 				.map_err(|e| Error::SphinxError(e))?;
 			debug_assert!(packet.len() == PACKET_SIZE);
-			if let Some((first_key, keys)) = surbs_keys {
-				let persistance = crate::core::sphinx::SurbsPersistance { first_key, keys };
+			if let Some(keys) = surbs_keys {
+				let persistance = crate::core::sphinx::SurbsPersistance { keys };
 				self.surbs.insert(persistance);
 			}
 			packets.push((first_id, packet));

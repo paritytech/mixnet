@@ -162,14 +162,13 @@ enum DoNextHop {
 
 pub struct SurbsPersistance {
 	// TODO consider optional message.
-	pub first_key: SprpKey,
 	pub keys: Vec<SprpKey>,
 }
 
 impl SurbsPersistance {
 	// use key to store surbs.
 	fn surbs_id(&self) -> &SprpKey {
-		self.keys.last().unwrap_or(&self.first_key)
+		self.keys.last().unwrap()
 	}
 }
 
@@ -253,6 +252,7 @@ fn create_header<T: Rng + CryptoRng>(
 	header[0..AD_SIZE].copy_from_slice(&V0_AD);
 
 	for i in 1..num_hops {
+		// TODO for surbs last key do not need to be derived (it is only use by emmitter).
 		shared_secret = secret_key.diffie_hellman(&path[i].public_key).to_bytes();
 		let mut j = 0;
 		while j < i {
@@ -336,19 +336,20 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	mut rng: T,
 	path: Vec<PathHop>,
 	payload: Vec<u8>,
-	with_surbs: Option<(NodeId, SprpKey, Vec<PathHop>)>,
-) -> Result<(Vec<u8>, Option<(SprpKey, Vec<SprpKey>)>), Error> {
+	with_surbs: Option<(NodeId, Vec<PathHop>)>,
+) -> Result<(Vec<u8>, Option<Vec<SprpKey>>), Error> {
 	let (header, sprp_keys) = create_header(&mut rng, path, false)?;
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
-	let surbs_key = if let Some((id, first_key, path)) = with_surbs {
+	let surbs_key = if let Some((id, path)) = with_surbs {
 		// TODO Box<[u8; FIX_LEN]>?? for all packet!!
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
 		let (header, sprp_keys) = create_header(&mut rng, path, true)?;
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 1u8);
-		let encoded = SurbsEncoded { id, first_key: first_key.clone(), header };
+		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone()};
+		let encoded = SurbsEncoded { id, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);
 		debug_assert!(
@@ -359,7 +360,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		debug_assert!(
 			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURBS_REPLY_SIZE + payload.len()
 		);
-		Some((first_key, sprp_keys))
+		Some(sprp_keys)
 	} else {
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + payload.len());
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -488,13 +489,15 @@ pub fn unwrap_packet(
 		DoNextHop::Reply => {
 			let index = SprpKey { key: keys.payload_encryption };
 			if let Some(surbs) = surbs.pending.remove(&index) {
-				let mut decrypted_payload =
-					crypto::sprp_decrypt(&surbs.first_key.key, payload.to_vec())
-						.map_err(|_| Error::PayloadDecryptError)?;
-				for key in surbs.keys {
-					decrypted_payload = crypto::sprp_decrypt(&key.key, decrypted_payload)
+				let mut decrypted_payload = payload.to_vec();
+				let nb_key = surbs.keys.len();
+				for key in surbs.keys[..nb_key - 1].iter().rev() {
+					decrypted_payload = crypto::sprp_encrypt(&key.key, decrypted_payload)
 						.map_err(|_| Error::PayloadDecryptError)?;
 				}
+				let first_key = &surbs.keys[nb_key - 1].key;
+				decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
+					.map_err(|_| Error::PayloadDecryptError)?;
 				if decrypted_payload[..PAYLOAD_TAG_SIZE] == NO_SURBS {
 					let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 				} else {
@@ -585,8 +588,8 @@ mod test {
 			// Create the packet.
 			let (mut packet, surbs_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
-			if let Some((first_key, keys)) = surbs_keys {
-				let persistance = crate::core::sphinx::SurbsPersistance { first_key, keys };
+			if let Some(keys) = surbs_keys {
+				let persistance = crate::core::sphinx::SurbsPersistance { keys };
 				surbs_collection.insert(persistance);
 			}
 
