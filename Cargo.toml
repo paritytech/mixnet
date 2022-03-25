@@ -23,7 +23,7 @@ blake2-rfc = { version = "0.2.18", default-features = false }
 curve25519-dalek = "3.2.0"
 
 #sphinx deps
-x25519-dalek = "1.2.0"
+x25519-dalek = "1.1.0"
 aes = "0.8.1"
 ctr = "0.9.1"
 sha2 = "0.10.2"
