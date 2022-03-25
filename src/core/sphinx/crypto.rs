@@ -21,13 +21,14 @@
 //! Sphinx crypto primitives
 
 use aes::{
-	cipher::{generic_array::GenericArray, NewCipher, StreamCipher as AesStreamCipher},
-	Aes128Ctr,
+	Aes128, cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher as AesStreamCipher},
 };
 
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+
+type Aes128Ctr = ctr::Ctr64BE<Aes128>;
 
 type LionessCipher = lioness::LionessDefault;
 
