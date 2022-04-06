@@ -24,8 +24,13 @@
 //
 // Notable changes include:
 // * Switching to Lioness cipher for payload encryption.
-// * Rewrite support for SURBs
-// * Simplifying routing commands into a fixed structure.
+// * Rewrite support for SURBs:
+// Attachment of surbs or reply of surbs can be read from a specific fix node id.
+// (usefull to drop frame without payload read if no surbs persistence, surbs is indexed by
+// its sprpkey)
+// * Simplifying routing commands into a fixed structure (specific node id are used instead of a
+// byte variant).
+// * Drop support for Delayt command.
 
 ///! Sphinx packet format.
 mod crypto;
@@ -51,8 +56,11 @@ const NODE_ID_SIZE: usize = 32;
 /// Empty node id, last hop.
 const TARGET_ID: NodeId = [0u8; NODE_ID_SIZE];
 
-/// Empty node id, last hop, this is a surbs reply.
+/// Empty node id, last hop.
 const TARGET_ID_WITH_SURBS: NodeId = [1u8; NODE_ID_SIZE];
+
+/// Empty node id, last hop, this is a surbs reply.
+const TARGET_ID_FROM_SURBS: NodeId = [2u8; NODE_ID_SIZE];
 
 /// The "authenticated data" portion of the Sphinx
 /// packet header which as specified contains the
@@ -68,11 +76,6 @@ const PAYLOAD_TAG_SIZE: usize = 16;
 
 /// Standard payload without surbs.
 const NO_SURBS: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
-
-/// Standard payload with surbs.
-/// TODO consider putting this info in fragement header and keep 0 -> yes definitely TODO, then
-/// revert the enum to option.
-const WITH_SURBS: [u8; PAYLOAD_TAG_SIZE] = [1u8; PAYLOAD_TAG_SIZE];
 
 /// The size of the Sphinx packet header in bytes.
 pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
@@ -154,10 +157,12 @@ pub enum Unwrapped {
 	SurbsReply(Vec<u8>),
 }
 
-enum DoNextHop {
+enum DoNextHop { // TODO use same as unwraped
+	// Forward.
 	Some(NextHop),
-	Query,
-	Reply,
+	Query, // -> Payload
+	QueryWithSurbs, // -> SurbsQuery
+	Reply, // -> SurbsReply
 }
 
 pub struct SurbsPersistance {
@@ -212,6 +217,8 @@ impl<'a> EncodedHop<'a> {
 		if id == TARGET_ID {
 			DoNextHop::Query
 		} else if id == TARGET_ID_WITH_SURBS {
+			DoNextHop::QueryWithSurbs
+		} else if id == TARGET_ID_FROM_SURBS {
 			DoNextHop::Reply
 		} else {
 			let mut mac = [0u8; MAC_SIZE];
@@ -234,6 +241,7 @@ fn create_header<T: Rng + CryptoRng>(
 	rng: &mut T,
 	path: Vec<PathHop>,
 	is_surbs: bool,
+	with_surbs: bool,
 ) -> Result<([u8; HEADER_SIZE], Vec<SprpKey>), Error> {
 	let num_hops = path.len();
 	// Derive the key material for each hop.
@@ -291,9 +299,13 @@ fn create_header<T: Rng + CryptoRng>(
 	if skipped_hops > 0 {
 		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]); // TODO isn't this padding?
 	}
-	if is_surbs {
+	if with_surbs {
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
 		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
+	}
+	if is_surbs {
+		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
+		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_FROM_SURBS[..]);
 	}
 	let mut hop_index = num_hops - 1;
 	loop {
@@ -338,16 +350,16 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	payload: Vec<u8>,
 	with_surbs: Option<(NodeId, Vec<PathHop>)>,
 ) -> Result<(Vec<u8>, Option<Vec<SprpKey>>), Error> {
-	let (header, sprp_keys) = create_header(&mut rng, path, false)?;
+	let (header, sprp_keys) = create_header(&mut rng, path, false, with_surbs.is_some())?;
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
 	let surbs_key = if let Some((id, path)) = with_surbs {
 		// TODO Box<[u8; FIX_LEN]>?? for all packet!!
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
-		let (header, sprp_keys) = create_header(&mut rng, path, true)?;
+		let (header, sprp_keys) = create_header(&mut rng, path, true, false)?;
 		debug_assert!(header.len() == HEADER_SIZE);
-		tagged_payload.resize(PAYLOAD_TAG_SIZE, 1u8);
+		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone() };
 		let encoded = SurbsEncoded { id, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
@@ -474,17 +486,25 @@ pub fn unwrap_packet(
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecryptError)?;
-
-			if decrypted_payload[..PAYLOAD_TAG_SIZE] == NO_SURBS {
-				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				Ok(Unwrapped::Payload(decrypted_payload))
-			} else if decrypted_payload[..PAYLOAD_TAG_SIZE] == WITH_SURBS {
-				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
-				Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
-			} else {
+			let zeros = [0u8; PAYLOAD_TAG_SIZE];
+			if zeros != decrypted_payload[..PAYLOAD_TAG_SIZE] {
 				return Err(Error::PayloadError)
 			}
+	
+			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
+			Ok(Unwrapped::Payload(decrypted_payload))
+		},
+		DoNextHop::QueryWithSurbs => {
+			let mut decrypted_payload =
+				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
+					.map_err(|_| Error::PayloadDecryptError)?;
+			let zeros = [0u8; PAYLOAD_TAG_SIZE];
+			if zeros != decrypted_payload[..PAYLOAD_TAG_SIZE] {
+				return Err(Error::PayloadError)
+			}
+			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
+			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
+			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
 		DoNextHop::Reply => {
 			let index = SprpKey { key: keys.payload_encryption };
