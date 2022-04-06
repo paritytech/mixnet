@@ -24,7 +24,7 @@
 //
 // Notable changes include:
 // * Switching to Lioness cipher for payload encryption.
-// * Removing support for SURBs
+// * Rewrite support for SURBs
 // * Simplifying routing commands into a fixed structure.
 
 ///! Sphinx packet format.

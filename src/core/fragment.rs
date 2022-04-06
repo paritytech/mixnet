@@ -18,7 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Mix message fragment management
+//! Mix message fragment management.
+//!
+//! Size is bounded to `MAX_MESSAGE_SIZE`.
 
 use super::Error;
 use crate::core::sphinx::{SurbsEncoded, SURBS_REPLY_SIZE};
@@ -38,6 +40,9 @@ pub const FRAGMENT_PACKET_SIZE: usize = 2048;
 const FRAGMENT_HEADER_SIZE: usize = 32 + 4 + 4;
 const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+/// Surbs presence is higher byte of be encoding of the number of fragment.
+/// Can only conflict if the effective message size is less than a byte.
+const MASK_SURBS_U8: u8 = 1 << 7;
 
 const FRAGMENT_EXPIRATION_MS: u64 = 10000;
 
@@ -63,8 +68,20 @@ impl<'a> FragmentHeader<'a> {
 		self.0[32..36].copy_from_slice(&len.to_be_bytes())
 	}
 
+	fn set_has_surbs(&mut self, has_surbs: bool) {
+		if has_surbs {
+			self.0[36] |= MASK_SURBS_U8;
+		} else {
+			self.0[36] &= !MASK_SURBS_U8;
+		}
+	}
+
 	fn set_index(&mut self, index: u32) {
-		self.0[36..40].copy_from_slice(&index.to_be_bytes())
+		let mut index = index.to_be_bytes();
+		if self.has_surbs() {
+			index[0] |= MASK_SURBS_U8;
+		}
+		self.0[36..40].copy_from_slice(&index)
 	}
 
 	fn set_cover(&mut self) {
@@ -86,7 +103,12 @@ impl<'a> FragmentHeader<'a> {
 	fn index(&self) -> u32 {
 		let mut index: [u8; 4] = Default::default();
 		index.copy_from_slice(&self.0[36..40]);
+		index[0] &= !MASK_SURBS_U8;
 		u32::from_be_bytes(index)
+	}
+
+	fn has_surbs(&self) -> bool {
+		(self.0[36] & MASK_SURBS_U8) > 0
 	}
 
 	fn is_cover(&self) -> bool {
@@ -116,7 +138,7 @@ impl IncompleteMessage {
 		self.fragments.len()
 	}
 
-	fn total_fragments(&self) -> usize {
+	fn total_expected_fragments(&self) -> usize {
 		self.target_len as usize / FRAGMENT_PAYLOAD_SIZE + 1 // TODO incorrect with surbs (but only in logs)
 	}
 
@@ -181,7 +203,7 @@ impl MessageCollection {
 				if surbs.is_some() {
 					e.get_mut().surbs = surbs;
 				}
-				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{})", index, e.get().num_fragments(), e.get().total_fragments());
+				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{})", index, e.get().num_fragments(), e.get().total_expected_fragments());
 				if e.get().is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
 					return Ok(Some(e.remove().reconstruct()?))
@@ -196,7 +218,7 @@ impl MessageCollection {
 					expires: Instant::now() + self.expiration,
 				};
 				message.fragments.insert(index, fragment);
-				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{})", index, 1, message.total_fragments());
+				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{})", index, 1, message.total_expected_fragments());
 				if message.is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
 					return Ok(Some(message.reconstruct()?))
@@ -250,6 +272,7 @@ pub fn create_fragments(mut message: Vec<u8>, with_surbs: bool) -> Result<Vec<Ve
 		let mut header = FragmentHeader::new(&mut fragment);
 		header.set_hash(hash);
 		header.set_message_len(message_len as u32);
+		header.set_has_surbs(with_surbs);
 		header.set_index(n as u32);
 		fragment.extend_from_slice(chunk);
 		fragments.push(fragment);
