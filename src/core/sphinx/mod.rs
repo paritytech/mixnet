@@ -36,7 +36,7 @@
 mod crypto;
 
 use crate::core::PACKET_SIZE;
-use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
+use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE, HASH_OUTPUT_SIZE, hash};
 use rand::{CryptoRng, Rng};
 use std::collections::HashMap;
 use subtle::ConstantTimeEq;
@@ -126,6 +126,11 @@ pub struct PathHop {
 	pub delay: Option<Delay>,
 }
 
+/// Message id, use as surbs key and replay protection.
+/// This is the result of hashing the secret.
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub struct ReplayTag([u8; HASH_OUTPUT_SIZE]);
+
 /// SprpKey is a struct that contains a SPRP (Strong Pseudo-Random Permutation) key.
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub struct SprpKey {
@@ -167,13 +172,6 @@ enum DoNextHop {
 pub struct SurbsPersistance {
 	// TODO consider optional message.
 	pub keys: Vec<SprpKey>,
-}
-
-impl SurbsPersistance {
-	// use key to store surbs.
-	fn surbs_id(&self) -> &SprpKey {
-		self.keys.last().unwrap()
-	}
 }
 
 // TODO rename SurbsEnvelop or SurbsReply?
@@ -239,9 +237,9 @@ impl<'a> EncodedHop<'a> {
 fn create_header<T: Rng + CryptoRng>(
 	rng: &mut T,
 	path: Vec<PathHop>,
-	is_surbs: bool,
+	surbs_header: bool,
 	with_surbs: bool,
-) -> Result<([u8; HEADER_SIZE], Vec<SprpKey>), Error> {
+) -> Result<([u8; HEADER_SIZE], Vec<SprpKey>, Option<ReplayTag>), Error> {
 	let num_hops = path.len();
 	// Derive the key material for each hop.
 	let mut raw_key: [u8; KEY_SIZE] = Default::default();
@@ -272,6 +270,11 @@ fn create_header<T: Rng + CryptoRng>(
 		group_elements.push(group_element.clone());
 	}
 
+	let surbs_id = if surbs_header {
+		Some(ReplayTag(hash(&shared_secret)))
+	} else {
+		None
+	};
 	// Derive the routing_information keystream and encrypted padding
 	// for each hop.
 	let mut ri_keystream: Vec<Vec<u8>> = vec![];
@@ -302,7 +305,7 @@ fn create_header<T: Rng + CryptoRng>(
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
 		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
 	}
-	if is_surbs {
+	if surbs_header {
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
 		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_FROM_SURBS[..]);
 	}
@@ -339,7 +342,7 @@ fn create_header<T: Rng + CryptoRng>(
 		sprp_keys.push(k);
 		i += 1
 	}
-	return Ok((header, sprp_keys))
+	return Ok((header, sprp_keys, surbs_id))
 }
 
 /// Create a new sphinx packet
@@ -348,15 +351,17 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	path: Vec<PathHop>,
 	payload: Vec<u8>,
 	with_surbs: Option<(NodeId, Vec<PathHop>)>,
-) -> Result<(Vec<u8>, Option<Vec<SprpKey>>), Error> {
-	let (header, sprp_keys) = create_header(&mut rng, path, false, with_surbs.is_some())?;
+) -> Result<(Vec<u8>, Option<(Vec<SprpKey>, ReplayTag)>), Error> {
+	let (header, sprp_keys, _) = create_header(&mut rng, path, false, with_surbs.is_some())?;
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
 	let surbs_key = if let Some((id, path)) = with_surbs {
 		// TODO Box<[u8; FIX_LEN]>?? for all packet!!
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
-		let (header, sprp_keys) = create_header(&mut rng, path, true, false)?;
+		let (header, sprp_keys, surbs_id) = create_header(&mut rng, path, true, false)?;
+		let surbs_id = surbs_id.unwrap();
+
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone() };
@@ -371,7 +376,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		debug_assert!(
 			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURBS_REPLY_SIZE + payload.len()
 		);
-		Some(sprp_keys)
+		Some((sprp_keys, surbs_id))
 	} else {
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + payload.len());
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -451,6 +456,7 @@ pub fn unwrap_packet(
 
 	// Append padding to preserve length invariance, decrypt the (padded)
 	// routing_info block, and extract the section for the current hop.
+	// TODO padding only for forward: does not matter that much
 	let mut stream_cipher = StreamCipher::new(&keys.header_encryption, &keys.header_encryption_iv);
 	let mut a = [0u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
 	let mut b = [0u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
@@ -506,8 +512,10 @@ pub fn unwrap_packet(
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
 		DoNextHop::SurbsReply => {
-			let index = SprpKey { key: keys.payload_encryption };
-			if let Some(surbs) = surbs.pending.remove(&index) {
+			let surbs_id = ReplayTag(hash(shared_secret.as_bytes()));
+			// TODO could systematically query and skip header reading,
+			// but here we check mac.
+			if let Some(surbs) = surbs.pending.remove(&surbs_id) {
 				let mut decrypted_payload = payload.to_vec();
 				let nb_key = surbs.keys.len();
 				for key in surbs.keys[..nb_key - 1].iter().rev() {
@@ -524,7 +532,7 @@ pub fn unwrap_packet(
 				}
 				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO attach origin message??
 			} else {
-				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &index);
+				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", surbs_id);
 				return Err(Error::MissingSurbs)
 			}
 		},
@@ -534,7 +542,7 @@ pub fn unwrap_packet(
 pub struct SurbsCollection {
 	// TODO LRU this so we clean up old persistance.
 	// TODO define collection in sphinx module? (rem lot of pub)
-	pending: HashMap<SprpKey, SurbsPersistance>,
+	pending: HashMap<ReplayTag, SurbsPersistance>,
 }
 
 impl SurbsCollection {
@@ -542,8 +550,8 @@ impl SurbsCollection {
 		SurbsCollection { pending: HashMap::new() }
 	}
 
-	pub fn insert(&mut self, surb: SurbsPersistance) {
-		self.pending.insert(surb.surbs_id().clone(), surb);
+	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
+		self.pending.insert(surb_id, surb);
 	}
 }
 #[cfg(test)]
@@ -607,9 +615,9 @@ mod test {
 			// Create the packet.
 			let (mut packet, surbs_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
-			if let Some(keys) = surbs_keys {
+			if let Some((keys, surbs_id)) = surbs_keys {
 				let persistance = crate::core::sphinx::SurbsPersistance { keys };
-				surbs_collection.insert(persistance);
+				surbs_collection.insert(surbs_id, persistance);
 			}
 
 			// Unwrap the packet, validating the output.

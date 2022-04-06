@@ -52,6 +52,8 @@ pub const KEY_SIZE: usize = 32;
 /// the size of the DH group element in bytes.
 pub const GROUP_ELEMENT_SIZE: usize = KEY_SIZE;
 
+pub const HASH_OUTPUT_SIZE: usize = 32;
+
 const KDF_OUTPUT_SIZE: usize =
 	MAC_KEY_SIZE + STREAM_KEY_SIZE + STREAM_IV_SIZE + SPRP_KEY_SIZE + KEY_SIZE;
 
@@ -118,6 +120,14 @@ pub fn hkdf_expand(prk: &[u8], info: &[u8]) -> [u8; KDF_OUTPUT_SIZE] {
 	let hk = Hkdf::<Sha256>::from_prk(prk).unwrap();
 	hk.expand(info, &mut output).unwrap();
 	output
+}
+
+
+/// Hash the input.
+pub fn hash(input: &[u8; KEY_SIZE]) -> [u8; HASH_OUTPUT_SIZE] {
+	let mut r = [0u8; HASH_OUTPUT_SIZE];
+	r.copy_from_slice(blake2_rfc::blake2b::blake2b(32, &[], &input[..]).as_bytes());
+	r
 }
 
 /// hmac returns the hmac of all the data slices using a given key

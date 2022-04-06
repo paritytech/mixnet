@@ -251,9 +251,9 @@ impl Mixnet {
 			let (packet, surbs_keys) = sphinx::new_packet(&mut rng, hops, chunk, chunk_surbs)
 				.map_err(|e| Error::SphinxError(e))?;
 			debug_assert!(packet.len() == PACKET_SIZE);
-			if let Some(keys) = surbs_keys {
+			if let Some((keys, surbs_id)) = surbs_keys {
 				let persistance = crate::core::sphinx::SurbsPersistance { keys };
-				self.surbs.insert(persistance);
+				self.surbs.insert(surbs_id, persistance);
 			}
 			packets.push((first_id, packet));
 		}
