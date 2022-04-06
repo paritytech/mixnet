@@ -21,6 +21,10 @@
 //! Mix message fragment management.
 //!
 //! Size is bounded to `MAX_MESSAGE_SIZE`.
+//!
+//! In case the content allow reply, the surbs must
+//! fit in the first fragment and is presence
+//! is only announced in this fragement.
 
 use super::Error;
 use crate::core::sphinx::{SurbsEncoded, SURBS_REPLY_SIZE};
@@ -294,9 +298,9 @@ pub fn create_cover_fragment<R: Rng>(rng: &mut R) -> Vec<u8> {
 
 #[cfg(test)]
 mod test {
+	use super::*;
 	use rand::{prelude::SliceRandom, RngCore};
 
-	use super::*;
 	#[test]
 	fn create_and_insert_small() {
 		let mut rng = rand::thread_rng();

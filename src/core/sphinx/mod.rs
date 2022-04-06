@@ -35,10 +35,12 @@
 ///! Sphinx packet format.
 mod crypto;
 
-use crate::core::PACKET_SIZE;
-use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE, HASH_OUTPUT_SIZE, hash};
+use crate::core::{ReplayTag, SurbsCollection, PACKET_SIZE};
+pub use crypto::HASH_OUTPUT_SIZE;
+use crypto::{
+	hash, PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE,
+};
 use rand::{CryptoRng, Rng};
-use std::collections::HashMap;
 use subtle::ConstantTimeEq;
 
 pub type StaticSecret = x25519_dalek::StaticSecret;
@@ -69,7 +71,7 @@ const AD_SIZE: usize = 2;
 
 /// The first section of our Sphinx packet, the authenticated
 /// unencrypted data containing version number.
-const V0_AD: [u8; 2] = [0u8; 2];
+const V0_AD: [u8; AD_SIZE] = [0u8; 2];
 
 /// The size in bytes of the payload tag.
 const PAYLOAD_TAG_SIZE: usize = 16;
@@ -84,7 +86,7 @@ pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INF
 pub(crate) const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
 
 /// The size in bytes of each routing info slot.
-const PER_HOP_ROUTING_INFO_SIZE: usize = DELAY_SIZE + MAC_SIZE + NODE_ID_SIZE;
+const PER_HOP_ROUTING_INFO_SIZE: usize = NODE_ID_SIZE + MAC_SIZE + DELAY_SIZE;
 
 /// The size in bytes of the routing info section of the packet
 /// header.
@@ -125,11 +127,6 @@ pub struct PathHop {
 	/// distribution.
 	pub delay: Option<Delay>,
 }
-
-/// Message id, use as surbs key and replay protection.
-/// This is the result of hashing the secret.
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub struct ReplayTag([u8; HASH_OUTPUT_SIZE]);
 
 /// SprpKey is a struct that contains a SPRP (Strong Pseudo-Random Permutation) key.
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -270,11 +267,7 @@ fn create_header<T: Rng + CryptoRng>(
 		group_elements.push(group_element.clone());
 	}
 
-	let surbs_id = if surbs_header {
-		Some(ReplayTag(hash(&shared_secret)))
-	} else {
-		None
-	};
+	let surbs_id = if surbs_header { Some(ReplayTag(hash(&shared_secret))) } else { None };
 	// Derive the routing_information keystream and encrypted padding
 	// for each hop.
 	let mut ri_keystream: Vec<Vec<u8>> = vec![];
@@ -495,7 +488,7 @@ pub fn unwrap_packet(
 			if zeros != decrypted_payload[..PAYLOAD_TAG_SIZE] {
 				return Err(Error::PayloadError)
 			}
-	
+
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			Ok(Unwrapped::Payload(decrypted_payload))
 		},
@@ -539,21 +532,6 @@ pub fn unwrap_packet(
 	}
 }
 
-pub struct SurbsCollection {
-	// TODO LRU this so we clean up old persistance.
-	// TODO define collection in sphinx module? (rem lot of pub)
-	pending: HashMap<ReplayTag, SurbsPersistance>,
-}
-
-impl SurbsCollection {
-	pub fn new() -> Self {
-		SurbsCollection { pending: HashMap::new() }
-	}
-
-	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
-		self.pending.insert(surb_id, surb);
-	}
-}
 #[cfg(test)]
 mod test {
 	use super::{crypto::KEY_SIZE, NodeId, PathHop, PublicKey, StaticSecret, Unwrapped, MAX_HOPS};

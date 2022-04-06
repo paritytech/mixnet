@@ -26,8 +26,7 @@ mod fragment;
 mod sphinx;
 mod topology;
 
-use crate::core::sphinx::SurbsCollection;
-pub use crate::core::sphinx::SurbsEncoded;
+pub use crate::core::sphinx::{SurbsEncoded, SurbsPersistance};
 pub use config::Config;
 pub use error::Error;
 use futures::FutureExt;
@@ -252,7 +251,7 @@ impl Mixnet {
 				.map_err(|e| Error::SphinxError(e))?;
 			debug_assert!(packet.len() == PACKET_SIZE);
 			if let Some((keys, surbs_id)) = surbs_keys {
-				let persistance = crate::core::sphinx::SurbsPersistance { keys };
+				let persistance = SurbsPersistance { keys };
 				self.surbs.insert(surbs_id, persistance);
 			}
 			packets.push((first_id, packet));
@@ -470,5 +469,26 @@ impl Mixnet {
 			}
 		}
 		Poll::Pending
+	}
+}
+
+/// Message id, use as surbs key and replay protection.
+/// This is the result of hashing the secret.
+#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+pub struct ReplayTag([u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
+
+pub struct SurbsCollection {
+	// TODO LRU this so we clean up old persistance.
+	// TODO define collection in sphinx module? (rem lot of pub)
+	pending: HashMap<ReplayTag, SurbsPersistance>,
+}
+
+impl SurbsCollection {
+	pub fn new() -> Self {
+		SurbsCollection { pending: HashMap::new() }
+	}
+
+	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
+		self.pending.insert(surb_id, surb);
 	}
 }

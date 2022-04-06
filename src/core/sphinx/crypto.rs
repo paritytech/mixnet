@@ -21,7 +21,8 @@
 //! Sphinx crypto primitives
 
 use aes::{
-	Aes128, cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher as AesStreamCipher},
+	cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher as AesStreamCipher},
+	Aes128,
 };
 
 use hkdf::Hkdf;
@@ -121,7 +122,6 @@ pub fn hkdf_expand(prk: &[u8], info: &[u8]) -> [u8; KDF_OUTPUT_SIZE] {
 	hk.expand(info, &mut output).unwrap();
 	output
 }
-
 
 /// Hash the input.
 pub fn hash(input: &[u8; KEY_SIZE]) -> [u8; HASH_OUTPUT_SIZE] {
