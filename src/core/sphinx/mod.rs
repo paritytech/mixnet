@@ -157,12 +157,11 @@ pub enum Unwrapped {
 	SurbsReply(Vec<u8>),
 }
 
-enum DoNextHop { // TODO use same as unwraped
-	// Forward.
-	Some(NextHop),
-	Query, // -> Payload
-	QueryWithSurbs, // -> SurbsQuery
-	Reply, // -> SurbsReply
+enum DoNextHop {
+	Forward(NextHop),
+	Payload,
+	SurbsQuery,
+	SurbsReply,
 }
 
 pub struct SurbsPersistance {
@@ -215,15 +214,15 @@ impl<'a> EncodedHop<'a> {
 		let mut id = [0u8; NODE_ID_SIZE];
 		id.copy_from_slice(&self.0[NEXT_HOP_OFFSET..NEXT_HOP_OFFSET + NODE_ID_SIZE]);
 		if id == TARGET_ID {
-			DoNextHop::Query
+			DoNextHop::Payload
 		} else if id == TARGET_ID_WITH_SURBS {
-			DoNextHop::QueryWithSurbs
+			DoNextHop::SurbsQuery
 		} else if id == TARGET_ID_FROM_SURBS {
-			DoNextHop::Reply
+			DoNextHop::SurbsReply
 		} else {
 			let mut mac = [0u8; MAC_SIZE];
 			mac.copy_from_slice(&self.0[NEXT_HOP_MAC_OFFSET..NEXT_HOP_MAC_OFFSET + MAC_SIZE]);
-			DoNextHop::Some(NextHop { id, mac })
+			DoNextHop::Forward(NextHop { id, mac })
 		}
 	}
 
@@ -470,7 +469,7 @@ pub fn unwrap_packet(
 
 	// Transform the packet for forwarding to the next mix
 	match maybe_next_hop {
-		DoNextHop::Some(next_hop) => {
+		DoNextHop::Forward(next_hop) => {
 			let decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecryptError)?;
@@ -482,7 +481,7 @@ pub fn unwrap_packet(
 			payload.copy_from_slice(&decrypted_payload);
 			Ok(Unwrapped::Forward((next_hop.id, delay, packet)))
 		},
-		DoNextHop::Query => {
+		DoNextHop::Payload => {
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecryptError)?;
@@ -494,7 +493,7 @@ pub fn unwrap_packet(
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			Ok(Unwrapped::Payload(decrypted_payload))
 		},
-		DoNextHop::QueryWithSurbs => {
+		DoNextHop::SurbsQuery => {
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecryptError)?;
@@ -506,7 +505,7 @@ pub fn unwrap_packet(
 			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
-		DoNextHop::Reply => {
+		DoNextHop::SurbsReply => {
 			let index = SprpKey { key: keys.payload_encryption };
 			if let Some(surbs) = surbs.pending.remove(&index) {
 				let mut decrypted_payload = payload.to_vec();
