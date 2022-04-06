@@ -273,7 +273,7 @@ fn create_header<T: Rng + CryptoRng>(
 	// Derive the routing_information keystream and encrypted padding
 	// for each hop.
 	let mut ri_keystream: Vec<Vec<u8>> = vec![];
-	let mut ri_padding: Vec<Vec<u8>> = vec![]; // TODO there is no need to have this buffer, can caluclate hmac in first loop
+	let mut ri_padding: Vec<Vec<u8>> = vec![];
 	for i in 0..num_hops {
 		let mut steam_cipher =
 			StreamCipher::new(&keys[i].header_encryption, &keys[i].header_encryption_iv);
@@ -294,7 +294,7 @@ fn create_header<T: Rng + CryptoRng>(
 
 	let skipped_hops = MAX_HOPS - num_hops;
 	if skipped_hops > 0 {
-		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]); // TODO isn't this padding?
+		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]);
 	}
 	if with_surbs {
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
