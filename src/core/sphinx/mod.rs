@@ -35,7 +35,7 @@
 ///! Sphinx packet format.
 mod crypto;
 
-use crate::core::{ReplayTag, SurbsCollection, PACKET_SIZE};
+use crate::core::{ReplayTag, SurbsCollection, ReplayFilter, PACKET_SIZE};
 pub use crypto::HASH_OUTPUT_SIZE;
 use crypto::{
 	hash, PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE,
@@ -114,6 +114,8 @@ pub enum Error {
 	PayloadEncryptError,
 	/// Surbs missing error.
 	MissingSurbs,
+	/// Message already seen.
+	ReplayError,
 }
 
 /// PathHop describes a route hop that a Sphinx Packet will traverse,
@@ -414,6 +416,7 @@ pub fn unwrap_packet(
 	private_key: &StaticSecret,
 	mut packet: Vec<u8>,
 	surbs: &mut SurbsCollection,
+	filter: &mut ReplayFilter,
 ) -> Result<Unwrapped, Error> {
 	// Split into mutable references and validate the AD
 	if packet.len() < HEADER_SIZE {
@@ -433,6 +436,12 @@ pub fn unwrap_packet(
 	// Calculate the hop's shared secret, and replay_tag.
 	let mut group_element = PublicKey::from(*group_element_bytes);
 	let shared_secret = private_key.diffie_hellman(&group_element);
+
+	let replay_tag = ReplayTag(hash(shared_secret.as_bytes()));
+	if filter.contains(&replay_tag) {
+			log::trace!(target: "mixnet", "Seen replay {:?}", &replay_tag);
+		return Err(Error::ReplayError)
+	}
 
 	// Derive the various keys required for packet processing.
 	let keys = crypto::kdf(shared_secret.as_bytes());
@@ -465,7 +474,6 @@ pub fn unwrap_packet(
 	// Decrypt the Sphinx Packet Payload.
 	let mut p = vec![0u8; payload.len()];
 	p.copy_from_slice(&payload[..]);
-
 	// Transform the packet for forwarding to the next mix
 	match maybe_next_hop {
 		DoNextHop::Forward(next_hop) => {
@@ -478,6 +486,7 @@ pub fn unwrap_packet(
 			routing_info.copy_from_slice(new_routing_info);
 			header_mac.copy_from_slice(&next_hop.mac);
 			payload.copy_from_slice(&decrypted_payload);
+			filter.insert(replay_tag);
 			Ok(Unwrapped::Forward((next_hop.id, delay, packet)))
 		},
 		DoNextHop::Payload => {
@@ -490,6 +499,7 @@ pub fn unwrap_packet(
 			}
 
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
+			filter.insert(replay_tag);
 			Ok(Unwrapped::Payload(decrypted_payload))
 		},
 		DoNextHop::SurbsQuery => {
@@ -502,13 +512,13 @@ pub fn unwrap_packet(
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
+			filter.insert(replay_tag);
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
 		DoNextHop::SurbsReply => {
-			let surbs_id = ReplayTag(hash(shared_secret.as_bytes()));
 			// TODO could systematically query and skip header reading,
 			// but here we check mac.
-			if let Some(surbs) = surbs.pending.remove(&surbs_id) {
+			if let Some(surbs) = surbs.pending.remove(&replay_tag) {
 				let mut decrypted_payload = payload.to_vec();
 				let nb_key = surbs.keys.len();
 				for key in surbs.keys[..nb_key - 1].iter().rev() {
@@ -525,7 +535,7 @@ pub fn unwrap_packet(
 				}
 				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO attach origin message??
 			} else {
-				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", surbs_id);
+				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
 				return Err(Error::MissingSurbs)
 			}
 		},
@@ -589,6 +599,7 @@ mod test {
 			let path = _tuple.1;
 			let path_c = path.clone();
 			let mut surbs_collection = super::SurbsCollection::new();
+			let mut replay_filter = super::ReplayFilter::new();
 
 			// Create the packet.
 			let (mut packet, surbs_keys) =
@@ -601,7 +612,7 @@ mod test {
 			// Unwrap the packet, validating the output.
 			for i in 0..num_hops {
 				let unwrap_result =
-					super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection)
+					super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection, &mut replay_filter)
 						.unwrap();
 
 				if i == nodes.len() - 1 {

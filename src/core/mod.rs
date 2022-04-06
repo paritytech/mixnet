@@ -37,7 +37,7 @@ use rand_distr::Distribution;
 pub use sphinx::Error as SphinxError;
 use std::{
 	cmp::Ordering,
-	collections::{BinaryHeap, HashMap},
+	collections::{BinaryHeap, HashMap, HashSet},
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
@@ -145,6 +145,8 @@ pub struct Mixnet {
 	fragments: fragment::MessageCollection,
 	// Message waiting for surbs.
 	surbs: SurbsCollection,
+	// Received message filter.
+	replay_filter: ReplayFilter,
 	// Real messages queue, sorted by deadline.
 	packet_queue: BinaryHeap<QueuedPacket>,
 	// Timer for the next poll for messages.
@@ -172,6 +174,7 @@ impl Mixnet {
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
 			surbs: SurbsCollection::new(),
+			replay_filter: ReplayFilter::new(),
 		}
 	}
 
@@ -294,7 +297,7 @@ impl Mixnet {
 		if message.len() != PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
-		let result = sphinx::unwrap_packet(&self.secret, message, &mut self.surbs);
+		let result = sphinx::unwrap_packet(&self.secret, message, &mut self.surbs, &mut self.replay_filter);
 		match result {
 			Err(e) => {
 				log::debug!(target: "mixnet", "Error unpacking message received from {} :{:?}", peer_id, e);
@@ -490,5 +493,27 @@ impl SurbsCollection {
 
 	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
 		self.pending.insert(surb_id, surb);
+	}
+}
+
+/// Forbid replaying filter.
+/// TODO lru the filters over a ttl which should be similar to key rotation.
+/// TODO also lru over a max number of elements.
+/// TODO eventually bloom filter and disk backend.
+pub struct ReplayFilter {
+	seen: HashSet<ReplayTag>,
+}
+
+impl ReplayFilter {
+	pub fn new() -> Self {
+		ReplayFilter { seen: HashSet::new() }
+	}
+
+	pub fn insert(&mut self, tag: ReplayTag) {
+		self.seen.insert(tag);
+	}
+
+	pub fn contains(&mut self, tag: &ReplayTag) -> bool {
+		self.seen.contains(tag)
 	}
 }
