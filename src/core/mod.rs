@@ -217,7 +217,7 @@ impl Mixnet {
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
-		let chunks = fragment::create_fragments(message, with_surbs)?;
+		let chunks = fragment::create_fragments(&mut rng, message, with_surbs)?;
 		let paths = self.random_paths(&peer_id, chunks.len(), false)?;
 
 		let mut surbs = if with_surbs {
@@ -273,7 +273,7 @@ impl Mixnet {
 		let SurbsEncoded { first_node, first_key, header } = surbs;
 		let mut rng = rand::thread_rng(); // TODO get a handle to rng in self.
 
-		let mut chunks = fragment::create_fragments(message, false)?;
+		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
 		if chunks.len() != 1 {
 			return Err(Error::BadSurbsLength)
 		}
