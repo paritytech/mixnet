@@ -76,8 +76,8 @@ const V0_AD: [u8; AD_SIZE] = [0u8; 2];
 /// The size in bytes of the payload tag.
 const PAYLOAD_TAG_SIZE: usize = 16;
 
-/// Standard payload without surbs.
-const NO_SURBS: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
+/// Tag for payload authentication purpose.
+const PAYLOAD_TAG: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
 
 /// The size of the Sphinx packet header in bytes.
 pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
@@ -493,11 +493,9 @@ pub fn unwrap_packet(
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecryptError)?;
-			let zeros = [0u8; PAYLOAD_TAG_SIZE];
-			if zeros != decrypted_payload[..PAYLOAD_TAG_SIZE] {
+			if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
 				return Err(Error::PayloadError)
 			}
-
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			filter.insert(replay_tag);
 			Ok(Unwrapped::Payload(decrypted_payload))
@@ -506,8 +504,7 @@ pub fn unwrap_packet(
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecryptError)?;
-			let zeros = [0u8; PAYLOAD_TAG_SIZE];
-			if zeros != decrypted_payload[..PAYLOAD_TAG_SIZE] {
+			if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
 				return Err(Error::PayloadError)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
@@ -528,11 +525,10 @@ pub fn unwrap_packet(
 				let first_key = &surbs.keys[nb_key - 1].key;
 				decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
 					.map_err(|_| Error::PayloadDecryptError)?;
-				if decrypted_payload[..PAYLOAD_TAG_SIZE] == NO_SURBS {
-					let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				} else {
+				if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
 					return Err(Error::PayloadError)
 				}
+				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO attach origin message??
 			} else {
 				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
