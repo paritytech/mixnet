@@ -143,7 +143,9 @@ impl IncompleteMessage {
 	}
 
 	fn total_expected_fragments(&self) -> usize {
-		self.target_len as usize / FRAGMENT_PAYLOAD_SIZE + 1 // TODO incorrect with surbs (but only in logs)
+		// Not that when surbs is attached there may be a error of one unit due to additional
+		// space used by surbs.
+		self.target_len as usize / FRAGMENT_PAYLOAD_SIZE + 1
 	}
 
 	fn reconstruct(mut self) -> Result<(Vec<u8>, Option<SurbsEncoded>), Error> {

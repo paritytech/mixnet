@@ -136,14 +136,6 @@ pub struct SprpKey {
 	pub key: [u8; SPRP_KEY_SIZE],
 }
 
-impl SprpKey {
-	// TODO rename, or remove by reusing the local key.
-	pub fn new<T: Rng + CryptoRng>(rng: &mut T) -> Self {
-		let mut raw_key: [u8; SPRP_KEY_SIZE] = [0u8; SPRP_KEY_SIZE];
-		rng.fill_bytes(&mut raw_key);
-		SprpKey { key: raw_key }
-	}
-}
 fn blind(pk: PublicKey, factor: [u8; KEY_SIZE]) -> PublicKey {
 	PublicKey::from(x25519_dalek::x25519(factor, pk.to_bytes()))
 }
@@ -173,10 +165,9 @@ pub struct SurbsPersistance {
 	pub keys: Vec<SprpKey>,
 }
 
-// TODO rename SurbsEnvelop or SurbsReply?
 #[derive(Eq, PartialEq, Debug)]
 pub struct SurbsEncoded {
-	pub id: [u8; NODE_ID_SIZE], // TODO rename first_node
+	pub first_node: [u8; NODE_ID_SIZE],
 	pub first_key: SprpKey,
 	pub header: [u8; HEADER_SIZE],
 }
@@ -186,13 +177,13 @@ impl From<Vec<u8>> for SurbsEncoded {
 		let buf = array_mut_ref![encoded, 0, SURBS_REPLY_SIZE];
 		let (id, first_key, header) =
 			mut_array_refs![buf, NODE_ID_SIZE, SPRP_KEY_SIZE, HEADER_SIZE];
-		SurbsEncoded { id: *id, first_key: SprpKey { key: *first_key }, header: *header }
+		SurbsEncoded { first_node: *id, first_key: SprpKey { key: *first_key }, header: *header }
 	}
 }
 
 impl SurbsEncoded {
 	fn append(&self, dest: &mut Vec<u8>) {
-		dest.extend_from_slice(&self.id[..]);
+		dest.extend_from_slice(&self.first_node[..]);
 		dest.extend_from_slice(&self.first_key.key[..]);
 		dest.extend_from_slice(&self.header[..]);
 	}
@@ -260,7 +251,6 @@ fn create_header<T: Rng + CryptoRng>(
 		shared_secret = secret_key.diffie_hellman(&path[i].public_key).to_bytes();
 		let mut j = 0;
 		while j < i {
-			// TODO double loop is dumb,
 			shared_secret = x25519_dalek::x25519(keys[j].blinding_factor, shared_secret);
 			j += 1;
 		}
@@ -351,7 +341,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
-	let surbs_key = if let Some((id, path)) = with_surbs {
+	let surbs_key = if let Some((first_node, path)) = with_surbs {
 		// TODO Box<[u8; FIX_LEN]>?? for all packet!!
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
 		let (header, sprp_keys, surbs_id) = create_header(&mut rng, path, true, false)?;
@@ -360,7 +350,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone() };
-		let encoded = SurbsEncoded { id, first_key, header };
+		let encoded = SurbsEncoded { first_node, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);
 		debug_assert!(
@@ -458,7 +448,6 @@ pub fn unwrap_packet(
 
 	// Append padding to preserve length invariance, decrypt the (padded)
 	// routing_info block, and extract the section for the current hop.
-	// TODO padding only for forward: does not matter that much
 	let mut stream_cipher = StreamCipher::new(&keys.header_encryption, &keys.header_encryption_iv);
 	let mut a = [0u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
 	let mut b = [0u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
@@ -514,7 +503,7 @@ pub fn unwrap_packet(
 		},
 		DoNextHop::SurbsReply => {
 			// TODO could systematically query and skip header reading,
-			// but here we check mac.
+			// but here we check mac. 
 			if let Some(surbs) = surbs.pending.remove(&replay_tag) {
 				let mut decrypted_payload = payload.to_vec();
 				let nb_key = surbs.keys.len();
@@ -529,7 +518,7 @@ pub fn unwrap_packet(
 					return Err(Error::PayloadError)
 				}
 				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO attach origin message??
+				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO optionally attach origin message??
 			} else {
 				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
 				return Err(Error::MissingSurbs)

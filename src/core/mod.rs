@@ -270,7 +270,7 @@ impl Mixnet {
 	/// Send a new surbs message to the network.
 	/// Message cannot be bigger than a single fragment.
 	pub fn register_surbs(&mut self, message: Vec<u8>, surbs: SurbsEncoded) -> Result<(), Error> {
-		let SurbsEncoded { id, first_key, header } = surbs;
+		let SurbsEncoded { first_node, first_key, header } = surbs;
 		let mut rng = rand::thread_rng(); // TODO get a handle to rng in self.
 
 		let mut chunks = fragment::create_fragments(message, false)?;
@@ -281,7 +281,7 @@ impl Mixnet {
 		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0), header)
 			.map_err(|e| Error::SphinxError(e))?;
 		let delay = exp_delay(&mut rng, self.average_hop_delay);
-		let dest = to_libp2p_id(id)?;
+		let dest = to_libp2p_id(first_node)?;
 		self.queue_packet(dest, packet, delay)?;
 		Ok(())
 	}
@@ -321,7 +321,6 @@ impl Mixnet {
 			},
 			Ok(Unwrapped::SurbsQuery(encoded_surbs, payload)) => {
 				debug_assert!(encoded_surbs.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
-				// TODO return SurbsEncode with message.
 				if let Some(m) =
 					self.fragments.insert_fragment(payload, Some(encoded_surbs.into()))?
 				{
