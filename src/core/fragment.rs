@@ -1,5 +1,4 @@
 // Copyright 2022 Parity Technologies (UK) Ltd.
-//
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
 // to deal in the Software without restriction, including without limitation
@@ -44,9 +43,6 @@ pub const FRAGMENT_PACKET_SIZE: usize = 2048;
 const FRAGMENT_HEADER_SIZE: usize = 32 + 4 + 4;
 const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
-/// Surbs presence is higher byte of be encoding of the number of fragment.
-/// Can only conflict if the effective message size is less than a byte.
-const MASK_SURBS_U8: u8 = 1 << 7;
 
 const FRAGMENT_EXPIRATION_MS: u64 = 10000;
 
@@ -72,19 +68,8 @@ impl<'a> FragmentHeader<'a> {
 		self.0[32..36].copy_from_slice(&len.to_be_bytes())
 	}
 
-	fn set_has_surbs(&mut self, has_surbs: bool) {
-		if has_surbs {
-			self.0[36] |= MASK_SURBS_U8;
-		} else {
-			self.0[36] &= !MASK_SURBS_U8;
-		}
-	}
-
 	fn set_index(&mut self, index: u32) {
 		let mut index = index.to_be_bytes();
-		if self.has_surbs() {
-			index[0] |= MASK_SURBS_U8;
-		}
 		self.0[36..40].copy_from_slice(&index)
 	}
 
@@ -107,12 +92,7 @@ impl<'a> FragmentHeader<'a> {
 	fn index(&self) -> u32 {
 		let mut index: [u8; 4] = Default::default();
 		index.copy_from_slice(&self.0[36..40]);
-		index[0] &= !MASK_SURBS_U8;
 		u32::from_be_bytes(index)
-	}
-
-	fn has_surbs(&self) -> bool {
-		(self.0[36] & MASK_SURBS_U8) > 0
 	}
 
 	fn is_cover(&self) -> bool {
@@ -236,9 +216,9 @@ impl MessageCollection {
 	}
 
 	/// Perform periodic maintenance. Messages that sit in the collection for too long are expunged.
-	pub fn cleanup(&mut self) {
-		let now = Instant::now();
+	pub fn cleanup(&mut self, now: Instant) {
 		let count = self.messages.len();
+		// TODO rewrite with orderd list
 		self.messages.retain(|_, m| m.expires > now);
 		let removed = count - self.messages.len();
 		if removed > 0 {
@@ -278,7 +258,6 @@ pub fn create_fragments(mut message: Vec<u8>, with_surbs: bool) -> Result<Vec<Ve
 		let mut header = FragmentHeader::new(&mut fragment);
 		header.set_hash(hash);
 		header.set_message_len(message_len as u32);
-		header.set_has_surbs(with_surbs);
 		header.set_index(n as u32);
 		fragment.extend_from_slice(chunk);
 		fragments.push(fragment);

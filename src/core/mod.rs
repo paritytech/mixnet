@@ -438,7 +438,10 @@ impl Mixnet {
 	}
 
 	fn cleanup(&mut self) {
-		self.fragments.cleanup();
+		let now = Instant::now();
+		self.fragments.cleanup(now);
+		self.surbs.cleanup(now);
+		self.replay_filter.cleanup(now);
 	}
 
 	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
@@ -493,6 +496,10 @@ impl SurbsCollection {
 	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
 		self.pending.insert(surb_id, surb);
 	}
+
+	fn cleanup(&mut self, now: Instant) {
+		// TODO implement
+	}
 }
 
 /// Forbid replaying filter.
@@ -514,5 +521,9 @@ impl ReplayFilter {
 
 	pub fn contains(&mut self, tag: &ReplayTag) -> bool {
 		self.seen.contains(tag)
+	}
+
+	fn cleanup(&mut self, now: Instant) {
+		// TODO implement
 	}
 }
