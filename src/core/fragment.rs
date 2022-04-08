@@ -240,6 +240,17 @@ impl MessageCollection {
 					log::trace!(target: "mixnet", "Fragment complete");
 					let ix = e.get().expires_ix - self.exp_deque_offset;
 					self.exp_deque[ix.0].1 = None;
+					loop {
+						if let Some(first) = self.exp_deque.front() {
+							if first.1.is_some() {
+								break;
+							}
+						} else {
+							break;
+						}
+						self.exp_deque.pop_front();
+						self.exp_deque_offset += Wrapping(1);
+					}
 					return Ok(Some(e.remove().reconstruct()?))
 				}
 			},
