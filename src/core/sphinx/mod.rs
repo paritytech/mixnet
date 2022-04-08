@@ -86,7 +86,7 @@ pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INF
 pub(crate) const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
 
 /// The size in bytes of each routing info slot.
-const PER_HOP_ROUTING_INFO_SIZE: usize = NODE_ID_SIZE + MAC_SIZE + DELAY_SIZE;
+const PER_HOP_ROUTING_INFO_SIZE: usize = NODE_ID_SIZE + MAC_SIZE;
 
 /// The size in bytes of the routing info section of the packet
 /// header.
@@ -96,9 +96,7 @@ const GROUP_ELEMENT_OFFSET: usize = AD_SIZE;
 const ROUTING_INFO_OFFSET: usize = GROUP_ELEMENT_OFFSET + GROUP_ELEMENT_SIZE;
 const MAC_OFFSET: usize = ROUTING_INFO_OFFSET + ROUTING_INFO_SIZE;
 
-const DELAY_SIZE: usize = 4;
-const NEXT_HOP_OFFSET: usize = DELAY_SIZE;
-const NEXT_HOP_MAC_OFFSET: usize = NEXT_HOP_OFFSET + NODE_ID_SIZE;
+const NEXT_HOP_MAC_OFFSET: usize = NODE_ID_SIZE;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -192,15 +190,9 @@ impl SurbsEncoded {
 struct EncodedHop<'a>(&'a mut [u8]);
 
 impl<'a> EncodedHop<'a> {
-	fn delay(&self) -> Delay {
-		let mut bytes = [0u8; DELAY_SIZE];
-		bytes.copy_from_slice(&self.0[0..DELAY_SIZE]);
-		Delay::from_be_bytes(bytes)
-	}
-
 	fn next_hop(&self) -> DoNextHop {
 		let mut id = [0u8; NODE_ID_SIZE];
-		id.copy_from_slice(&self.0[NEXT_HOP_OFFSET..NEXT_HOP_OFFSET + NODE_ID_SIZE]);
+		id.copy_from_slice(&self.0[..NODE_ID_SIZE]);
 		if id == TARGET_ID {
 			DoNextHop::Payload
 		} else if id == TARGET_ID_WITH_SURBS {
@@ -214,12 +206,8 @@ impl<'a> EncodedHop<'a> {
 		}
 	}
 
-	fn set_delay(&mut self, delay: u32) {
-		self.0[0..DELAY_SIZE].copy_from_slice(&delay.to_be_bytes());
-	}
-
 	fn set_next_hop(&mut self, hop: NextHop) {
-		self.0[NEXT_HOP_OFFSET..NEXT_HOP_OFFSET + NODE_ID_SIZE].copy_from_slice(&hop.id);
+		self.0[..NODE_ID_SIZE].copy_from_slice(&hop.id);
 		self.0[NEXT_HOP_MAC_OFFSET..NEXT_HOP_MAC_OFFSET + MAC_SIZE].copy_from_slice(&hop.mac);
 	}
 }
@@ -287,11 +275,11 @@ fn create_header<T: Rng + CryptoRng>(
 		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]);
 	}
 	if with_surbs {
-		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
+		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE;
 		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
 	}
 	if surbs_header {
-		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE + DELAY_SIZE;
+		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE;
 		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_FROM_SURBS[..]);
 	}
 	let mut hop_index = num_hops - 1;
@@ -299,7 +287,6 @@ fn create_header<T: Rng + CryptoRng>(
 		let hop_slice = &mut routing_info[hop_index * PER_HOP_ROUTING_INFO_SIZE..];
 		let mut hop = EncodedHop(hop_slice);
 		if hop_index != num_hops - 1 {
-			hop.set_delay(path[hop_index + 1].delay.unwrap_or(0));
 			hop.set_next_hop(NextHop { id: path[hop_index + 1].id, mac: mac.clone() });
 		}
 
@@ -407,6 +394,7 @@ pub fn unwrap_packet(
 	mut packet: Vec<u8>,
 	surbs: &mut SurbsCollection,
 	filter: &mut ReplayFilter,
+	next_delay: impl FnOnce() -> u32,
 ) -> Result<Unwrapped, Error> {
 	// Split into mutable references and validate the AD
 	if packet.len() < HEADER_SIZE {
@@ -458,7 +446,6 @@ pub fn unwrap_packet(
 	// Parse the per-hop routing commands.
 	let hop = EncodedHop(cmd_buf);
 	let maybe_next_hop = hop.next_hop();
-	let delay = hop.delay(); // TODO remove delay and use our local mix strat?
 
 	// Decrypt the Sphinx Packet Payload.
 	let mut p = vec![0u8; payload.len()];
@@ -476,7 +463,8 @@ pub fn unwrap_packet(
 			header_mac.copy_from_slice(&next_hop.mac);
 			payload.copy_from_slice(&decrypted_payload);
 			filter.insert(replay_tag);
-			Ok(Unwrapped::Forward((next_hop.id, delay, packet)))
+
+			Ok(Unwrapped::Forward((next_hop.id, next_delay(), packet)))
 		},
 		DoNextHop::Payload => {
 			let mut decrypted_payload =
@@ -596,8 +584,9 @@ mod test {
 
 			// Unwrap the packet, validating the output.
 			for i in 0..num_hops {
+				let next_delay = || path_c[i + 1].delay.unwrap();
 				let unwrap_result =
-					super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection, &mut replay_filter)
+					super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection, &mut replay_filter, next_delay)
 						.unwrap();
 
 				if i == nodes.len() - 1 {
@@ -613,7 +602,7 @@ mod test {
 						_ => panic!("Unexpected result"),
 					};
 					let hop = &path_c[i + 1];
-					assert_eq!(delay, hop.delay.unwrap());
+					assert_eq!(delay, hop.delay.unwrap()); // a bit useless test with delay out of frame
 					assert_eq!(id, hop.id);
 					packet = next;
 				}

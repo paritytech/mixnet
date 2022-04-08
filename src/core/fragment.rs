@@ -277,7 +277,6 @@ impl MessageCollection {
 
 /// Utility function to split message body into equal-sized chunks. Each chunk contains a header
 /// that allows for message reconstruction.
-/// TODO rng in imput could be ok as not crypto
 pub fn create_fragments(rng: &mut impl Rng, mut message: Vec<u8>, with_surbs: bool) -> Result<Vec<Vec<u8>>, Error> {
 	assert!(SURBS_REPLY_SIZE < FRAGMENT_FIRST_CHUNK_PAYLOAD_SIZE); // TODO const assert?
 	let surbs_len = if with_surbs { SURBS_REPLY_SIZE } else { 0 };

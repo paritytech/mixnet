@@ -297,7 +297,9 @@ impl Mixnet {
 		if message.len() != PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
-		let result = sphinx::unwrap_packet(&self.secret, message, &mut self.surbs, &mut self.replay_filter);
+
+		let next_delay = || exp_delay(&mut rand::thread_rng(), self.average_hop_delay).as_millis() as u32;
+		let result = sphinx::unwrap_packet(&self.secret, message, &mut self.surbs, &mut self.replay_filter, next_delay);
 		match result {
 			Err(e) => {
 				log::debug!(target: "mixnet", "Error unpacking message received from {} :{:?}", peer_id, e);
