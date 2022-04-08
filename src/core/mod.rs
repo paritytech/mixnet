@@ -37,7 +37,8 @@ use rand_distr::Distribution;
 pub use sphinx::Error as SphinxError;
 use std::{
 	cmp::Ordering,
-	collections::{BinaryHeap, HashMap, HashSet},
+	collections::{BinaryHeap, HashMap, VecDeque},
+	num::Wrapping,
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
@@ -298,8 +299,15 @@ impl Mixnet {
 			return Err(Error::BadFragment)
 		}
 
-		let next_delay = || exp_delay(&mut rand::thread_rng(), self.average_hop_delay).as_millis() as u32;
-		let result = sphinx::unwrap_packet(&self.secret, message, &mut self.surbs, &mut self.replay_filter, next_delay);
+		let next_delay =
+			|| exp_delay(&mut rand::thread_rng(), self.average_hop_delay).as_millis() as u32;
+		let result = sphinx::unwrap_packet(
+			&self.secret,
+			message,
+			&mut self.surbs,
+			&mut self.replay_filter,
+			next_delay,
+		);
 		match result {
 			Err(e) => {
 				log::debug!(target: "mixnet", "Error unpacking message received from {} :{:?}", peer_id, e);
@@ -484,15 +492,17 @@ impl Mixnet {
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub struct ReplayTag([u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
 
+const SURBS_TTL_MS: u64 = 100_000; // TODO in config
+
 pub struct SurbsCollection {
 	// TODO LRU this so we clean up old persistance.
 	// TODO define collection in sphinx module? (rem lot of pub)
-	pending: HashMap<ReplayTag, SurbsPersistance>,
+	pending: MixnetCollection<ReplayTag, SurbsPersistance>,
 }
 
 impl SurbsCollection {
 	pub fn new() -> Self {
-		SurbsCollection { pending: HashMap::new() }
+		SurbsCollection { pending: MixnetCollection::new(SURBS_TTL_MS) }
 	}
 
 	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
@@ -500,9 +510,11 @@ impl SurbsCollection {
 	}
 
 	fn cleanup(&mut self, now: Instant) {
-		// TODO implement
+		self.pending.cleanup(now);
 	}
 }
+
+const REPLAY_TTL_MS: u64 = 100_000; // TODO in config
 
 /// Filter packet that have already be seen filter.
 /// Warning, this is a weak security, and does not avoid
@@ -512,16 +524,16 @@ impl SurbsCollection {
 /// TODO also lru over a max number of elements.
 /// TODO eventually bloom filter and disk backend.
 pub struct ReplayFilter {
-	seen: HashSet<ReplayTag>,
+	seen: MixnetCollection<ReplayTag, ()>,
 }
 
 impl ReplayFilter {
 	pub fn new() -> Self {
-		ReplayFilter { seen: HashSet::new() }
+		ReplayFilter { seen: MixnetCollection::new(REPLAY_TTL_MS) }
 	}
 
 	pub fn insert(&mut self, tag: ReplayTag) {
-		self.seen.insert(tag);
+		self.seen.insert(tag, ());
 	}
 
 	pub fn contains(&mut self, tag: &ReplayTag) -> bool {
@@ -529,6 +541,100 @@ impl ReplayFilter {
 	}
 
 	fn cleanup(&mut self, now: Instant) {
-		// TODO implement
+		self.seen.cleanup(now);
+	}
+}
+
+// TODO this could be optimize, but here simple size inefficient implementation
+struct MixnetCollection<K, V> {
+	messages: HashMap<K, (V, Wrapping<usize>)>,
+	expiration: Duration,
+	exp_deque: VecDeque<(Instant, Option<K>)>,
+	exp_deque_offset: Wrapping<usize>,
+}
+
+type Entry<'a, K, V> = std::collections::hash_map::Entry<'a, K, (V, Wrapping<usize>)>;
+
+impl<K, V> MixnetCollection<K, V>
+where
+	K: Eq + std::hash::Hash + Clone,
+{
+	pub fn new(expiration_ms: u64) -> Self {
+		Self {
+			messages: Default::default(),
+			expiration: Duration::from_millis(expiration_ms),
+			exp_deque: VecDeque::new(),
+			exp_deque_offset: Wrapping(0),
+		}
+	}
+
+	pub fn insert(&mut self, key: K, value: V) {
+		let ix = self.next_inserted_entry();
+		self.messages.insert(key.clone(), (value, ix));
+		self.inserted_entry(key)
+	}
+
+	pub fn remove(&mut self, key: &K) -> Option<V> {
+		if let Some((value, ix)) = self.messages.remove(key) {
+			self.removed(ix);
+			Some(value)
+		} else {
+			None
+		}
+	}
+
+	pub fn contains(&mut self, key: &K) -> bool {
+		self.messages.contains_key(key)
+	}
+
+	pub fn entry(&mut self, key: K) -> Entry<K, V> {
+		self.messages.entry(key)
+	}
+
+	pub fn removed_entry(&mut self, e: (V, Wrapping<usize>)) -> V {
+		self.removed(e.1);
+		e.0
+	}
+
+	fn removed(&mut self, ix: Wrapping<usize>) {
+		let ix = ix - self.exp_deque_offset;
+		self.exp_deque[ix.0].1 = None;
+		if let Some(first) = self.exp_deque.front() {
+			if first.1.is_some() {
+				return
+			}
+		} else {
+			return
+		}
+		self.exp_deque.pop_front();
+		self.exp_deque_offset += Wrapping(1);
+	}
+
+	pub fn next_inserted_entry(&self) -> Wrapping<usize> {
+		self.exp_deque_offset + Wrapping(self.exp_deque.len())
+	}
+
+	pub fn inserted_entry(&mut self, k: K) {
+		let expires = Instant::now() + self.expiration;
+		self.exp_deque.push_front((expires, Some(k)));
+	}
+
+	pub fn cleanup(&mut self, now: Instant) -> usize {
+		let count = self.messages.len();
+		loop {
+			if let Some(first) = self.exp_deque.front() {
+				if first.0 > now {
+					break
+				}
+				if let Some(first) = first.1.as_ref() {
+					self.messages.remove(first);
+				}
+			} else {
+				break
+			}
+			self.exp_deque.pop_front();
+			self.exp_deque_offset += Wrapping(1);
+		}
+		count - self.messages.len()
 	}
 }

@@ -35,7 +35,7 @@
 ///! Sphinx packet format.
 mod crypto;
 
-use crate::core::{ReplayTag, SurbsCollection, ReplayFilter, PACKET_SIZE};
+use crate::core::{ReplayFilter, ReplayTag, SurbsCollection, PACKET_SIZE};
 pub use crypto::HASH_OUTPUT_SIZE;
 use crypto::{
 	hash, PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE,
@@ -417,7 +417,7 @@ pub fn unwrap_packet(
 
 	let replay_tag = ReplayTag(hash(shared_secret.as_bytes()));
 	if filter.contains(&replay_tag) {
-			log::trace!(target: "mixnet", "Seen replay {:?}", &replay_tag);
+		log::trace!(target: "mixnet", "Seen replay {:?}", &replay_tag);
 		return Err(Error::ReplayError)
 	}
 
@@ -491,7 +491,7 @@ pub fn unwrap_packet(
 		},
 		DoNextHop::SurbsReply => {
 			// TODO could systematically query and skip header reading,
-			// but here we check mac. 
+			// but here we check mac.
 			if let Some(surbs) = surbs.pending.remove(&replay_tag) {
 				let mut decrypted_payload = payload.to_vec();
 				let nb_key = surbs.keys.len();
@@ -585,9 +585,14 @@ mod test {
 			// Unwrap the packet, validating the output.
 			for i in 0..num_hops {
 				let next_delay = || path_c[i + 1].delay.unwrap();
-				let unwrap_result =
-					super::unwrap_packet(&nodes[i].private_key, packet, &mut surbs_collection, &mut replay_filter, next_delay)
-						.unwrap();
+				let unwrap_result = super::unwrap_packet(
+					&nodes[i].private_key,
+					packet,
+					&mut surbs_collection,
+					&mut replay_filter,
+					next_delay,
+				)
+				.unwrap();
 
 				if i == nodes.len() - 1 {
 					let p = match unwrap_result {
