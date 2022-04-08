@@ -504,7 +504,10 @@ impl SurbsCollection {
 	}
 }
 
-/// Forbid replaying filter.
+/// Filter packet that have already be seen filter.
+/// Warning, this is a weak security, and does not avoid
+/// spaming the network. Just allow avoiding decoding payload
+/// or replying to existing payload.
 /// TODO lru the filters over a ttl which should be similar to key rotation.
 /// TODO also lru over a max number of elements.
 /// TODO eventually bloom filter and disk backend.

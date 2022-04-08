@@ -30,8 +30,8 @@ use crate::core::sphinx::{SurbsEncoded, SURBS_REPLY_SIZE};
 use instant::Duration;
 use rand::Rng;
 use std::{
-	collections::{hash_map::Entry, HashMap},
-	time::Instant,
+	collections::{hash_map::Entry, HashMap, VecDeque},
+	time::Instant, num::Wrapping,
 };
 
 struct FragmentHeaderFirstChunk<'a>(&'a mut [u8]);
@@ -128,7 +128,7 @@ struct IncompleteMessage {
 	target_hash: MessageHash,
 	fragments: HashMap<u32, Vec<u8>>,
 	surbs: Option<SurbsEncoded>,
-	expires: Instant,
+	expires_ix: Wrapping<usize>,
 }
 
 impl IncompleteMessage {
@@ -189,6 +189,9 @@ impl IncompleteMessage {
 pub struct MessageCollection {
 	messages: HashMap<MessageHash, IncompleteMessage>,
 	expiration: Duration,
+	// TODO this could be optimize with a specialized struct.
+	exp_deque: VecDeque<(Instant, Option<MessageHash>)>,
+	exp_deque_offset: Wrapping<usize>,
 }
 
 impl MessageCollection {
@@ -196,6 +199,8 @@ impl MessageCollection {
 		Self {
 			messages: Default::default(),
 			expiration: Duration::from_millis(FRAGMENT_EXPIRATION_MS),
+			exp_deque: VecDeque::new(),
+			exp_deque_offset: Wrapping(0),
 		}
 	}
 
@@ -233,6 +238,8 @@ impl MessageCollection {
 				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().num_fragments(), e.get().total_expected_fragments());
 				if e.get().is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
+					let ix = e.get().expires_ix - self.exp_deque_offset;
+					self.exp_deque[ix.0].1 = None;
 					return Ok(Some(e.remove().reconstruct()?))
 				}
 			},
@@ -243,13 +250,14 @@ impl MessageCollection {
 				} else {
 					(None, [0u8; 32])
 				};
+				let expires_ix = self.exp_deque_offset + Wrapping(self.exp_deque.len());
 				let mut message = IncompleteMessage {
 					target_hash: hash,
 					target_len,
 					target_iv,
 					fragments: Default::default(),
 					surbs,
-					expires: Instant::now() + self.expiration,
+					expires_ix,
 				};
 				message.fragments.insert(index, fragment);
 				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{:?})", index, 1, message.total_expected_fragments());
@@ -257,6 +265,8 @@ impl MessageCollection {
 					log::trace!(target: "mixnet", "Fragment complete");
 					return Ok(Some(message.reconstruct()?))
 				}
+				let expires = Instant::now() + self.expiration;
+				self.exp_deque.push_front((expires, Some(hash)));
 				e.insert(message);
 			},
 		}
@@ -266,8 +276,20 @@ impl MessageCollection {
 	/// Perform periodic maintenance. Messages that sit in the collection for too long are expunged.
 	pub fn cleanup(&mut self, now: Instant) {
 		let count = self.messages.len();
-		// TODO rewrite with orderd list
-		self.messages.retain(|_, m| m.expires > now);
+		loop {
+			if let Some(first) = self.exp_deque.front() {
+				if first.0 > now {
+					break;
+				}
+				if let Some(first) = first.1.as_ref() {
+					self.messages.remove(first);
+				}
+			} else {
+				break;
+			}
+			self.exp_deque.pop_front();
+			self.exp_deque_offset += Wrapping(1);
+		}
 		let removed = count - self.messages.len();
 		if removed > 0 {
 			log::trace!(target: "mixnet", "Fragment cleanup. Removed {} fragments", removed)
