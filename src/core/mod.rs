@@ -256,7 +256,7 @@ impl Mixnet {
 			debug_assert!(packet.len() == PACKET_SIZE);
 			if let Some((keys, surbs_id)) = surbs_keys {
 				let persistance = SurbsPersistance { keys };
-				self.surbs.insert(surbs_id, persistance);
+				self.surbs.insert(surbs_id, persistance, Instant::now());
 			}
 			packets.push((first_id, packet));
 		}
@@ -505,8 +505,8 @@ impl SurbsCollection {
 		SurbsCollection { pending: MixnetCollection::new(SURBS_TTL_MS) }
 	}
 
-	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance) {
-		self.pending.insert(surb_id, surb);
+	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance, now: Instant) {
+		self.pending.insert(surb_id, surb, now);
 	}
 
 	fn cleanup(&mut self, now: Instant) {
@@ -532,8 +532,8 @@ impl ReplayFilter {
 		ReplayFilter { seen: MixnetCollection::new(REPLAY_TTL_MS) }
 	}
 
-	pub fn insert(&mut self, tag: ReplayTag) {
-		self.seen.insert(tag, ());
+	pub fn insert(&mut self, tag: ReplayTag, now: Instant) {
+		self.seen.insert(tag, (), now);
 	}
 
 	pub fn contains(&mut self, tag: &ReplayTag) -> bool {
@@ -568,10 +568,10 @@ where
 		}
 	}
 
-	pub fn insert(&mut self, key: K, value: V) {
+	pub fn insert(&mut self, key: K, value: V, now: Instant) {
 		let ix = self.next_inserted_entry();
 		self.messages.insert(key.clone(), (value, ix));
-		self.inserted_entry(key)
+		self.inserted_entry(key, now)
 	}
 
 	pub fn remove(&mut self, key: &K) -> Option<V> {
@@ -599,24 +599,38 @@ where
 	fn removed(&mut self, ix: Wrapping<usize>) {
 		let ix = ix - self.exp_deque_offset;
 		self.exp_deque[ix.0].1 = None;
-		if let Some(first) = self.exp_deque.front() {
-			if first.1.is_some() {
-				return
+		if ix + Wrapping(1) == Wrapping(self.exp_deque.len()) {
+		loop {
+			if let Some(last) = self.exp_deque.back() {
+				if last.1.is_none() {
+					self.exp_deque.pop_back();
+					continue;
+				}
 			}
-		} else {
-			return
+			break;
 		}
-		self.exp_deque.pop_front();
-		self.exp_deque_offset += Wrapping(1);
+	}
+	if ix == Wrapping(0) {
+		loop {
+			if let Some(first) = self.exp_deque.front() {
+				if first.1.is_none() {
+					self.exp_deque.pop_front();
+					self.exp_deque_offset += Wrapping(1);
+					continue;
+				}
+			}
+			break;
+		}
+	}
 	}
 
 	pub fn next_inserted_entry(&self) -> Wrapping<usize> {
 		self.exp_deque_offset + Wrapping(self.exp_deque.len())
 	}
 
-	pub fn inserted_entry(&mut self, k: K) {
-		let expires = Instant::now() + self.expiration;
-		self.exp_deque.push_front((expires, Some(k)));
+	pub fn inserted_entry(&mut self, k: K, now: Instant) {
+		let expires = now + self.expiration;
+		self.exp_deque.push_back((expires, Some(k)));
 	}
 
 	pub fn cleanup(&mut self, now: Instant) -> usize {
@@ -636,5 +650,40 @@ where
 			self.exp_deque_offset += Wrapping(1);
 		}
 		count - self.messages.len()
+	}
+}
+
+#[test]
+fn test_ttl_map() {
+	type Map = MixnetCollection<Vec<u8>, Vec<u8>>;
+
+	let start = Instant::now();
+	let mut data = Map::new(1000);
+	for i in 0..10 {
+		let now = start + Duration::from_millis(i as u64 * 100);
+		data.insert(vec![i], vec![i], now);
+	}
+	for i in 0..10 {
+		assert!(data.contains(&vec![i]));
+	}
+	assert_eq!(data.cleanup(start + Duration::from_millis(1000 + 4 * 100)), 5);
+	for i in 0..5 {
+		assert!(!data.contains(&vec![i]));
+	}
+	for i in 5..10 {
+		assert!(data.contains(&vec![i]));
+	}
+	data.remove(&vec![8]);
+	assert!(data.contains(&vec![9]));
+	assert!(!data.contains(&vec![8]));
+	for i in 5..8 {
+		assert!(data.contains(&vec![i]));
+	}
+	assert_eq!(data.exp_deque.len(), 5);
+	data.remove(&vec![9]);
+	assert_eq!(data.exp_deque.len(), 3);
+	assert_eq!(data.cleanup(start + Duration::from_millis(1000 + 9 * 100)), 3);
+	for i in 0..10 {
+		assert!(!data.contains(&vec![i]));
 	}
 }

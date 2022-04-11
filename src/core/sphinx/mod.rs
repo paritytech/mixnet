@@ -42,6 +42,7 @@ use crypto::{
 };
 use rand::{CryptoRng, Rng};
 use subtle::ConstantTimeEq;
+use std::time::Instant;
 
 pub type StaticSecret = x25519_dalek::StaticSecret;
 pub type PublicKey = x25519_dalek::PublicKey;
@@ -462,7 +463,7 @@ pub fn unwrap_packet(
 			routing_info.copy_from_slice(new_routing_info);
 			header_mac.copy_from_slice(&next_hop.mac);
 			payload.copy_from_slice(&decrypted_payload);
-			filter.insert(replay_tag);
+			filter.insert(replay_tag, Instant::now());
 
 			Ok(Unwrapped::Forward((next_hop.id, next_delay(), packet)))
 		},
@@ -474,7 +475,7 @@ pub fn unwrap_packet(
 				return Err(Error::PayloadError)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-			filter.insert(replay_tag);
+			filter.insert(replay_tag, Instant::now());
 			Ok(Unwrapped::Payload(decrypted_payload))
 		},
 		DoNextHop::SurbsQuery => {
@@ -486,7 +487,7 @@ pub fn unwrap_packet(
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
-			filter.insert(replay_tag);
+			filter.insert(replay_tag, Instant::now());
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
 		DoNextHop::SurbsReply => {
@@ -579,7 +580,7 @@ mod test {
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
 			if let Some((keys, surbs_id)) = surbs_keys {
 				let persistance = crate::core::sphinx::SurbsPersistance { keys };
-				surbs_collection.insert(surbs_id, persistance);
+				surbs_collection.insert(surbs_id, persistance, std::time::Instant::now());
 			}
 
 			// Unwrap the packet, validating the output.

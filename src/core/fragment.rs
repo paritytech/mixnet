@@ -250,7 +250,7 @@ impl MessageCollection {
 					return Ok(Some(message.reconstruct()?))
 				}
 				e.insert((message, expires_ix));
-				self.0.inserted_entry(hash);
+				self.0.inserted_entry(hash, Instant::now());
 			},
 		}
 		Ok(None)
