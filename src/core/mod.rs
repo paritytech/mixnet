@@ -57,7 +57,9 @@ pub type MixSecretKey = sphinx::StaticSecret;
 pub const PUBLIC_KEY_LEN: usize = 32;
 
 const MAX_QUEUED_PACKETS: usize = 8192;
-const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
+
+/// Size of a mixnet packent.
+pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
 type SphinxPeerId = [u8; 32];
 
@@ -383,10 +385,12 @@ impl Mixnet {
 		let (start, recipient) =
 			if surbs { (recipient, &self.local_id) } else { (&self.local_id, recipient) };
 
+		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", self.topology.is_some(), self.num_hops);
 		if self.topology.is_none() {
+			log::warn!(target: "mixnet", "No topology direct transmission");
 			// No topology is defined. Check if direct connection is possible.
 			match self.connected_peers.get(&recipient) {
-				Some(key) if count == 1 => return Ok(vec![vec![(*recipient, key.clone())]]),
+				Some(key) => return Ok(vec![vec![(*recipient, key.clone())]; count]),
 				_ => return Err(Error::NoPath(Some(*recipient))),
 			}
 		}
@@ -600,28 +604,28 @@ where
 		let ix = ix - self.exp_deque_offset;
 		self.exp_deque[ix.0].1 = None;
 		if ix + Wrapping(1) == Wrapping(self.exp_deque.len()) {
-		loop {
-			if let Some(last) = self.exp_deque.back() {
-				if last.1.is_none() {
-					self.exp_deque.pop_back();
-					continue;
+			loop {
+				if let Some(last) = self.exp_deque.back() {
+					if last.1.is_none() {
+						self.exp_deque.pop_back();
+						continue
+					}
 				}
+				break
 			}
-			break;
 		}
-	}
-	if ix == Wrapping(0) {
-		loop {
-			if let Some(first) = self.exp_deque.front() {
-				if first.1.is_none() {
-					self.exp_deque.pop_front();
-					self.exp_deque_offset += Wrapping(1);
-					continue;
+		if ix == Wrapping(0) {
+			loop {
+				if let Some(first) = self.exp_deque.front() {
+					if first.1.is_none() {
+						self.exp_deque.pop_front();
+						self.exp_deque_offset += Wrapping(1);
+						continue
+					}
 				}
+				break
 			}
-			break;
 		}
-	}
 	}
 
 	pub fn next_inserted_entry(&self) -> Wrapping<usize> {

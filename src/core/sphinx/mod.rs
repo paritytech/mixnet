@@ -41,8 +41,8 @@ use crypto::{
 	hash, PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE,
 };
 use rand::{CryptoRng, Rng};
-use subtle::ConstantTimeEq;
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 
 pub type StaticSecret = x25519_dalek::StaticSecret;
 pub type PublicKey = x25519_dalek::PublicKey;
