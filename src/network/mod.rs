@@ -26,8 +26,9 @@ mod protocol;
 
 use crate::{
 	core::{self, Config, MixEvent, SurbsEncoded, PUBLIC_KEY_LEN},
-	MixPublicKey,
+	MixPublicKey, Topology,
 };
+use futures::Stream;
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -38,6 +39,7 @@ use std::{
 	collections::{HashMap, VecDeque},
 	task::{Context, Poll},
 	time::Duration,
+	pin::Pin,
 };
 
 type Result = std::result::Result<Message, Failure>;
@@ -55,27 +57,46 @@ impl Connection {
 	}
 }
 
+type CommandsStream<C> = Pin<Box<dyn Stream<Item = C> + Send>>;
+
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
-pub struct Mixnet {
+pub struct Mixnet<T: Topology> {
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
-	mixnet: core::Mixnet,
+	mixnet: core::Mixnet<T>,
 	events: VecDeque<NetworkEvent>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
+	commands: Option<CommandsStream<T::Command>>,
 }
 
-impl Mixnet {
+impl<T> Mixnet<T>
+where
+	T: Topology,
+{
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new(config: Config) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
-			mixnet: core::Mixnet::new(config),
+			mixnet: core::Mixnet::new(config, None),
 			connected: Default::default(),
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
+			commands: None,
 		}
+	}
+
+	/// Define mixnet topology.
+	pub fn with_topology(mut self, topology: T) -> Self {
+		self.mixnet = self.mixnet.with_topology(topology);
+		self
+	}
+
+	/// Add input topology commands stream.
+	pub fn with_commands(mut self, commands: CommandsStream<T::Command>) -> Self {
+		self.commands = Some(commands);
+		self
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
@@ -140,7 +161,10 @@ pub struct DecodedMessage {
 	pub surbs_reply: Option<SurbsEncoded>,
 }
 
-impl NetworkBehaviour for Mixnet {
+impl<T> NetworkBehaviour for Mixnet<T>
+where
+	T: Topology + Send + 'static,
+{
 	type ProtocolsHandler = Handler;
 	type OutEvent = NetworkEvent;
 
@@ -244,6 +268,20 @@ impl NetworkBehaviour for Mixnet {
 					handler: NotifyHandler::One(connection.id),
 					event: Message(self.handshake_message()),
 				})
+			}
+		}
+
+		if let Some(commands) = self.commands.as_mut() {
+			match commands.as_mut().poll_next(cx) {
+				Poll::Ready(Some(command)) => {
+					if !self.mixnet.process(command) {
+						// TODO clean shutdown
+					}
+				},
+				Poll::Ready(None) => {
+					// TODO clean shutdown
+				},
+				_ => (),
 			}
 		}
 

@@ -19,7 +19,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, MixPeerId, SphinxPeerId};
+use crate::core::{sphinx::Error as SphinxError, SphinxPeerId};
+use crate::MixPeerId;
 use std::fmt;
 
 /// Mixnet generic error.

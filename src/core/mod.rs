@@ -27,6 +27,7 @@ mod sphinx;
 mod topology;
 
 pub use crate::core::sphinx::{SurbsEncoded, SurbsPersistance};
+use crate::MixPeerId;
 pub use config::Config;
 pub use error::Error;
 use futures::FutureExt;
@@ -46,8 +47,6 @@ pub use topology::Topology;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 
-/// Mixnet peer identity.
-pub type MixPeerId = PeerId;
 /// Mixnet peer DH static public key.
 pub type MixPublicKey = sphinx::PublicKey;
 /// Mixnet peer DH static secret key.
@@ -138,8 +137,8 @@ impl std::cmp::Ord for QueuedPacket {
 }
 
 /// Mixnet core. Mixes messages, tracks fragments and delays.
-pub struct Mixnet {
-	topology: Option<Box<dyn Topology>>,
+pub struct Mixnet<T> {
+	topology: Option<T>,
 	num_hops: usize,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
@@ -160,11 +159,14 @@ pub struct Mixnet {
 	average_hop_delay: Duration,
 }
 
-impl Mixnet {
+impl<T> Mixnet<T>
+where
+	T: Topology,
+{
 	/// Create a new instance with given config.
-	pub fn new(config: Config) -> Self {
+	pub fn new(config: Config, topology: Option<T>) -> Self {
 		Mixnet {
-			topology: config.topology,
+			topology,
 			num_hops: config.num_hops as usize,
 			secret: config.secret_key,
 			local_id: config.local_id,
@@ -179,6 +181,12 @@ impl Mixnet {
 			surbs: SurbsCollection::new(),
 			replay_filter: ReplayFilter::new(),
 		}
+	}
+
+	/// Define mixnet topology.
+	pub fn with_topology(mut self, topology: T) -> Self {
+		self.topology = Some(topology);
+		self
 	}
 
 	fn queue_packet(
@@ -387,7 +395,7 @@ impl Mixnet {
 
 		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", self.topology.is_some(), self.num_hops);
 		if self.topology.is_none() {
-			log::warn!(target: "mixnet", "No topology direct transmission");
+			log::warn!(target: "mixnet", "No topology, direct transmission");
 			// No topology is defined. Check if direct connection is possible.
 			match self.connected_peers.get(&recipient) {
 				Some(key) => return Ok(vec![vec![(*recipient, key.clone())]; count]),
@@ -488,6 +496,14 @@ impl Mixnet {
 			}
 		}
 		Poll::Pending
+	}
+
+	pub fn process(&mut self, command: T::Command) -> bool {
+		if let Some(topology) = self.topology.as_mut() {
+			topology.process(command)
+		} else {
+			true
+		}
 	}
 }
 

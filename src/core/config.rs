@@ -22,8 +22,7 @@
 
 use libp2p_core::identity::ed25519::Keypair;
 
-use super::MixPeerId;
-use crate::{public_from_ed25519, secret_from_ed25519, MixPublicKey, MixSecretKey, Topology};
+use crate::{public_from_ed25519, secret_from_ed25519, MixPeerId, MixPublicKey, MixSecretKey};
 
 /// Configuration data for the mixnet protocol.
 pub struct Config {
@@ -31,9 +30,6 @@ pub struct Config {
 	pub secret_key: MixSecretKey,
 	/// DH public key for this node
 	pub public_key: MixPublicKey,
-	/// Topology information provider. If this set to none a fallback topology is used, only
-	/// allowing communication with immediately connected peers.
-	pub topology: Option<Box<dyn Topology>>,
 	/// Local node id.
 	pub local_id: MixPeerId,
 	/// Target traffic rate. This is combined for the stream of real and cover messages. If the
@@ -53,17 +49,11 @@ impl Config {
 		Self {
 			secret_key: secret_from_ed25519(&kp.secret()),
 			public_key: public_from_ed25519(&kp.public()),
-			topology: None,
 			local_id: id,
 			target_bits_per_second: 128 * 1024,
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
 		}
-	}
-
-	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
-		self.topology = Some(topology);
-		self
 	}
 }

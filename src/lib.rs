@@ -29,3 +29,6 @@ pub use crate::core::{
 	PACKET_SIZE,
 };
 pub use network::{DecodedMessage, Mixnet, NetworkEvent};
+
+/// Mixnet peer identity.
+pub type MixPeerId = libp2p_core::PeerId;

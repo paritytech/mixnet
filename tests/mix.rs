@@ -58,12 +58,18 @@ impl TopologyGraph {
 }
 
 impl mixnet::Topology for TopologyGraph {
-	fn neighbors(&self, id: &PeerId) -> Vec<(PeerId, MixPublicKey)> {
-		self.connections.get(id).cloned().unwrap_or_default()
+	type Command = ();
+
+	fn neighbors(&self, id: &PeerId) -> Option<Vec<(PeerId, MixPublicKey)>> {
+		self.connections.get(id).cloned()
 	}
 
 	fn random_recipient(&self) -> Option<PeerId> {
 		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
+	}
+
+	fn process(&mut self, _command: Self::Command) -> bool {
+		true
 	}
 }
 
@@ -93,7 +99,6 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		let cfg = mixnet::Config {
 			secret_key: secrets[i].clone(),
 			public_key: pub_key.clone(),
-			topology: Some(Box::new(topology.clone())),
 			local_id: id.clone(),
 			target_bits_per_second: 1024 * 1024,
 			timeout_ms: 10000,
@@ -101,7 +106,8 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			average_message_delay_ms: 50,
 		};
 
-		let mut swarm = Swarm::new(trans, mixnet::Mixnet::new(cfg), id.clone());
+		let mixnet = mixnet::Mixnet::new(cfg).with_topology(topology.clone());
+		let mut swarm = Swarm::new(trans, mixnet, id.clone());
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		swarm.listen_on(addr).unwrap();
