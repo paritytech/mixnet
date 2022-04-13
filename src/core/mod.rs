@@ -431,7 +431,7 @@ impl Mixnet {
 		last: &MixPeerId,
 		target: &MixPeerId,
 	) {
-		let neighbors = self.topology.as_ref().map(|t| t.neighbors(&last)).unwrap_or_default();
+		let neighbors = self.topology.as_ref().and_then(|t| t.neighbors(&last)).unwrap_or_default();
 		for (id, key) in neighbors {
 			if partial.len() < self.num_hops - 1 {
 				partial.push((id.clone(), key));

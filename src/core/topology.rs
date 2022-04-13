@@ -32,5 +32,6 @@ pub trait Topology: Send + 'static {
 	fn random_recipient(&self) -> Option<MixPeerId>;
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
-	fn neighbors(&self, id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+	/// Return `None` if peer is unknown to the topology.
+	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 }
