@@ -65,6 +65,10 @@ impl mixnet::Topology for TopologyGraph {
 	fn random_recipient(&self) -> Option<PeerId> {
 		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
 	}
+
+	fn routing(&self) -> bool {
+		true
+	}
 }
 
 fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surbs: bool) {

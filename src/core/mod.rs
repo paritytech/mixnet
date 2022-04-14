@@ -464,14 +464,22 @@ impl Mixnet {
 	}
 
 	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.connected_peers
-			.iter()
-			.map(|(id, key)| (id.clone(), key.clone()))
-			.collect::<Vec<_>>()
+		self.topology
+			.as_ref()
+			.and_then(|t| t.neighbors(&self.local_id))
+			.unwrap_or_else(|| {
+				self.connected_peers
+					.iter()
+					.map(|(id, key)| (id.clone(), key.clone()))
+					.collect::<Vec<_>>()
+			})
 	}
 
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixEvent> {
+		if !self.topology.as_ref().map(|t| t.routing()).unwrap_or(true) {
+			return Poll::Pending
+		}
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			cx.waker().wake_by_ref();
 			self.cleanup();
