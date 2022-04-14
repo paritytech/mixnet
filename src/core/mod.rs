@@ -464,15 +464,14 @@ impl Mixnet {
 	}
 
 	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.topology
-			.as_ref()
-			.and_then(|t| t.neighbors(&self.local_id))
-			.unwrap_or_else(|| {
-				self.connected_peers
-					.iter()
-					.map(|(id, key)| (id.clone(), key.clone()))
-					.collect::<Vec<_>>()
-			})
+		if let Some(t) = self.topology.as_ref() {
+			t.neighbors(&self.local_id).unwrap_or_default()
+		} else {
+			self.connected_peers
+				.iter()
+				.map(|(id, key)| (id.clone(), key.clone()))
+				.collect::<Vec<_>>()
+		}
 	}
 
 	// Poll for new messages to send over the wire.
