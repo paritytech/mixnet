@@ -24,9 +24,6 @@ use crate::{MixPeerId, MixPublicKey};
 
 /// Provide network topology information to the mixnet.
 pub trait Topology: Send + 'static {
-	/// External info received by mixnet.
-	type Command;
-
 	/// Select a random recipient for the message to be delivered. This is
 	/// called when the user sends the message with no recipient specified.
 	/// E.g. this can select a random validator that can accept the blockchain
@@ -40,8 +37,4 @@ pub trait Topology: Send + 'static {
 	/// external hop for latest (see gen_path function). Then last hop will expose
 	/// a new connection, so it need to be an additional hop (if possible).
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
-
-	/// Manage external command.
-	/// Return false if shutdown is needed.
-	fn process(&mut self, command: Self::Command) -> bool;
 }

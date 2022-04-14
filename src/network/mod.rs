@@ -37,9 +37,9 @@ use libp2p_swarm::{
 };
 use std::{
 	collections::{HashMap, VecDeque},
+	pin::Pin,
 	task::{Context, Poll},
 	time::Duration,
-	pin::Pin,
 };
 
 type Result = std::result::Result<Message, Failure>;
@@ -60,20 +60,17 @@ impl Connection {
 type CommandsStream<C> = Pin<Box<dyn Stream<Item = C> + Send>>;
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
-pub struct Mixnet<T: Topology> {
+pub struct Mixnet<C> {
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
-	mixnet: core::Mixnet<T>,
-	events: VecDeque<NetworkEvent>,
+	mixnet: core::Mixnet,
+	events: VecDeque<NetworkEvent<C>>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
-	commands: Option<CommandsStream<T::Command>>,
+	commands: Option<CommandsStream<C>>,
 }
 
-impl<T> Mixnet<T>
-where
-	T: Topology,
-{
+impl<C> Mixnet<C> {
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new(config: Config) -> Self {
 		Self {
@@ -88,13 +85,13 @@ where
 	}
 
 	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: T) -> Self {
+	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
 		self.mixnet = self.mixnet.with_topology(topology);
 		self
 	}
 
 	/// Add input topology commands stream.
-	pub fn with_commands(mut self, commands: CommandsStream<T::Command>) -> Self {
+	pub fn with_commands(mut self, commands: CommandsStream<C>) -> Self {
 		self.commands = Some(commands);
 		self
 	}
@@ -138,7 +135,7 @@ where
 /// TODO add info disconnect for bad behavior (can propagate
 /// to other system then).
 #[derive(Debug)]
-pub enum NetworkEvent {
+pub enum NetworkEvent<C> {
 	/// A new peer has connected over the mixnet protocol.
 	/// This does not imply the peer will be added to the
 	/// topology (can be filtered).
@@ -147,6 +144,8 @@ pub enum NetworkEvent {
 	Disconnected(PeerId),
 	/// A message has reached us.
 	Message(DecodedMessage),
+	/// A command for the mixnet.
+	Command(C),
 }
 
 /// A full mixnet message that has reached its recipient.
@@ -161,12 +160,12 @@ pub struct DecodedMessage {
 	pub surbs_reply: Option<SurbsEncoded>,
 }
 
-impl<T> NetworkBehaviour for Mixnet<T>
+impl<C> NetworkBehaviour for Mixnet<C>
 where
-	T: Topology + Send + 'static,
+	C: Send + 'static,
 {
 	type ProtocolsHandler = Handler;
-	type OutEvent = NetworkEvent;
+	type OutEvent = NetworkEvent<C>;
 
 	fn new_handler(&mut self) -> Self::ProtocolsHandler {
 		Handler::new(handler::Config::new())
@@ -273,13 +272,12 @@ where
 
 		if let Some(commands) = self.commands.as_mut() {
 			match commands.as_mut().poll_next(cx) {
-				Poll::Ready(Some(command)) => {
-					if !self.mixnet.process(command) {
-						// TODO clean shutdown
-					}
-				},
+				Poll::Ready(Some(command)) =>
+					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+						NetworkEvent::Command(command),
+					)),
 				Poll::Ready(None) => {
-					// TODO clean shutdown
+					// TODO shutdown event?
 				},
 				_ => (),
 			}

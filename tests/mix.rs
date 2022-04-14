@@ -58,18 +58,12 @@ impl TopologyGraph {
 }
 
 impl mixnet::Topology for TopologyGraph {
-	type Command = ();
-
 	fn neighbors(&self, id: &PeerId) -> Option<Vec<(PeerId, MixPublicKey)>> {
 		self.connections.get(id).cloned()
 	}
 
 	fn random_recipient(&self) -> Option<PeerId> {
 		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
-	}
-
-	fn process(&mut self, _command: Self::Command) -> bool {
-		true
 	}
 }
 
@@ -106,7 +100,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			average_message_delay_ms: 50,
 		};
 
-		let mixnet = mixnet::Mixnet::new(cfg).with_topology(topology.clone());
+		let mixnet = mixnet::Mixnet::<()>::new(cfg).with_topology(Box::new(topology.clone()));
 		let mut swarm = Swarm::new(trans, mixnet, id.clone());
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();

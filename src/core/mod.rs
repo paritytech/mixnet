@@ -137,8 +137,8 @@ impl std::cmp::Ord for QueuedPacket {
 }
 
 /// Mixnet core. Mixes messages, tracks fragments and delays.
-pub struct Mixnet<T> {
-	topology: Option<T>,
+pub struct Mixnet {
+	topology: Option<Box<dyn Topology>>,
 	num_hops: usize,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
@@ -159,12 +159,9 @@ pub struct Mixnet<T> {
 	average_hop_delay: Duration,
 }
 
-impl<T> Mixnet<T>
-where
-	T: Topology,
-{
+impl Mixnet {
 	/// Create a new instance with given config.
-	pub fn new(config: Config, topology: Option<T>) -> Self {
+	pub fn new(config: Config, topology: Option<Box<dyn Topology>>) -> Self {
 		Mixnet {
 			topology,
 			num_hops: config.num_hops as usize,
@@ -184,7 +181,7 @@ where
 	}
 
 	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: T) -> Self {
+	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
 		self.topology = Some(topology);
 		self
 	}
@@ -496,14 +493,6 @@ where
 			}
 		}
 		Poll::Pending
-	}
-
-	pub fn process(&mut self, command: T::Command) -> bool {
-		if let Some(topology) = self.topology.as_mut() {
-			topology.process(command)
-		} else {
-			true
-		}
 	}
 }
 
