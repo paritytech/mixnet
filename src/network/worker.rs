@@ -22,13 +22,10 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology, Config},
-	network::CommandsStream,
+	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology},
 	MixPeerId,
 };
-use futures::{Sink, Stream};
-use futures_timer::Delay;
-use futures::channel::mpsc::SendError;
+use futures::{channel::mpsc::SendError, Sink, Stream};
 use std::{
 	pin::Pin,
 	task::{Context, Poll},
@@ -53,17 +50,16 @@ pub enum WorkerOut {
 }
 
 /// Embed mixnet and process queue of instruction.
-pub struct MixnetWorker<C> {
+pub struct MixnetWorker {
 	mixnet: Mixnet,
-	commands: Option<CommandsStream<C>>,
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
 }
 
-impl<C> MixnetWorker<C> {
+impl MixnetWorker {
 	pub fn new(config: Config, worker_in: WorkerStream, worker_out: WorkerSink) -> Self {
 		let mixnet = crate::core::Mixnet::new(config, None);
-		MixnetWorker { mixnet, commands: None, worker_in, worker_out }
+		MixnetWorker { mixnet, worker_in, worker_out }
 	}
 
 	/// Define mixnet topology.
@@ -73,26 +69,8 @@ impl<C> MixnetWorker<C> {
 		self
 	}
 
-	/// Add input topology commands stream.
-	pub fn with_commands(mut self, commands: CommandsStream<C>) -> Self {
-		self.commands = Some(commands);
-		self
-	}
-
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<()> {
-		match self.commands.as_mut().map(|c| c.as_mut().poll_next(cx)) {
-			Some(Poll::Ready(Some(command))) => {
-				unimplemented!(
-					"TODO does not make sense to have command with worker: could
-				poll it externally and call directly method -> just don't dyn topology and make it public :)."
-				)
-			},
-			Some(Poll::Ready(None)) => {
-				// TODO shutdown event?
-			},
-			_ => (),
-		}
-
+		// TODO use futures::select
 		if let Poll::Ready(e @ MixEvent::SendMessage(..)) = self.mixnet.poll(cx) {
 			if let Err(e) = self.worker_out.as_mut().start_send(WorkerOut::Event(e)) {
 				log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);

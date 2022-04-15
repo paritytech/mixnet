@@ -30,8 +30,7 @@ use crate::{
 	network::worker::{WorkerIn, WorkerOut},
 	MixPublicKey, Topology,
 };
-use futures::{Sink, Stream};
-use futures::channel::mpsc::SendError;
+use futures::{channel::mpsc::SendError, Sink, Stream};
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -61,24 +60,21 @@ impl Connection {
 	}
 }
 
-type CommandsStream<C> = Pin<Box<dyn Stream<Item = C> + Send>>;
-
 pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
 pub type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = SendError> + Send>>;
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
-pub struct Mixnet<C> {
+pub struct Mixnet {
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
 	mixnet: Option<core::Mixnet>,
 	mixnet_worker: Option<(WorkerSink, WorkerStream)>,
-	events: VecDeque<NetworkEvent<C>>,
+	events: VecDeque<NetworkEvent>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
-	commands: Option<CommandsStream<C>>,
 }
 
-impl<C> Mixnet<C> {
+impl Mixnet {
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new(config: Config) -> Self {
 		Self {
@@ -89,7 +85,6 @@ impl<C> Mixnet<C> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
-			commands: None,
 		}
 	}
 
@@ -108,7 +103,6 @@ impl<C> Mixnet<C> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
-			commands: None,
 		}
 	}
 
@@ -119,16 +113,6 @@ impl<C> Mixnet<C> {
 		}
 		// if worker use case, topology is already define in worker.
 		self.mixnet = self.mixnet.map(|m| m.with_topology(topology));
-		self
-	}
-
-	/// Add input topology commands stream.
-	pub fn with_commands(mut self, commands: CommandsStream<C>) -> Self {
-		if self.mixnet_worker.is_some() {
-			panic!("mixnet command must only be set on worker");
-		}
-
-		self.commands = Some(commands);
 		self
 	}
 
@@ -197,7 +181,7 @@ impl<C> Mixnet<C> {
 /// TODO add info disconnect for bad behavior (can propagate
 /// to other system then).
 #[derive(Debug)]
-pub enum NetworkEvent<C> {
+pub enum NetworkEvent {
 	/// A new peer has connected over the mixnet protocol.
 	/// This does not imply the peer will be added to the
 	/// topology (can be filtered).
@@ -206,8 +190,6 @@ pub enum NetworkEvent<C> {
 	Disconnected(PeerId),
 	/// A message has reached us.
 	Message(DecodedMessage),
-	/// A command for the mixnet.
-	Command(C),
 }
 
 /// A full mixnet message that has reached its recipient.
@@ -222,12 +204,9 @@ pub struct DecodedMessage {
 	pub surbs_reply: Option<SurbsEncoded>,
 }
 
-impl<C> NetworkBehaviour for Mixnet<C>
-where
-	C: Send + 'static,
-{
+impl NetworkBehaviour for Mixnet {
 	type ProtocolsHandler = Handler;
-	type OutEvent = NetworkEvent<C>;
+	type OutEvent = NetworkEvent;
 
 	fn new_handler(&mut self) -> Self::ProtocolsHandler {
 		Handler::new(handler::Config::new())
@@ -253,10 +232,12 @@ where
 							mixnet.add_connected_peer(peer_id, pub_key);
 						},
 						(None, Some((mixnet_in, _))) => {
-							mixnet_in
+							if let Err(e) = mixnet_in
 								.as_mut()
 								.start_send(WorkerIn::AddConnectedPeer(peer_id, pub_key))
-								.map_err(|_| core::Error::WorkerChannelFull); // TODO log err?
+							{
+								log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
+							}
 						},
 						_ => unreachable!(),
 					}
@@ -268,10 +249,12 @@ where
 						match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
 							(Some(mixnet), None) => mixnet.import_message(peer_id, message),
 							(None, Some((mixnet_in, _))) => {
-								mixnet_in
+								if let Err(e) = mixnet_in
 									.as_mut()
 									.start_send(WorkerIn::ImportMessage(peer_id, message))
-									.map_err(|_| core::Error::WorkerChannelFull);
+								{
+									log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
+								}
 								Ok(None)
 							},
 							_ => unreachable!(),
@@ -326,10 +309,11 @@ where
 				mixnet.remove_connected_peer(peer_id);
 			},
 			(None, Some((mixnet_in, _))) => {
-				mixnet_in
-					.as_mut()
-					.start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
-					.map_err(|_| core::Error::WorkerChannelFull); // TODO log err?
+				if let Err(e) =
+					mixnet_in.as_mut().start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
+				{
+					log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
+				}
 			},
 			_ => unreachable!(),
 		}
@@ -343,10 +327,11 @@ where
 				mixnet.remove_connected_peer(peer_id);
 			},
 			(None, Some((mixnet_in, _))) => {
-				mixnet_in
-					.as_mut()
-					.start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
-					.map_err(|_| core::Error::WorkerChannelFull); // TODO log err?
+				if let Err(e) =
+					mixnet_in.as_mut().start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
+				{
+					log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
+				}
 			},
 			_ => unreachable!(),
 		}
@@ -371,19 +356,6 @@ where
 					handler: NotifyHandler::One(connection.id),
 					event: Message(self.handshake_message()),
 				})
-			}
-		}
-
-		if let Some(commands) = self.commands.as_mut() {
-			match commands.as_mut().poll_next(cx) {
-				Poll::Ready(Some(command)) =>
-					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-						NetworkEvent::Command(command),
-					)),
-				Poll::Ready(None) => {
-					// TODO shutdown event?
-				},
-				_ => (),
 			}
 		}
 
