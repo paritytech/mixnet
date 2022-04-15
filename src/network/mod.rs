@@ -23,12 +23,14 @@
 
 mod handler;
 mod protocol;
+mod worker;
 
 use crate::{
 	core::{self, Config, MixEvent, SurbsEncoded, PUBLIC_KEY_LEN},
+	network::worker::{WorkerIn, WorkerOut},
 	MixPublicKey, Topology,
 };
-use futures::Stream;
+use futures::{Sink, Stream};
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -41,6 +43,7 @@ use std::{
 	task::{Context, Poll},
 	time::Duration,
 };
+pub use worker::MixnetWorker;
 
 type Result = std::result::Result<Message, Failure>;
 
@@ -58,12 +61,15 @@ impl Connection {
 }
 
 type CommandsStream<C> = Pin<Box<dyn Stream<Item = C> + Send>>;
+type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
+type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = ()> + Send>>;
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct Mixnet<C> {
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
-	mixnet: core::Mixnet,
+	mixnet: Option<core::Mixnet>,
+	mixnet_worker: Option<(WorkerSink, WorkerStream)>,
 	events: VecDeque<NetworkEvent<C>>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
@@ -75,7 +81,26 @@ impl<C> Mixnet<C> {
 	pub fn new(config: Config) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
-			mixnet: core::Mixnet::new(config, None),
+			mixnet: Some(core::Mixnet::new(config, None)),
+			mixnet_worker: None,
+			connected: Default::default(),
+			handshakes: Default::default(),
+			events: Default::default(),
+			handshake_queue: Default::default(),
+			commands: None,
+		}
+	}
+
+	/// Creates a new network behaviour with the given configuration.
+	pub fn new_from_worker(
+		public_key: MixPublicKey,
+		worker_in: WorkerSink,
+		worker_out: WorkerStream,
+	) -> Self {
+		Self {
+			public_key,
+			mixnet: None,
+			mixnet_worker: Some((worker_in, worker_out)),
 			connected: Default::default(),
 			handshakes: Default::default(),
 			events: Default::default(),
@@ -86,12 +111,20 @@ impl<C> Mixnet<C> {
 
 	/// Define mixnet topology.
 	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
-		self.mixnet = self.mixnet.with_topology(topology);
+		if self.mixnet_worker.is_some() {
+			panic!("mixnet topology must only be set on worker");
+		}
+		// if worker use case, topology is already define in worker.
+		self.mixnet = self.mixnet.map(|m| m.with_topology(topology));
 		self
 	}
 
 	/// Add input topology commands stream.
 	pub fn with_commands(mut self, commands: CommandsStream<C>) -> Self {
+		if self.mixnet_worker.is_some() {
+			panic!("mixnet command must only be set on worker");
+		}
+
 		self.commands = Some(commands);
 		self
 	}
@@ -104,7 +137,19 @@ impl<C> Mixnet<C> {
 		message: Vec<u8>,
 		with_surbs: bool,
 	) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_message(Some(to), message, with_surbs)
+		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+			(Some(mixnet), None) => mixnet.register_message(Some(to), message, with_surbs),
+			(None, Some((mixnet_in, _))) => {
+				// TODO this is incorrect: use as an unbound channel when it is a sink and would
+				// need back pressure: find another trait or write it?
+				// TODO better error than () to enum
+				mixnet_in
+					.as_mut()
+					.start_send(WorkerIn::RegisterMessage(Some(to), message, with_surbs))
+					.map_err(|_| core::Error::WorkerChannelFull)
+			},
+			_ => unreachable!(),
+		}
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
@@ -114,7 +159,14 @@ impl<C> Mixnet<C> {
 		message: Vec<u8>,
 		with_surbs: bool,
 	) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_message(None, message, with_surbs)
+		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+			(Some(mixnet), None) => mixnet.register_message(None, message, with_surbs),
+			(None, Some((mixnet_in, _))) => mixnet_in
+				.as_mut()
+				.start_send(WorkerIn::RegisterMessage(None, message, with_surbs))
+				.map_err(|_| core::Error::WorkerChannelFull),
+			_ => unreachable!(),
+		}
 	}
 
 	/// Send surbs reply.
@@ -123,7 +175,14 @@ impl<C> Mixnet<C> {
 		message: Vec<u8>,
 		surbs: SurbsEncoded,
 	) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_surbs(message, surbs)
+		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+			(Some(mixnet), None) => mixnet.register_surbs(message, surbs),
+			(None, Some((mixnet_in, _))) => mixnet_in
+				.as_mut()
+				.start_send(WorkerIn::RegisterSurbs(message, surbs))
+				.map_err(|_| core::Error::WorkerChannelFull),
+			_ => unreachable!(),
+		}
 	}
 
 	fn handshake_message(&self) -> Vec<u8> {
@@ -186,14 +245,34 @@ where
 					log::trace!(target: "mixnet", "Handshake message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
 					self.connected.insert(peer_id, connection);
-					self.mixnet.add_connected_peer(peer_id, pub_key);
+					match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+						(Some(mixnet), None) => {
+							mixnet.add_connected_peer(peer_id, pub_key);
+						},
+						(None, Some((mixnet_in, _))) => {
+							mixnet_in
+								.as_mut()
+								.start_send(WorkerIn::AddConnectedPeer(peer_id, pub_key))
+								.map_err(|_| core::Error::WorkerChannelFull); // TODO log err?
+						},
+						_ => unreachable!(),
+					}
 					self.events.push_back(NetworkEvent::Connected(peer_id));
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
 					if let Ok(Some((message, surbs_reply))) =
-						self.mixnet.import_message(peer_id, message)
-					{
+						match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+							(Some(mixnet), None) => mixnet.import_message(peer_id, message),
+							(None, Some((mixnet_in, _))) => {
+								mixnet_in
+									.as_mut()
+									.start_send(WorkerIn::ImportMessage(peer_id, message))
+									.map_err(|_| core::Error::WorkerChannelFull);
+								Ok(None)
+							},
+							_ => unreachable!(),
+						} {
 						self.events.push_front(NetworkEvent::Message(DecodedMessage {
 							peer: peer_id,
 							message,
@@ -239,13 +318,35 @@ where
 	) {
 		self.handshakes.remove(peer_id);
 		self.connected.remove(peer_id);
-		self.mixnet.remove_connected_peer(peer_id);
+		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+			(Some(mixnet), None) => {
+				mixnet.remove_connected_peer(peer_id);
+			},
+			(None, Some((mixnet_in, _))) => {
+				mixnet_in
+					.as_mut()
+					.start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
+					.map_err(|_| core::Error::WorkerChannelFull); // TODO log err?
+			},
+			_ => unreachable!(),
+		}
 	}
 
 	fn inject_disconnected(&mut self, peer_id: &PeerId) {
 		log::trace!(target: "mixnet", "Disconnected: {}", peer_id);
 		self.handshakes.remove(peer_id);
-		self.mixnet.remove_connected_peer(peer_id);
+		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+			(Some(mixnet), None) => {
+				mixnet.remove_connected_peer(peer_id);
+			},
+			(None, Some((mixnet_in, _))) => {
+				mixnet_in
+					.as_mut()
+					.start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
+					.map_err(|_| core::Error::WorkerChannelFull); // TODO log err?
+			},
+			_ => unreachable!(),
+		}
 		if self.connected.remove(peer_id).is_some() {
 			self.events.push_back(NetworkEvent::Disconnected(peer_id.clone()));
 		}
@@ -283,17 +384,48 @@ where
 			}
 		}
 
-		if let Poll::Ready(MixEvent::SendMessage((recipient, data))) = self.mixnet.poll(cx) {
-			if let Some(connection) = self.connected.get(&recipient) {
-				return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-					peer_id: recipient,
-					handler: NotifyHandler::One(connection.id),
-					event: Message(data),
-				})
-			} else {
-				log::warn!(target: "mixnet", "Message for offline peer {}", recipient);
-			}
+		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
+			(Some(mixnet), None) => {
+				if let Poll::Ready(MixEvent::SendMessage((recipient, data))) = mixnet.poll(cx) {
+					if let Some(connection) = self.connected.get(&recipient) {
+						return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+							peer_id: recipient,
+							handler: NotifyHandler::One(connection.id),
+							event: Message(data),
+						})
+					} else {
+						log::warn!(target: "mixnet", "Message for offline peer {}", recipient);
+					}
+				}
+			},
+			(None, Some((_, mixnet_out))) => {
+				match mixnet_out.as_mut().poll_next(cx) {
+					Poll::Ready(Some(out)) => match out {
+						WorkerOut::Event(MixEvent::SendMessage((recipient, data))) => {
+							if let Some(connection) = self.connected.get(&recipient) {
+								return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+									peer_id: recipient,
+									handler: NotifyHandler::One(connection.id),
+									event: Message(data),
+								})
+							}
+						},
+						WorkerOut::ReceivedMessage(peer, message, surbs_reply) =>
+							self.events.push_front(NetworkEvent::Message(DecodedMessage {
+								peer,
+								message,
+								surbs_reply,
+							})),
+					},
+					Poll::Ready(None) => {
+						// TODO shutdown event?
+					},
+					_ => (),
+				}
+			},
+			_ => unreachable!(),
 		}
+
 		Poll::Pending
 	}
 }

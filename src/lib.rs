@@ -28,7 +28,7 @@ pub use crate::core::{
 	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey, Topology,
 	PACKET_SIZE,
 };
-pub use network::{DecodedMessage, Mixnet, NetworkEvent};
+pub use network::{DecodedMessage, Mixnet, MixnetWorker, NetworkEvent};
 
 /// Mixnet peer identity.
 pub type MixPeerId = libp2p_core::PeerId;

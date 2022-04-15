@@ -142,6 +142,8 @@ pub struct Mixnet {
 	num_hops: usize,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
+	// TODO remove and force usage of topology: then switch
+	// test to a topology of connected peer (using worker maybe).
 	connected_peers: HashMap<MixPeerId, MixPublicKey>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,

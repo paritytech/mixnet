@@ -42,6 +42,8 @@ pub enum Error {
 	QueueFull,
 	/// Surbs message exceed single fragment length.
 	BadSurbsLength,
+	/// Worker channel is full.
+	WorkerChannelFull,
 }
 
 impl fmt::Display for Error {
@@ -60,6 +62,7 @@ impl fmt::Display for Error {
 			Error::BadFragment => write!(f, "Bad message fragment."),
 			Error::BadSurbsLength => write!(f, "Surbs message too long."),
 			Error::QueueFull => write!(f, "Packet queue is full."),
+			Error::WorkerChannelFull => write!(f, "Worker channel is full."),
 		}
 	}
 }
