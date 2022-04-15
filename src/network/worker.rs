@@ -22,12 +22,13 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology},
+	core::{MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology, Config},
 	network::CommandsStream,
 	MixPeerId,
 };
 use futures::{Sink, Stream};
 use futures_timer::Delay;
+use futures::channel::mpsc::SendError;
 use std::{
 	pin::Pin,
 	task::{Context, Poll},
@@ -35,7 +36,7 @@ use std::{
 
 // TODO rem pin, this is just to abstract substrate custom channel type.
 type WorkerStream = Pin<Box<dyn Stream<Item = WorkerIn> + Send>>;
-type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = ()> + Send>>;
+type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
 
 // TODO Arc those Vec<u8>
 pub enum WorkerIn {
@@ -60,7 +61,8 @@ pub struct MixnetWorker<C> {
 }
 
 impl<C> MixnetWorker<C> {
-	pub fn new(mixnet: Mixnet, worker_in: WorkerStream, worker_out: WorkerSink) -> Self {
+	pub fn new(config: Config, worker_in: WorkerStream, worker_out: WorkerSink) -> Self {
+		let mixnet = crate::core::Mixnet::new(config, None);
 		MixnetWorker { mixnet, commands: None, worker_in, worker_out }
 	}
 

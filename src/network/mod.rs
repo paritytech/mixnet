@@ -31,6 +31,7 @@ use crate::{
 	MixPublicKey, Topology,
 };
 use futures::{Sink, Stream};
+use futures::channel::mpsc::SendError;
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -61,8 +62,9 @@ impl Connection {
 }
 
 type CommandsStream<C> = Pin<Box<dyn Stream<Item = C> + Send>>;
-type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
-type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = ()> + Send>>;
+
+pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
+pub type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = SendError> + Send>>;
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct Mixnet<C> {
@@ -93,10 +95,11 @@ impl<C> Mixnet<C> {
 
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new_from_worker(
-		public_key: MixPublicKey,
+		kp: &libp2p_core::identity::ed25519::Keypair,
 		worker_in: WorkerSink,
 		worker_out: WorkerStream,
 	) -> Self {
+		let public_key = crate::core::public_from_ed25519(&kp.public());
 		Self {
 			public_key,
 			mixnet: None,
