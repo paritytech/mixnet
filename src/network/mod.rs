@@ -64,17 +64,17 @@ pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
 pub type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = SendError> + Send>>;
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
-pub struct Mixnet {
+pub struct Mixnet<T> {
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
-	mixnet: Option<core::Mixnet>,
+	mixnet: Option<core::Mixnet<T>>,
 	mixnet_worker: Option<(WorkerSink, WorkerStream)>,
 	events: VecDeque<NetworkEvent>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
 }
 
-impl Mixnet {
+impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new(config: Config) -> Self {
 		Self {
@@ -107,7 +107,7 @@ impl Mixnet {
 	}
 
 	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
+	pub fn with_topology(mut self, topology: T) -> Self {
 		if self.mixnet_worker.is_some() {
 			panic!("mixnet topology must only be set on worker");
 		}
@@ -204,7 +204,9 @@ pub struct DecodedMessage {
 	pub surbs_reply: Option<SurbsEncoded>,
 }
 
-impl NetworkBehaviour for Mixnet {
+impl<T> NetworkBehaviour for Mixnet<T>
+	where T: Topology + Send + 'static,
+{
 	type ProtocolsHandler = Handler;
 	type OutEvent = NetworkEvent;
 

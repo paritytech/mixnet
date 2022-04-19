@@ -50,23 +50,33 @@ pub enum WorkerOut {
 }
 
 /// Embed mixnet and process queue of instruction.
-pub struct MixnetWorker {
-	mixnet: Mixnet,
+pub struct MixnetWorker<T> {
+	mixnet: Mixnet<T>,
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
 }
 
-impl MixnetWorker {
+impl<T: Topology> MixnetWorker<T> {
 	pub fn new(config: Config, worker_in: WorkerStream, worker_out: WorkerSink) -> Self {
 		let mixnet = crate::core::Mixnet::new(config, None);
 		MixnetWorker { mixnet, worker_in, worker_out }
 	}
 
 	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
+	pub fn with_topology(mut self, topology: T) -> Self {
 		// if worker use case, topology is already define in worker.
 		self.mixnet = self.mixnet.with_topology(topology);
 		self
+	}
+
+	/// Direct access to topology. 
+	pub fn topology(&self) -> Option<&T> {
+		self.mixnet.topology()
+	}
+
+	/// Mutable direct access to topology. 
+	pub fn topology_mut(&mut self) -> Option<&mut T> {
+		self.mixnet.topology_mut()
 	}
 
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<()> {
