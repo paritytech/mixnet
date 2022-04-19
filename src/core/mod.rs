@@ -43,7 +43,7 @@ use std::{
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
-pub use topology::Topology;
+pub use topology::{NoTopology, Topology};
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 
@@ -138,7 +138,7 @@ impl std::cmp::Ord for QueuedPacket {
 
 /// Mixnet core. Mixes messages, tracks fragments and delays.
 pub struct Mixnet<T> {
-	topology: Option<T>,
+	topology: T,
 	num_hops: usize,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
@@ -163,7 +163,7 @@ pub struct Mixnet<T> {
 
 impl<T: Topology> Mixnet<T> {
 	/// Create a new instance with given config.
-	pub fn new(config: Config, topology: Option<T>) -> Self {
+	pub fn new(config: Config, topology: T) -> Self {
 		Mixnet {
 			topology,
 			num_hops: config.num_hops as usize,
@@ -182,20 +182,20 @@ impl<T: Topology> Mixnet<T> {
 		}
 	}
 
-	/// Direct access to topology. 
+	/// Direct access to topology.
 	pub fn topology(&self) -> Option<&T> {
-		self.topology.as_ref()
+		if !T::ACTIVE {
+			return None
+		}
+		Some(&self.topology)
 	}
 
-	/// Mutable direct access to topology. 
+	/// Mutable direct access to topology.
 	pub fn topology_mut(&mut self) -> Option<&mut T> {
-		self.topology.as_mut()
-	}
-
-	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: T) -> Self {
-		self.topology = Some(topology);
-		self
+		if !T::ACTIVE {
+			return None
+		}
+		Some(&mut self.topology)
 	}
 
 	fn queue_packet(
@@ -226,8 +226,8 @@ impl<T: Topology> Mixnet<T> {
 		let maybe_peer_id = if let Some(id) = peer_id {
 			Some(id)
 		} else {
-			if let Some(t) = self.topology.as_ref() {
-				t.random_recipient()
+			if T::ACTIVE {
+				self.topology.random_recipient()
 			} else {
 				// Select a random connected peer
 				self.connected_peers.keys().choose(&mut rng).cloned()
@@ -402,8 +402,8 @@ impl<T: Topology> Mixnet<T> {
 		let (start, recipient) =
 			if surbs { (recipient, &self.local_id) } else { (&self.local_id, recipient) };
 
-		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", self.topology.is_some(), self.num_hops);
-		if self.topology.is_none() {
+		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", T::ACTIVE, self.num_hops);
+		if !T::ACTIVE {
 			log::warn!(target: "mixnet", "No topology, direct transmission");
 			// No topology is defined. Check if direct connection is possible.
 			match self.connected_peers.get(&recipient) {
@@ -448,7 +448,7 @@ impl<T: Topology> Mixnet<T> {
 		last: &MixPeerId,
 		target: &MixPeerId,
 	) {
-		let neighbors = self.topology.as_ref().and_then(|t| t.neighbors(&last)).unwrap_or_default();
+		let neighbors = self.topology.neighbors(&last).unwrap_or_default();
 		for (id, key) in neighbors {
 			if partial.len() < self.num_hops - 1 {
 				partial.push((id.clone(), key));
@@ -476,8 +476,8 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		if let Some(t) = self.topology.as_ref() {
-			t.neighbors(&self.local_id).unwrap_or_default()
+		if T::ACTIVE {
+			self.topology.neighbors(&self.local_id).unwrap_or_default()
 		} else {
 			self.connected_peers
 				.iter()
@@ -488,7 +488,7 @@ impl<T: Topology> Mixnet<T> {
 
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixEvent> {
-		if !self.topology.as_ref().map(|t| t.routing()).unwrap_or(true) {
+		if !self.topology.routing() {
 			return Poll::Pending
 		}
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {

@@ -57,24 +57,22 @@ pub struct MixnetWorker<T> {
 }
 
 impl<T: Topology> MixnetWorker<T> {
-	pub fn new(config: Config, worker_in: WorkerStream, worker_out: WorkerSink) -> Self {
-		let mixnet = crate::core::Mixnet::new(config, None);
+	pub fn new(
+		config: Config,
+		topology: T,
+		worker_in: WorkerStream,
+		worker_out: WorkerSink,
+	) -> Self {
+		let mixnet = crate::core::Mixnet::new(config, topology);
 		MixnetWorker { mixnet, worker_in, worker_out }
 	}
 
-	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: T) -> Self {
-		// if worker use case, topology is already define in worker.
-		self.mixnet = self.mixnet.with_topology(topology);
-		self
-	}
-
-	/// Direct access to topology. 
+	/// Direct access to topology.
 	pub fn topology(&self) -> Option<&T> {
 		self.mixnet.topology()
 	}
 
-	/// Mutable direct access to topology. 
+	/// Mutable direct access to topology.
 	pub fn topology_mut(&mut self) -> Option<&mut T> {
 		self.mixnet.topology_mut()
 	}

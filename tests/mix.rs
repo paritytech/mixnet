@@ -104,7 +104,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			average_message_delay_ms: 50,
 		};
 
-		let mixnet = mixnet::Mixnet::new(cfg).with_topology(topology.clone());
+		let mixnet = mixnet::Mixnet::new(cfg, topology.clone());
 		let mut swarm = Swarm::new(trans, mixnet, id.clone());
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();

@@ -24,6 +24,9 @@ use crate::{MixPeerId, MixPublicKey};
 
 /// Provide network topology information to the mixnet.
 pub trait Topology: Send + 'static {
+	/// If topology is not active, we use direct connection.
+	const ACTIVE: bool = true;
+
 	/// Select a random recipient for the message to be delivered. This is
 	/// called when the user sends the message with no recipient specified.
 	/// E.g. this can select a random validator that can accept the blockchain
@@ -40,4 +43,21 @@ pub trait Topology: Send + 'static {
 
 	/// Indicate if we are currently a node that is routing message.
 	fn routing(&self) -> bool;
+}
+
+/// No specific topology defined, we use all connected peers instead.
+pub struct NoTopology;
+
+impl Topology for NoTopology {
+	const ACTIVE: bool = false;
+
+	fn random_recipient(&self) -> Option<MixPeerId> {
+		None
+	}
+	fn neighbors(&self, _: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+		None
+	}
+	fn routing(&self) -> bool {
+		true
+	}
 }

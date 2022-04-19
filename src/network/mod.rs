@@ -76,10 +76,10 @@ pub struct Mixnet<T> {
 
 impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
-	pub fn new(config: Config) -> Self {
+	pub fn new(config: Config, topology: T) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
-			mixnet: Some(core::Mixnet::new(config, None)),
+			mixnet: Some(core::Mixnet::new(config, topology)),
 			mixnet_worker: None,
 			connected: Default::default(),
 			handshakes: Default::default(),
@@ -104,16 +104,6 @@ impl<T: Topology> Mixnet<T> {
 			events: Default::default(),
 			handshake_queue: Default::default(),
 		}
-	}
-
-	/// Define mixnet topology.
-	pub fn with_topology(mut self, topology: T) -> Self {
-		if self.mixnet_worker.is_some() {
-			panic!("mixnet topology must only be set on worker");
-		}
-		// if worker use case, topology is already define in worker.
-		self.mixnet = self.mixnet.map(|m| m.with_topology(topology));
-		self
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
@@ -205,7 +195,8 @@ pub struct DecodedMessage {
 }
 
 impl<T> NetworkBehaviour for Mixnet<T>
-	where T: Topology + Send + 'static,
+where
+	T: Topology + Send + 'static,
 {
 	type ProtocolsHandler = Handler;
 	type OutEvent = NetworkEvent;
