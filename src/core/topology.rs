@@ -48,7 +48,7 @@ pub trait Topology: Send + 'static {
 	fn routing(&self) -> bool;
 
 	/// Append connection infos to a handshake message.
-	fn append_connection_info(info: &Self::ConnectionInfo, message: &mut Vec<u8>);
+	fn encoded_connection_info(info: &Self::ConnectionInfo) -> Vec<u8>;
 
 	/// Read connection info from a message, return `None` if missing or
 	/// extra data remaining.
@@ -78,7 +78,8 @@ impl Topology for NoTopology {
 	fn routing(&self) -> bool {
 		true
 	}
-	fn append_connection_info(_: &Self::ConnectionInfo, _: &mut Vec<u8>) {
+	fn encoded_connection_info(_: &Self::ConnectionInfo) -> Vec<u8> {
+		Vec::new()
 	}
 	fn read_connection_info(encoded: &[u8]) -> Option<Self::ConnectionInfo> {
 		(encoded.len() == 0).then(|| ())

@@ -72,12 +72,12 @@ pub struct Mixnet<T: Topology> {
 	events: VecDeque<NetworkEvent>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
-	connection_info: T::ConnectionInfo,
+	encoded_connection_info: Vec<u8>,
 }
 
 impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
-	pub fn new(config: Config, topology: T, connection_info: T::ConnectionInfo) -> Self {
+	pub fn new(config: Config, topology: T, connection_info: &T::ConnectionInfo) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
 			mixnet: Some(core::Mixnet::new(config, topology)),
@@ -86,14 +86,14 @@ impl<T: Topology> Mixnet<T> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
-			connection_info,
+			encoded_connection_info: T::encoded_connection_info(&connection_info),
 		}
 	}
 
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new_from_worker(
 		kp: &libp2p_core::identity::ed25519::Keypair,
-		connection_info: T::ConnectionInfo,
+		encoded_connection_info: Vec<u8>,
 		worker_in: WorkerSink,
 		worker_out: WorkerStream,
 	) -> Self {
@@ -106,7 +106,7 @@ impl<T: Topology> Mixnet<T> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
-			connection_info,
+			encoded_connection_info,
 		}
 	}
 
@@ -168,7 +168,7 @@ impl<T: Topology> Mixnet<T> {
 
 	fn handshake_message(&self) -> Vec<u8> {
 		let mut message = self.public_key.to_bytes().to_vec();
-		T::append_connection_info(&self.connection_info, &mut message);
+		message.extend_from_slice(&self.encoded_connection_info[..]);
 		message
 	}
 }
