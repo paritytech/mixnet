@@ -64,6 +64,7 @@ type SphinxPeerId = [u8; 32];
 
 pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
+	Disconnect(MixPeerId),
 }
 
 fn to_sphinx_id(id: &MixPeerId) -> Result<SphinxPeerId, Error> {
@@ -370,13 +371,15 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	/// Should be called when a new peer is connected.
-	pub fn add_connected_peer(&mut self, id: MixPeerId, public_key: MixPublicKey) {
+	pub fn add_connected_peer(&mut self, id: MixPeerId, public_key: MixPublicKey, connection_info: T::ConnectionInfo) {
 		self.connected_peers.insert(id, public_key);
+		self.topology.connected(id, public_key, connection_info);
 	}
 
 	/// Should be called when a peer is disconnected.
 	pub fn remove_connected_peer(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
+		self.topology.disconnect(id);
 	}
 
 	fn cover_message(&mut self) -> Option<(MixPeerId, Vec<u8>)> {

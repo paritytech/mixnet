@@ -64,7 +64,7 @@ pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
 pub type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = SendError> + Send>>;
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
-pub struct Mixnet<T> {
+pub struct Mixnet<T: Topology> {
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
 	mixnet: Option<core::Mixnet<T>>,
@@ -72,11 +72,12 @@ pub struct Mixnet<T> {
 	events: VecDeque<NetworkEvent>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
+	connection_info: T::ConnectionInfo,
 }
 
 impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
-	pub fn new(config: Config, topology: T) -> Self {
+	pub fn new(config: Config, topology: T, connection_info: T::ConnectionInfo) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
 			mixnet: Some(core::Mixnet::new(config, topology)),
@@ -85,12 +86,14 @@ impl<T: Topology> Mixnet<T> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
+			connection_info,
 		}
 	}
 
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new_from_worker(
 		kp: &libp2p_core::identity::ed25519::Keypair,
+		connection_info: T::ConnectionInfo,
 		worker_in: WorkerSink,
 		worker_out: WorkerStream,
 	) -> Self {
@@ -103,6 +106,7 @@ impl<T: Topology> Mixnet<T> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
+			connection_info,
 		}
 	}
 
@@ -163,7 +167,9 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	fn handshake_message(&self) -> Vec<u8> {
-		self.public_key.to_bytes().to_vec()
+		let mut message = self.public_key.to_bytes().to_vec();
+		T::append_connection_info(&self.connection_info, &mut message);
+		message
 	}
 }
 
@@ -197,6 +203,7 @@ pub struct DecodedMessage {
 impl<T> NetworkBehaviour for Mixnet<T>
 where
 	T: Topology + Send + 'static,
+	T::ConnectionInfo: Send,
 {
 	type ProtocolsHandler = Handler;
 	type OutEvent = NetworkEvent;
@@ -209,10 +216,10 @@ where
 		match event {
 			Ok(Message(message)) => {
 				if let Some(mut connection) = self.handshakes.remove(&peer_id) {
-					if message.len() != PUBLIC_KEY_LEN {
+					if message.len() < PUBLIC_KEY_LEN {
 						log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
 						// Just drop the connection for now, it should terminate by timeout.
-						return
+						return;
 					}
 					let mut pk = [0u8; PUBLIC_KEY_LEN];
 					pk.copy_from_slice(&message);
@@ -222,12 +229,21 @@ where
 					self.connected.insert(peer_id, connection);
 					match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
 						(Some(mixnet), None) => {
-							mixnet.add_connected_peer(peer_id, pub_key);
+							let connection_info = match T::read_connection_info(&message[PUBLIC_KEY_LEN..]) {
+								Some(connection_info) => connection_info,
+								None => {
+									log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
+									self.connected.remove(&peer_id);
+									return;
+								}
+							};
+
+							mixnet.add_connected_peer(peer_id, pub_key, connection_info);
 						},
 						(None, Some((mixnet_in, _))) => {
 							if let Err(e) = mixnet_in
 								.as_mut()
-								.start_send(WorkerIn::AddConnectedPeer(peer_id, pub_key))
+								.start_send(WorkerIn::AddConnectedPeer(peer_id, pub_key, message[PUBLIC_KEY_LEN..].to_vec()))
 							{
 								log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 							}
@@ -353,8 +369,8 @@ where
 		}
 
 		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
-			(Some(mixnet), None) => {
-				if let Poll::Ready(MixEvent::SendMessage((recipient, data))) = mixnet.poll(cx) {
+			(Some(mixnet), None) => match mixnet.poll(cx) {
+				Poll::Ready(MixEvent::SendMessage((recipient, data))) => {
 					if let Some(connection) = self.connected.get(&recipient) {
 						return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
 							peer_id: recipient,
@@ -364,7 +380,12 @@ where
 					} else {
 						log::warn!(target: "mixnet", "Message for offline peer {}", recipient);
 					}
-				}
+				},
+				Poll::Ready(MixEvent::Disconnect(peer_id)) => {
+					self.connected.remove(&peer_id);
+				},
+				_ => (),
+
 			},
 			(None, Some((_, mixnet_out))) => {
 				match mixnet_out.as_mut().poll_next(cx) {
@@ -377,6 +398,9 @@ where
 									event: Message(data),
 								})
 							}
+						},
+						WorkerOut::Event(MixEvent::Disconnect(peer_id)) => {
+							self.connected.remove(&peer_id);
 						},
 						WorkerOut::ReceivedMessage(peer, message, surbs_reply) =>
 							self.events.push_front(NetworkEvent::Message(DecodedMessage {

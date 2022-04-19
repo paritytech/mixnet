@@ -27,6 +27,9 @@ pub trait Topology: Send + 'static {
 	/// If topology is not active, we use direct connection.
 	const ACTIVE: bool = true;
 
+	/// Content shared in the swarm specific to topology.
+	type ConnectionInfo;
+
 	/// Select a random recipient for the message to be delivered. This is
 	/// called when the user sends the message with no recipient specified.
 	/// E.g. this can select a random validator that can accept the blockchain
@@ -43,6 +46,19 @@ pub trait Topology: Send + 'static {
 
 	/// Indicate if we are currently a node that is routing message.
 	fn routing(&self) -> bool;
+
+	/// Append connection infos to a handshake message.
+	fn append_connection_info(info: &Self::ConnectionInfo, message: &mut Vec<u8>);
+
+	/// Read connection info from a message, return `None` if missing or
+	/// extra data remaining.
+	fn read_connection_info(encoded: &[u8]) -> Option<Self::ConnectionInfo>;
+
+	/// On connection successful handshake.
+	fn connected(&mut self, id: MixPeerId, public_key: MixPublicKey, connection_info: Self::ConnectionInfo);
+
+	/// On disconnect.
+	fn disconnect(&mut self, id: &MixPeerId);
 }
 
 /// No specific topology defined, we use all connected peers instead.
@@ -50,6 +66,8 @@ pub struct NoTopology;
 
 impl Topology for NoTopology {
 	const ACTIVE: bool = false;
+
+	type ConnectionInfo = ();
 
 	fn random_recipient(&self) -> Option<MixPeerId> {
 		None
@@ -59,5 +77,14 @@ impl Topology for NoTopology {
 	}
 	fn routing(&self) -> bool {
 		true
+	}
+	fn append_connection_info(_: &Self::ConnectionInfo, _: &mut Vec<u8>) {
+	}
+	fn read_connection_info(encoded: &[u8]) -> Option<Self::ConnectionInfo> {
+		(encoded.len() == 0).then(|| ())
+	}
+	fn connected(&mut self, _: MixPeerId, _: MixPublicKey, _: Self::ConnectionInfo) {
+	}
+	fn disconnect(&mut self, _: &MixPeerId) {
 	}
 }

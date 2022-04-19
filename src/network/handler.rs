@@ -207,6 +207,7 @@ impl ProtocolsHandler for Handler {
 	}
 
 	fn connection_keep_alive(&self) -> KeepAlive {
+		// TODO keep alive only for actively routing in topology and if between to connected nodes?
 		KeepAlive::Yes
 	}
 
