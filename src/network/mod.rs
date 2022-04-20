@@ -62,6 +62,7 @@ impl Connection {
 
 pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerOut> + Send>>;
 pub type WorkerSink = Pin<Box<dyn Sink<WorkerIn, Error = SendError> + Send>>;
+pub type WorkerChannels = (worker::WorkerSink, worker::WorkerStream);
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct Mixnet<T: Topology> {
@@ -181,7 +182,7 @@ pub enum NetworkEvent {
 	/// A new peer has connected over the mixnet protocol.
 	/// This does not imply the peer will be added to the
 	/// topology (can be filtered).
-	Connected(PeerId),
+	Connected(PeerId, MixPublicKey),
 	/// A peer has disconnected the mixnet protocol.
 	Disconnected(PeerId),
 	/// A message has reached us.
@@ -250,7 +251,7 @@ where
 						},
 						_ => unreachable!(),
 					}
-					self.events.push_back(NetworkEvent::Connected(peer_id));
+					self.events.push_back(NetworkEvent::Connected(peer_id, pub_key));
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));

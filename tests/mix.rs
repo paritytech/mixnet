@@ -159,7 +159,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 							swarm.dial_addr(rx.next().await.unwrap()).unwrap();
 						}
 					},
-					SwarmEvent::Behaviour(mixnet::NetworkEvent::Connected(_)) => {
+					SwarmEvent::Behaviour(mixnet::NetworkEvent::Connected(_, _)) => {
 						num_connected += 1;
 						log::trace!(target: "mixnet", "{} Connected  {}/{}", p, num_connected, num_peers - 1);
 						if num_connected == num_peers - 1 {

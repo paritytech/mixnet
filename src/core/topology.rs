@@ -28,6 +28,7 @@ pub trait Topology: Send + 'static {
 	const ACTIVE: bool = true;
 
 	/// Content shared in the swarm specific to topology.
+	/// TODO this is currently unused: remove? can be of use.
 	type ConnectionInfo;
 
 	/// Select a random recipient for the message to be delivered. This is

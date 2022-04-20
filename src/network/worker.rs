@@ -31,9 +31,8 @@ use std::{
 	task::{Context, Poll},
 };
 
-// TODO rem pin, this is just to abstract substrate custom channel type.
-type WorkerStream = Pin<Box<dyn Stream<Item = WorkerIn> + Send>>;
-type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
+pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerIn> + Send>>;
+pub type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
 
 // TODO Arc those Vec<u8>
 pub enum WorkerIn {
@@ -60,9 +59,9 @@ impl<T: Topology> MixnetWorker<T> {
 	pub fn new(
 		config: Config,
 		topology: T,
-		worker_in: WorkerStream,
-		worker_out: WorkerSink,
+		inner_channels: (WorkerSink, WorkerStream),
 	) -> Self {
+		let (worker_out, worker_in) = inner_channels;
 		let mixnet = crate::core::Mixnet::new(config, topology);
 		MixnetWorker { mixnet, worker_in, worker_out }
 	}
