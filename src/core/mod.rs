@@ -183,6 +183,10 @@ impl<T: Topology> Mixnet<T> {
 		}
 	}
 
+	pub fn local_id(&self) -> &MixPeerId {
+		&self.local_id
+	}
+
 	/// Direct access to topology.
 	pub fn topology(&self) -> Option<&T> {
 		if !T::ACTIVE {

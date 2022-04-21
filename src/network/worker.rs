@@ -66,6 +66,10 @@ impl<T: Topology> MixnetWorker<T> {
 		MixnetWorker { mixnet, worker_in, worker_out }
 	}
 
+	pub fn local_id(&self) -> &MixPeerId {
+		self.mixnet.local_id()
+	}
+
 	/// Direct access to topology.
 	pub fn topology(&self) -> Option<&T> {
 		self.mixnet.topology()
