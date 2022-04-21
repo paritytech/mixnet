@@ -43,6 +43,8 @@ pub trait Topology: Send + 'static {
 	/// TODO when `None` allow sending even if not part of topology but in the mixnet:
 	/// external hop for latest (see gen_path function). Then last hop will expose
 	/// a new connection, so it need to be an additional hop (if possible).
+	///
+	/// TODO change to return a iter (avoid costy implementation by api design).
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
 	/// Indicate if we are currently a node that is routing message.

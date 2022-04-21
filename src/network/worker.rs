@@ -76,7 +76,8 @@ impl<T: Topology> MixnetWorker<T> {
 		self.mixnet.topology_mut()
 	}
 
-	pub fn poll(&mut self, cx: &mut Context) -> Poll<()> {
+	/// Return false on shutdown.
+	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		// TODO use futures::select
 		if let Poll::Ready(e) = self.mixnet.poll(cx) {
 			if let Err(e) = self.worker_out.as_mut().start_send(WorkerOut::Event(e)) {
@@ -94,7 +95,7 @@ impl<T: Topology> MixnetWorker<T> {
 								log::error!(target: "mixnet", "Error registering message: {:?}", e);
 							},
 						}
-						return Poll::Ready(())
+						return Poll::Ready(true)
 					},
 					WorkerIn::RegisterSurbs(message, surbs) => {
 						match self.mixnet.register_surbs(message, surbs) {
@@ -103,7 +104,7 @@ impl<T: Topology> MixnetWorker<T> {
 								log::error!(target: "mixnet", "Error registering surbs: {:?}", e);
 							},
 						}
-						return Poll::Ready(())
+						return Poll::Ready(true)
 					},
 					WorkerIn::AddConnectedPeer(peer, public_key, connection_info) => {
 						let connection_info = match T::read_connection_info(&connection_info[..]) {
@@ -114,7 +115,7 @@ impl<T: Topology> MixnetWorker<T> {
 								if let Err(e) = self.worker_out.as_mut().start_send(WorkerOut::Event(MixEvent::Disconnect(peer))) {
 									log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);
 								}
-								return Poll::Ready(());
+								return Poll::Ready(true);
 							}
 						};
 
@@ -139,6 +140,11 @@ impl<T: Topology> MixnetWorker<T> {
 						}
 					},
 				},
+			Poll::Ready(None) => {
+				// handler dropped, shutting down.
+				log::debug!(target: "mixnet", "Worker input closed, shutting down.");
+				return Poll::Ready(false);
+			},
 			_ => (),
 		}
 
