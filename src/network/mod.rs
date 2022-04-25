@@ -223,7 +223,7 @@ where
 						return;
 					}
 					let mut pk = [0u8; PUBLIC_KEY_LEN];
-					pk.copy_from_slice(&message);
+					pk.copy_from_slice(&message[..PUBLIC_KEY_LEN]);
 					let pub_key = MixPublicKey::from(pk);
 					log::trace!(target: "mixnet", "Handshake message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
