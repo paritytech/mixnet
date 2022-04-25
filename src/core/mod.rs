@@ -254,7 +254,6 @@ impl<T: Topology> Mixnet<T> {
 				.map(|(id, key)| sphinx::PathHop {
 					id: to_sphinx_id(&id).unwrap(),
 					public_key: key.into(),
-					delay: Some(exp_delay(&mut rng, self.average_hop_delay).as_millis() as u32),
 				})
 				.collect();
 
@@ -271,7 +270,6 @@ impl<T: Topology> Mixnet<T> {
 				.map(|(id, key)| sphinx::PathHop {
 					id: to_sphinx_id(id).unwrap(),
 					public_key: (*key).into(),
-					delay: Some(exp_delay(&mut rng, self.average_hop_delay).as_millis() as u32),
 				})
 				.collect();
 			let chunk_surbs = if n == 0 { surbs.take() } else { None };
@@ -394,7 +392,7 @@ impl<T: Topology> Mixnet<T> {
 		if let Some(id) = path.get(0).map(|p| p.0.clone()) {
 			// TODO have neighbor return pathhop directly
 			let hops = path.into_iter().map(|(id, key)|
-				sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None }).collect();
+				sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into() }).collect();
 			let (packet, _no_surbs) = sphinx::new_packet(&mut rng, hops, message, None).ok()?;
 			Some((id, packet))
 		} else {

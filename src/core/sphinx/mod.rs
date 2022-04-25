@@ -30,7 +30,7 @@
 // its sprpkey)
 // * Simplifying routing commands into a fixed structure (specific node id are used instead of a
 // byte variant).
-// * Drop support for Delayt command.
+// * Drop support for Delay command.
 
 ///! Sphinx packet format.
 mod crypto;
@@ -124,9 +124,6 @@ pub struct PathHop {
 	pub id: NodeId,
 	/// ECDH Public key for the node.
 	pub public_key: PublicKey,
-	/// Optional delay measured in milliseconds. This should be random with exponential
-	/// distribution.
-	pub delay: Option<Delay>,
 }
 
 /// SprpKey is a struct that contains a SPRP (Strong Pseudo-Random Permutation) key.
@@ -518,7 +515,7 @@ pub fn unwrap_packet(
 
 #[cfg(test)]
 mod test {
-	use super::{crypto::KEY_SIZE, NodeId, PathHop, PublicKey, StaticSecret, Unwrapped, MAX_HOPS};
+	use super::{crypto::KEY_SIZE, NodeId, PathHop, PublicKey, StaticSecret, Unwrapped, MAX_HOPS, Delay};
 	use rand::{rngs::OsRng, CryptoRng, RngCore};
 
 	struct NodeParams {
@@ -538,7 +535,7 @@ mod test {
 	fn new_path_vector<T: RngCore + CryptoRng + Copy>(
 		csprng: T,
 		num_hops: u8,
-	) -> (Vec<NodeParams>, Vec<PathHop>) {
+	) -> (Vec<NodeParams>, Vec<PathHop>, Vec<Delay>) {
 		const DELAY_BASE: u32 = 123;
 
 		// Generate the keypairs and node identifiers for the "nodes".
@@ -549,12 +546,14 @@ mod test {
 
 		// Assemble the path vector.
 		let mut path = vec![];
+		let mut delays = vec![];
 		for i in 0..num_hops {
 			let delay = DELAY_BASE * (i as u32 + 1);
 			let public_key = PublicKey::from(&nodes[i as usize].private_key);
-			path.push(PathHop { id: nodes[i as usize].id, public_key, delay: Some(delay) });
+			path.push(PathHop { id: nodes[i as usize].id, public_key});
+			delays.push(delay);
 		}
-		(nodes, path)
+		(nodes, path, delays)
 	}
 
 	#[test]
@@ -571,6 +570,7 @@ mod test {
 			let _tuple = new_path_vector(OsRng, num_hops as u8);
 			let nodes = _tuple.0;
 			let path = _tuple.1;
+			let delays = _tuple.2;
 			let path_c = path.clone();
 			let mut surbs_collection = super::SurbsCollection::new();
 			let mut replay_filter = super::ReplayFilter::new();
@@ -585,7 +585,7 @@ mod test {
 
 			// Unwrap the packet, validating the output.
 			for i in 0..num_hops {
-				let next_delay = || path_c[i + 1].delay.unwrap();
+				let next_delay = || delays[i + 1];
 				let unwrap_result = super::unwrap_packet(
 					&nodes[i].private_key,
 					packet,
@@ -608,7 +608,7 @@ mod test {
 						_ => panic!("Unexpected result"),
 					};
 					let hop = &path_c[i + 1];
-					assert_eq!(delay, hop.delay.unwrap()); // a bit useless test with delay out of frame
+					assert_eq!(delay, delays[i + 1]); // a bit useless test with delay out of frame
 					assert_eq!(id, hop.id);
 					packet = next;
 				}
