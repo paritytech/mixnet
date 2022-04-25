@@ -32,6 +32,8 @@ pub enum Error {
 	SphinxError(SphinxError),
 	/// No path to give peer or no random peer to select from.
 	NoPath(Option<MixPeerId>),
+	/// Not enough peers.
+	NotEnoughRoutingPeers,
 	/// Invalid network id.
 	InvalidId(MixPeerId),
 	/// Invalid id in the Sphinx packet.
@@ -56,6 +58,7 @@ impl fmt::Display for Error {
 				"No path to {}.",
 				p.map(|p| p.to_string()).unwrap_or_else(|| "unknown peer".into())
 			),
+			Error::NotEnoughRoutingPeers => write!(f, "Not enough routing peers."),
 			Error::InvalidId(id) => write!(f, "Invalid peer id: {}.", id),
 			Error::InvalidSphinxId(id) =>
 				write!(f, "Invalid peer id in the Sphinx packet: {:?}.", id),

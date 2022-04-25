@@ -46,6 +46,8 @@ pub trait Topology: Sized + Send + 'static {
 	/// a new connection, so it need to be an additional hop (if possible).
 	///
 	/// TODO change to return a iter (avoid costy implementation by api design).
+	///
+	/// TODO if removing random_path default implementation, this can be removed too.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
 	/// Indicate if we are currently a node that is routing message.
@@ -80,6 +82,7 @@ pub trait Topology: Sized + Send + 'static {
 			let n: usize = rng.gen_range(0..paths.len());
 			result.push(paths[n].clone());
 		}
+		log::trace!(target: "mixnet", "Random path {:?}", result);
 		Ok(result)
 	}
 
