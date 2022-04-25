@@ -140,7 +140,7 @@ impl std::cmp::Ord for QueuedPacket {
 /// Mixnet core. Mixes messages, tracks fragments and delays.
 pub struct Mixnet<T> {
 	topology: T,
-	num_hops: usize,
+	num_hops: usize, // TODO should be part of topology.
 	secret: MixSecretKey,
 	local_id: MixPeerId,
 	// TODO remove and force usage of topology: then switch
@@ -392,7 +392,7 @@ impl<T: Topology> Mixnet<T> {
 	fn cover_message(&mut self) -> Option<(MixPeerId, Vec<u8>)> {
 		let mut rng = rand::thread_rng();
 		let message = fragment::create_cover_fragment(&mut rng);
-		let path = self.random_cover_path();
+		let path = self.random_cover_paths();
 
 		if let Some(id) = path.get(0).map(|p| p.0.clone()) {
 			// TODO have neighbor return pathhop directly
@@ -416,9 +416,6 @@ impl<T: Topology> Mixnet<T> {
 		count: usize,
 		surbs: bool,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		// Generate all possible paths and select one at random
-		let mut partial = Vec::new();
-		let mut paths = Vec::new();
 		let (start, recipient) =
 			if surbs { (recipient, &self.local_id) } else { (&self.local_id, recipient) };
 
@@ -432,64 +429,25 @@ impl<T: Topology> Mixnet<T> {
 			}
 		}
 
-		self.gen_paths(&mut partial, &mut paths, start, recipient);
-
-		if paths.is_empty() {
-			return Err(Error::NoPath(Some(*recipient)))
-		}
-
-		let mut rng = rand::thread_rng();
-		let mut result = Vec::new();
-		while result.len() < count {
-			// TODO this path pool looks fishy: should persist or it is very costy for nothing
-			// actually would make sense to put in topology: in a star where neighbor fn return
-			// same thing for every one it is full useless. In layer, maybe we want
-			// to favor some nodes in first hop due to later possibles.
-			let n: usize = rng.gen_range(0..paths.len());
-			result.push(paths[n].clone());
-		}
-		Ok(result)
+		self.topology.random_path(start, recipient, count, self.num_hops)
 	}
 
-	// TODO this only work for topology where all routing nodes acts similarily.
-	// -> move to topology.
-	fn random_cover_path(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		// Select a random connected peer
-		let neighbors = self.neighbors();
-
-		if neighbors.is_empty() {
-			return Vec::new()
-		}
-
-		let mut rng = rand::thread_rng();
-		let n: usize = rng.gen_range(0..neighbors.len());
-		vec![neighbors[n].clone()]
-	}
-
-	fn gen_paths(
-		&self,
-		partial: &mut Vec<(MixPeerId, MixPublicKey)>,
-		paths: &mut Vec<Vec<(MixPeerId, MixPublicKey)>>,
-		last: &MixPeerId,
-		target: &MixPeerId,
-	) {
-		let neighbors = self.topology.neighbors(&last).unwrap_or_default();
-		for (id, key) in neighbors {
-			if partial.len() < self.num_hops - 1 {
-				partial.push((id.clone(), key));
-				self.gen_paths(partial, paths, &id, target);
-				partial.pop();
+	fn random_cover_paths(&self) -> Vec<(MixPeerId, MixPublicKey)> {
+		if !T::ACTIVE {
+			let neighbors = self
+				.connected_peers
+				.iter()
+				.map(|(id, key)| (id.clone(), key.clone()))
+				.collect::<Vec<_>>();
+			if neighbors.is_empty() {
+				return Vec::new()
 			}
 
-			if partial.len() == self.num_hops - 1 {
-				// About to complete path. Only select paths that end up at target.
-				if &id != target {
-					continue
-				}
-				partial.push((id, key));
-				paths.push(partial.clone());
-				partial.pop();
-			}
+			let mut rng = rand::thread_rng();
+			let n: usize = rng.gen_range(0..neighbors.len());
+			vec![neighbors[n].clone()]
+		} else {
+			self.topology.random_cover_path(&self.local_id)
 		}
 	}
 
@@ -498,17 +456,6 @@ impl<T: Topology> Mixnet<T> {
 		self.fragments.cleanup(now);
 		self.surbs.cleanup(now);
 		self.replay_filter.cleanup(now);
-	}
-
-	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		if T::ACTIVE {
-			self.topology.neighbors(&self.local_id).unwrap_or_default()
-		} else {
-			self.connected_peers
-				.iter()
-				.map(|(id, key)| (id.clone(), key.clone()))
-				.collect::<Vec<_>>()
-		}
 	}
 
 	// Poll for new messages to send over the wire.
