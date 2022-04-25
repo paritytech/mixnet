@@ -389,12 +389,17 @@ impl<T: Topology> Mixnet<T> {
 	fn cover_message(&mut self) -> Option<(MixPeerId, Vec<u8>)> {
 		let mut rng = rand::thread_rng();
 		let message = fragment::create_cover_fragment(&mut rng);
-		let (id, key) = self.random_cover_path()?;
+		let path = self.random_cover_path();
 
-		let hop =
-			sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None };
-		let (packet, _no_surbs) = sphinx::new_packet(&mut rng, vec![hop], message, None).ok()?;
-		Some((id, packet))
+		if let Some(id) = path.get(0).map(|p| p.0.clone()) {
+			// TODO have neighbor return pathhop directly
+			let hops = path.into_iter().map(|(id, key)|
+				sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into(), delay: None }).collect();
+			let (packet, _no_surbs) = sphinx::new_packet(&mut rng, hops, message, None).ok()?;
+			Some((id, packet))
+		} else {
+			None
+		}
 	}
 
 	fn random_paths(
@@ -429,23 +434,28 @@ impl<T: Topology> Mixnet<T> {
 		let mut result = Vec::new();
 		while result.len() < count {
 			// TODO this path pool looks fishy: should persist or it is very costy for nothing
+			// actually would make sense to put in topology: in a star where neighbor fn return
+			// same thing for every one it is full useless. In layer, maybe we want
+			// to favor some nodes in first hop due to later possibles.
 			let n: usize = rng.gen_range(0..paths.len());
 			result.push(paths[n].clone());
 		}
 		Ok(result)
 	}
 
-	fn random_cover_path(&self) -> Option<(MixPeerId, MixPublicKey)> {
+	// TODO this only work for topology where all routing nodes acts similarily.
+	// -> move to topology.
+	fn random_cover_path(&self) -> Vec<(MixPeerId, MixPublicKey)> {
 		// Select a random connected peer
 		let neighbors = self.neighbors();
 
 		if neighbors.is_empty() {
-			return None
+			return Vec::new()
 		}
 
 		let mut rng = rand::thread_rng();
 		let n: usize = rng.gen_range(0..neighbors.len());
-		Some(neighbors[n].clone())
+		vec![neighbors[n].clone()]
 	}
 
 	fn gen_paths(
