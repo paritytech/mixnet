@@ -373,7 +373,12 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	/// Should be called when a new peer is connected.
-	pub fn add_connected_peer(&mut self, id: MixPeerId, public_key: MixPublicKey, connection_info: T::ConnectionInfo) {
+	pub fn add_connected_peer(
+		&mut self,
+		id: MixPeerId,
+		public_key: MixPublicKey,
+		connection_info: T::ConnectionInfo,
+	) {
 		self.connected_peers.insert(id, public_key);
 		self.topology.connected(id, public_key, connection_info);
 	}
@@ -391,8 +396,13 @@ impl<T: Topology> Mixnet<T> {
 
 		if let Some(id) = path.get(0).map(|p| p.0.clone()) {
 			// TODO have neighbor return pathhop directly
-			let hops = path.into_iter().map(|(id, key)|
-				sphinx::PathHop { id: to_sphinx_id(&id).unwrap(), public_key: key.into() }).collect();
+			let hops = path
+				.into_iter()
+				.map(|(id, key)| sphinx::PathHop {
+					id: to_sphinx_id(&id).unwrap(),
+					public_key: key.into(),
+				})
+				.collect();
 			let (packet, _no_surbs) = sphinx::new_packet(&mut rng, hops, message, None).ok()?;
 			Some((id, packet))
 		} else {

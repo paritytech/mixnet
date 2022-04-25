@@ -80,11 +80,9 @@ impl mixnet::Topology for TopologyGraph {
 		(encoded.len() == 0).then(|| ())
 	}
 
-	fn connected(&mut self, _: PeerId, _: MixPublicKey, _: Self::ConnectionInfo) {
-	}
+	fn connected(&mut self, _: PeerId, _: MixPublicKey, _: Self::ConnectionInfo) {}
 
-	fn disconnect(&mut self, _: &PeerId) {
-	}
+	fn disconnect(&mut self, _: &PeerId) {}
 }
 
 fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surbs: bool) {

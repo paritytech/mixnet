@@ -58,7 +58,12 @@ pub trait Topology: Send + 'static {
 	fn read_connection_info(encoded: &[u8]) -> Option<Self::ConnectionInfo>;
 
 	/// On connection successful handshake.
-	fn connected(&mut self, id: MixPeerId, public_key: MixPublicKey, connection_info: Self::ConnectionInfo);
+	fn connected(
+		&mut self,
+		id: MixPeerId,
+		public_key: MixPublicKey,
+		connection_info: Self::ConnectionInfo,
+	);
 
 	/// On disconnect.
 	fn disconnect(&mut self, id: &MixPeerId);
@@ -87,8 +92,6 @@ impl Topology for NoTopology {
 	fn read_connection_info(encoded: &[u8]) -> Option<Self::ConnectionInfo> {
 		(encoded.len() == 0).then(|| ())
 	}
-	fn connected(&mut self, _: MixPeerId, _: MixPublicKey, _: Self::ConnectionInfo) {
-	}
-	fn disconnect(&mut self, _: &MixPeerId) {
-	}
+	fn connected(&mut self, _: MixPeerId, _: MixPublicKey, _: Self::ConnectionInfo) {}
+	fn disconnect(&mut self, _: &MixPeerId) {}
 }

@@ -220,7 +220,7 @@ where
 					if message.len() < PUBLIC_KEY_LEN {
 						log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
 						// Just drop the connection for now, it should terminate by timeout.
-						return;
+						return
 					}
 					let mut pk = [0u8; PUBLIC_KEY_LEN];
 					pk.copy_from_slice(&message[..PUBLIC_KEY_LEN]);
@@ -230,22 +230,25 @@ where
 					self.connected.insert(peer_id, connection);
 					match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
 						(Some(mixnet), None) => {
-							let connection_info = match T::read_connection_info(&message[PUBLIC_KEY_LEN..]) {
-								Some(connection_info) => connection_info,
-								None => {
-									log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
-									self.connected.remove(&peer_id);
-									return;
-								}
-							};
+							let connection_info =
+								match T::read_connection_info(&message[PUBLIC_KEY_LEN..]) {
+									Some(connection_info) => connection_info,
+									None => {
+										log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
+										self.connected.remove(&peer_id);
+										return
+									},
+								};
 
 							mixnet.add_connected_peer(peer_id, pub_key, connection_info);
 						},
 						(None, Some((mixnet_in, _))) => {
-							if let Err(e) = mixnet_in
-								.as_mut()
-								.start_send(WorkerIn::AddConnectedPeer(peer_id, pub_key, message[PUBLIC_KEY_LEN..].to_vec()))
-							{
+							if let Err(e) =
+								mixnet_in.as_mut().start_send(WorkerIn::AddConnectedPeer(
+									peer_id,
+									pub_key,
+									message[PUBLIC_KEY_LEN..].to_vec(),
+								)) {
 								log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 							}
 						},
@@ -386,7 +389,6 @@ where
 					self.connected.remove(&peer_id);
 				},
 				_ => (),
-
 			},
 			(None, Some((_, mixnet_out))) => {
 				match mixnet_out.as_mut().poll_next(cx) {

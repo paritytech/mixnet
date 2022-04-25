@@ -515,7 +515,9 @@ pub fn unwrap_packet(
 
 #[cfg(test)]
 mod test {
-	use super::{crypto::KEY_SIZE, NodeId, PathHop, PublicKey, StaticSecret, Unwrapped, MAX_HOPS, Delay};
+	use super::{
+		crypto::KEY_SIZE, Delay, NodeId, PathHop, PublicKey, StaticSecret, Unwrapped, MAX_HOPS,
+	};
 	use rand::{rngs::OsRng, CryptoRng, RngCore};
 
 	struct NodeParams {
@@ -550,7 +552,7 @@ mod test {
 		for i in 0..num_hops {
 			let delay = DELAY_BASE * (i as u32 + 1);
 			let public_key = PublicKey::from(&nodes[i as usize].private_key);
-			path.push(PathHop { id: nodes[i as usize].id, public_key});
+			path.push(PathHop { id: nodes[i as usize].id, public_key });
 			delays.push(delay);
 		}
 		(nodes, path, delays)

@@ -56,11 +56,7 @@ pub struct MixnetWorker<T> {
 }
 
 impl<T: Topology> MixnetWorker<T> {
-	pub fn new(
-		config: Config,
-		topology: T,
-		inner_channels: (WorkerSink, WorkerStream),
-	) -> Self {
+	pub fn new(config: Config, topology: T, inner_channels: (WorkerSink, WorkerStream)) -> Self {
 		let (worker_out, worker_in) = inner_channels;
 		let mixnet = crate::core::Mixnet::new(config, topology);
 		MixnetWorker { mixnet, worker_in, worker_out }
@@ -116,11 +112,15 @@ impl<T: Topology> MixnetWorker<T> {
 							None => {
 								log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer);
 
-								if let Err(e) = self.worker_out.as_mut().start_send(WorkerOut::Event(MixEvent::Disconnect(peer))) {
+								if let Err(e) = self
+									.worker_out
+									.as_mut()
+									.start_send(WorkerOut::Event(MixEvent::Disconnect(peer)))
+								{
 									log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);
 								}
-								return Poll::Ready(true);
-							}
+								return Poll::Ready(true)
+							},
 						};
 
 						self.mixnet.add_connected_peer(peer, public_key, connection_info);
@@ -147,7 +147,7 @@ impl<T: Topology> MixnetWorker<T> {
 			Poll::Ready(None) => {
 				// handler dropped, shutting down.
 				log::debug!(target: "mixnet", "Worker input closed, shutting down.");
-				return Poll::Ready(false);
+				return Poll::Ready(false)
 			},
 			_ => (),
 		}
