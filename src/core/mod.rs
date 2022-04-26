@@ -120,7 +120,7 @@ pub fn public_from_ed25519(ed25519_pk: &ed25519::PublicKey) -> MixPublicKey {
 #[derive(PartialEq, Eq)]
 /// A real traffic message that we need to forward.
 struct QueuedPacket {
-	deadline: Instant,
+	deadline: Option<Instant>,
 	recipient: MixPeerId,
 	data: Vec<u8>,
 }
@@ -212,7 +212,19 @@ impl<T: Topology> Mixnet<T> {
 		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
 			return Err(Error::QueueFull)
 		}
-		let deadline = Instant::now() + delay;
+		let deadline = Some(Instant::now() + delay);
+		self.packet_queue.push(QueuedPacket { deadline, data, recipient });
+		Ok(())
+	}
+
+	// When node are not routing, the packet is not delayed
+	// and sent quicker. TODO could just send wait first peer reply.
+	// Leading to earlier error.
+	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Vec<u8>) -> Result<(), Error> {
+		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
+			return Err(Error::QueueFull)
+		}
+		let deadline = None;
 		self.packet_queue.push(QueuedPacket { deadline, data, recipient });
 		Ok(())
 	}
@@ -283,9 +295,15 @@ impl<T: Topology> Mixnet<T> {
 			packets.push((first_id, packet));
 		}
 
-		for (peer_id, packet) in packets {
-			let delay = exp_delay(&mut rng, self.average_hop_delay);
-			self.queue_packet(peer_id, packet, delay)?;
+		if self.topology.routing() {
+			for (peer_id, packet) in packets {
+				let delay = exp_delay(&mut rng, self.average_hop_delay);
+				self.queue_packet(peer_id, packet, delay)?;
+			}
+		} else {
+			for (peer_id, packet) in packets {
+				self.queue_external_packet(peer_id, packet)?;
+			}
 		}
 		Ok(())
 	}
@@ -303,9 +321,13 @@ impl<T: Topology> Mixnet<T> {
 
 		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0), header)
 			.map_err(|e| Error::SphinxError(e))?;
-		let delay = exp_delay(&mut rng, self.average_hop_delay);
 		let dest = to_libp2p_id(first_node)?;
-		self.queue_packet(dest, packet, delay)?;
+		if self.topology.routing() {
+			let delay = exp_delay(&mut rng, self.average_hop_delay);
+			self.queue_packet(dest, packet, delay)?;
+		} else {
+			self.queue_external_packet(dest, packet)?;
+		}
 		Ok(())
 	}
 
@@ -460,9 +482,7 @@ impl<T: Topology> Mixnet<T> {
 
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixEvent> {
-		if !self.topology.routing() {
-			return Poll::Pending
-		}
+		// TODO use select macro??
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			cx.waker().wake_by_ref();
 			self.cleanup();
@@ -470,17 +490,22 @@ impl<T: Topology> Mixnet<T> {
 			let next_delay = exp_delay(&mut rng, self.average_traffic_delay);
 			self.next_message.reset(next_delay);
 			let now = Instant::now();
-			let deadline = self.packet_queue.peek().map_or(false, |p| p.deadline <= now);
+			let deadline = self
+				.packet_queue
+				.peek()
+				.map_or(false, |p| p.deadline.map(|d| d <= now).unwrap_or(true));
 			if deadline {
 				if let Some(packet) = self.packet_queue.pop() {
 					log::trace!(target: "mixnet", "Outbound message for {:?}", packet.recipient);
 					return Poll::Ready(MixEvent::SendMessage((packet.recipient, packet.data)))
 				}
 			}
-			// No packet to produce, generate cover traffic
-			if let Some((recipient, data)) = self.cover_message() {
-				log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
-				return Poll::Ready(MixEvent::SendMessage((recipient, data)))
+			if self.topology.routing() {
+				// No packet to produce, generate cover traffic
+				if let Some((recipient, data)) = self.cover_message() {
+					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
+					return Poll::Ready(MixEvent::SendMessage((recipient, data)))
+				}
 			}
 		}
 		Poll::Pending

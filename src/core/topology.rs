@@ -54,6 +54,9 @@ pub trait Topology: Sized + Send + 'static {
 	fn routing(&self) -> bool;
 
 	/// Random message path.
+	/// Warning number of hops is indicative and for some topology
+	/// could be higher (eg if `start` or `recipient` are not routing
+	/// a hop should be added).
 	///
 	/// Default implementation is taking random of all possible path.
 	fn random_path(

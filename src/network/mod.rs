@@ -113,6 +113,7 @@ impl<T: Topology> Mixnet<T> {
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to the specified recipient.
+	/// TODO Errors: in case topology does not allow it (not enough peer, no path...)
 	pub fn send(
 		&mut self,
 		to: PeerId,
