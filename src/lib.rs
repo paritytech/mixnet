@@ -34,3 +34,14 @@ pub use network::{
 
 /// Mixnet peer identity.
 pub type MixPeerId = libp2p_core::PeerId;
+
+/// Options for sending a message in the mixnet.
+pub struct SendOptions {
+	/// Number of hop for the message.
+	/// If undefined, mixnet defined number of hop will be used.
+	/// For its surbs the same number will be use.
+	pub num_hop: Option<usize>,
+
+	/// Do we attach a surbs with the message.
+	pub with_surbs: bool,
+}

@@ -23,7 +23,7 @@
 
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology},
-	MixPeerId,
+	MixPeerId, SendOptions,
 };
 use futures::{channel::mpsc::SendError, Sink, Stream};
 use std::{
@@ -36,7 +36,7 @@ pub type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
 
 // TODO Arc those Vec<u8>
 pub enum WorkerIn {
-	RegisterMessage(Option<MixPeerId>, Vec<u8>, bool),
+	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, SurbsEncoded),
 	AddConnectedPeer(MixPeerId, MixPublicKey, Vec<u8>),
 	RemoveConnectedPeer(MixPeerId),
@@ -88,8 +88,8 @@ impl<T: Topology> MixnetWorker<T> {
 		match self.worker_in.as_mut().poll_next(cx) {
 			Poll::Ready(Some(message)) =>
 				match message {
-					WorkerIn::RegisterMessage(peer_id, message, with_surbs) => {
-						match self.mixnet.register_message(peer_id, message, with_surbs) {
+					WorkerIn::RegisterMessage(peer_id, message, send_options) => {
+						match self.mixnet.register_message(peer_id, message, send_options) {
 							Ok(()) => (),
 							Err(e) => {
 								log::error!(target: "mixnet", "Error registering message: {:?}", e);

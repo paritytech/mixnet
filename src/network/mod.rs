@@ -28,7 +28,7 @@ mod worker;
 use crate::{
 	core::{self, Config, MixEvent, SurbsEncoded, PUBLIC_KEY_LEN},
 	network::worker::{WorkerIn, WorkerOut},
-	MixPublicKey, Topology,
+	MixPublicKey, SendOptions, Topology,
 };
 use futures::{channel::mpsc::SendError, Sink, Stream};
 use futures_timer::Delay;
@@ -118,17 +118,17 @@ impl<T: Topology> Mixnet<T> {
 		&mut self,
 		to: PeerId,
 		message: Vec<u8>,
-		with_surbs: bool,
+		send_options: SendOptions,
 	) -> std::result::Result<(), core::Error> {
 		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
-			(Some(mixnet), None) => mixnet.register_message(Some(to), message, with_surbs),
+			(Some(mixnet), None) => mixnet.register_message(Some(to), message, send_options),
 			(None, Some((mixnet_in, _))) => {
 				// TODO this is incorrect: use as an unbound channel when it is a sink and would
 				// need back pressure: find another trait or write it?
 				// TODO better error than () to enum
 				mixnet_in
 					.as_mut()
-					.start_send(WorkerIn::RegisterMessage(Some(to), message, with_surbs))
+					.start_send(WorkerIn::RegisterMessage(Some(to), message, send_options))
 					.map_err(|_| core::Error::WorkerChannelFull)
 			},
 			_ => unreachable!(),
@@ -140,13 +140,13 @@ impl<T: Topology> Mixnet<T> {
 	pub fn send_to_random_recipient(
 		&mut self,
 		message: Vec<u8>,
-		with_surbs: bool,
+		send_options: SendOptions,
 	) -> std::result::Result<(), core::Error> {
 		match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
-			(Some(mixnet), None) => mixnet.register_message(None, message, with_surbs),
+			(Some(mixnet), None) => mixnet.register_message(None, message, send_options),
 			(None, Some((mixnet_in, _))) => mixnet_in
 				.as_mut()
-				.start_send(WorkerIn::RegisterMessage(None, message, with_surbs))
+				.start_send(WorkerIn::RegisterMessage(None, message, send_options))
 				.map_err(|_| core::Error::WorkerChannelFull),
 			_ => unreachable!(),
 		}

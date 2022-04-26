@@ -27,7 +27,7 @@ mod sphinx;
 mod topology;
 
 pub use crate::core::sphinx::{SurbsEncoded, SurbsPersistance};
-use crate::MixPeerId;
+use crate::{MixPeerId, SendOptions};
 pub use config::Config;
 pub use error::Error;
 use futures::FutureExt;
@@ -236,7 +236,7 @@ impl<T: Topology> Mixnet<T> {
 		&mut self,
 		peer_id: Option<MixPeerId>,
 		message: Vec<u8>,
-		with_surbs: bool,
+		send_options: SendOptions,
 	) -> Result<(), Error> {
 		let mut rng = rand::thread_rng();
 
@@ -254,12 +254,12 @@ impl<T: Topology> Mixnet<T> {
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
-		let chunks = fragment::create_fragments(&mut rng, message, with_surbs)?;
-		let paths = self.random_paths(&peer_id, chunks.len(), false)?;
+		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surbs)?;
+		let paths = self.random_paths(&peer_id, &send_options.num_hop, chunks.len(), false)?;
 
-		let mut surbs = if with_surbs {
+		let mut surbs = if send_options.with_surbs {
 			//let ours = (MixPeerId, MixPublicKey);
-			let paths = self.random_paths(&peer_id, 1, true)?.remove(0);
+			let paths = self.random_paths(&peer_id, &send_options.num_hop, 1, true)?.remove(0);
 			let first_node = to_sphinx_id(&paths[0].0).unwrap();
 			let paths: Vec<_> = paths
 				.into_iter()
@@ -435,13 +435,19 @@ impl<T: Topology> Mixnet<T> {
 	fn random_paths(
 		&self,
 		recipient: &MixPeerId,
+		num_hops: &Option<usize>,
 		count: usize,
 		surbs: bool,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		let (start, recipient) =
 			if surbs { (recipient, &self.local_id) } else { (&self.local_id, recipient) };
 
-		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", T::ACTIVE, self.num_hops);
+		let num_hops = num_hops.clone().unwrap_or(self.num_hops);
+		if num_hops > sphinx::MAX_HOPS {
+			return Err(Error::TooManyHops);
+		}
+
+		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", T::ACTIVE, num_hops);
 		if !T::ACTIVE {
 			log::warn!(target: "mixnet", "No topology, direct transmission");
 			// No topology is defined. Check if direct connection is possible.
@@ -451,7 +457,7 @@ impl<T: Topology> Mixnet<T> {
 			}
 		}
 
-		self.topology.random_path(start, recipient, count, self.num_hops)
+		self.topology.random_path(start, recipient, count, num_hops, sphinx::MAX_HOPS)
 	}
 
 	fn random_cover_paths(&self) -> Vec<(MixPeerId, MixPublicKey)> {

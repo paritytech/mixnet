@@ -32,7 +32,7 @@ use libp2p_tcp::TcpConfig;
 use rand::{prelude::IteratorRandom, RngCore};
 use std::collections::HashMap;
 
-use mixnet::MixPublicKey;
+use mixnet::{MixPublicKey, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -188,7 +188,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
-				.send(recipient.clone(), source_message.to_vec(), with_surbs)
+				.send(
+					recipient.clone(),
+					source_message.to_vec(),
+					SendOptions { num_hop: None, with_surbs },
+				)
 				.unwrap();
 		}
 	}
