@@ -26,7 +26,7 @@ mod network;
 
 pub use crate::core::{
 	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey,
-	NoTopology, Topology, PACKET_SIZE,
+	NoTopology, SurbsEncoded, Topology, PACKET_SIZE,
 };
 pub use network::{
 	DecodedMessage, MessageType, Mixnet, MixnetWorker, NetworkEvent, WorkerChannels, WorkerSink,

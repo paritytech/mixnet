@@ -358,10 +358,15 @@ mod test {
 
 		large_fragments.shuffle(&mut rng);
 		for fragment in large_fragments.iter().skip(1) {
-			assert_eq!(fragments.insert_fragment(fragment.clone(), MessageType::StandAlone).unwrap(), None);
+			assert_eq!(
+				fragments.insert_fragment(fragment.clone(), MessageType::StandAlone).unwrap(),
+				None
+			);
 		}
 		assert_eq!(
-			fragments.insert_fragment(large_fragments[0].clone(), MessageType::StandAlone).unwrap(),
+			fragments
+				.insert_fragment(large_fragments[0].clone(), MessageType::StandAlone)
+				.unwrap(),
 			Some((large, MessageType::StandAlone))
 		);
 
@@ -373,10 +378,19 @@ mod test {
 	#[test]
 	fn insert_invalid() {
 		let mut fragments = MessageCollection::new();
-		assert_eq!(fragments.insert_fragment(vec![], MessageType::StandAlone), Err(Error::BadFragment));
-		assert_eq!(fragments.insert_fragment(vec![42], MessageType::StandAlone), Err(Error::BadFragment));
+		assert_eq!(
+			fragments.insert_fragment(vec![], MessageType::StandAlone),
+			Err(Error::BadFragment)
+		);
+		assert_eq!(
+			fragments.insert_fragment(vec![42], MessageType::StandAlone),
+			Err(Error::BadFragment)
+		);
 		let empty_packet = [0u8; FRAGMENT_PACKET_SIZE].to_vec();
-		assert_eq!(fragments.insert_fragment(empty_packet, MessageType::StandAlone), Err(Error::BadFragment));
+		assert_eq!(
+			fragments.insert_fragment(empty_packet, MessageType::StandAlone),
+			Err(Error::BadFragment)
+		);
 	}
 
 	#[test]
@@ -394,7 +408,12 @@ mod test {
 		let mut message = Vec::new();
 		message.resize(FRAGMENT_PACKET_SIZE * 2, 0u8);
 		let message_fragments = create_fragments(&mut rng, message, false).unwrap();
-		assert_eq!(fragments.insert_fragment(message_fragments[0].clone(), MessageType::StandAlone).unwrap(), None);
+		assert_eq!(
+			fragments
+				.insert_fragment(message_fragments[0].clone(), MessageType::StandAlone)
+				.unwrap(),
+			None
+		);
 		assert_eq!(1, fragments.0.messages.len());
 		fragments.cleanup(Instant::now());
 		assert_eq!(0, fragments.0.messages.len());
