@@ -161,7 +161,7 @@ pub struct SurbsPersistance {
 	pub keys: Vec<SprpKey>,
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub struct SurbsEncoded {
 	pub first_node: [u8; NODE_ID_SIZE],
 	pub first_key: SprpKey,

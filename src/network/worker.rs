@@ -50,7 +50,7 @@ pub enum WorkerOut {
 
 /// Embed mixnet and process queue of instruction.
 pub struct MixnetWorker<T> {
-	mixnet: Mixnet<T>,
+	pub mixnet: Mixnet<T>,
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
 }
@@ -67,11 +67,13 @@ impl<T: Topology> MixnetWorker<T> {
 	}
 
 	/// Direct access to topology.
+	/// TODO rem (mixnet is pub)
 	pub fn topology(&self) -> Option<&T> {
 		self.mixnet.topology()
 	}
 
 	/// Mutable direct access to topology.
+	/// TODO rem (mixnet is pub)
 	pub fn topology_mut(&mut self) -> Option<&mut T> {
 		self.mixnet.topology_mut()
 	}

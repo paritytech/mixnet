@@ -191,7 +191,7 @@ pub enum NetworkEvent {
 }
 
 /// Variant of message received.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum MessageType {
 	/// Message only.
 	StandAlone,
