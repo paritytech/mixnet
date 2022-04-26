@@ -205,12 +205,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			loop {
 				match swarm.select_next_some().await {
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
-						mixnet::DecodedMessage { peer, message, surbs_reply },
+						mixnet::DecodedMessage { peer, message, kind },
 					)) => {
 						received += 1;
 						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
 						assert_eq!(source_message.as_slice(), message.as_slice());
-						if let Some(reply) = surbs_reply {
+						if let Some(reply) = kind.surbs() {
 							swarm.behaviour_mut().send_surbs(b"pong".to_vec(), reply).unwrap();
 						}
 						if received == message_count {
@@ -233,7 +233,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 					// TODO have surbs original message (can be small vec id: make it an input
 					// param) attached.
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
-						mixnet::DecodedMessage { peer: _, message, surbs_reply: _ },
+						mixnet::DecodedMessage { peer: _, message, kind: _ },
 					)) => {
 						assert!(message.as_slice() == b"pong");
 						expected_surbs.as_mut().map(|nb| *nb -= 1);

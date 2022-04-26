@@ -23,7 +23,7 @@
 
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology},
-	MixPeerId, SendOptions,
+	MessageType, MixPeerId, SendOptions,
 };
 use futures::{channel::mpsc::SendError, Sink, Stream};
 use std::{
@@ -45,7 +45,7 @@ pub enum WorkerIn {
 
 pub enum WorkerOut {
 	Event(MixEvent), // TODO could be simplified
-	ReceivedMessage(MixPeerId, Vec<u8>, Option<SurbsEncoded>),
+	ReceivedMessage(MixPeerId, Vec<u8>, MessageType),
 }
 
 /// Embed mixnet and process queue of instruction.

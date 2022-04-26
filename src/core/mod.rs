@@ -27,7 +27,7 @@ mod sphinx;
 mod topology;
 
 pub use crate::core::sphinx::{SurbsEncoded, SurbsPersistance};
-use crate::{MixPeerId, SendOptions};
+use crate::{MessageType, MixPeerId, SendOptions};
 pub use config::Config;
 pub use error::Error;
 use futures::FutureExt;
@@ -338,7 +338,7 @@ impl<T: Topology> Mixnet<T> {
 		&mut self,
 		peer_id: MixPeerId,
 		message: Vec<u8>,
-	) -> Result<Option<(Vec<u8>, Option<SurbsEncoded>)>, Error> {
+	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
 		if message.len() != PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
@@ -358,7 +358,7 @@ impl<T: Topology> Mixnet<T> {
 				return Ok(None)
 			},
 			Ok(Unwrapped::Payload(payload)) => {
-				if let Some(m) = self.fragments.insert_fragment(payload, None)? {
+				if let Some(m) = self.fragments.insert_fragment(payload, MessageType::StandAlone)? {
 					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
@@ -366,7 +366,7 @@ impl<T: Topology> Mixnet<T> {
 				}
 			},
 			Ok(Unwrapped::SurbsReply(payload)) => {
-				if let Some(m) = self.fragments.insert_fragment(payload, None)? {
+				if let Some(m) = self.fragments.insert_fragment(payload, MessageType::FromSurbs)? {
 					log::debug!(target: "mixnet", "Imported surbs from {} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
@@ -375,8 +375,9 @@ impl<T: Topology> Mixnet<T> {
 			},
 			Ok(Unwrapped::SurbsQuery(encoded_surbs, payload)) => {
 				debug_assert!(encoded_surbs.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
-				if let Some(m) =
-					self.fragments.insert_fragment(payload, Some(encoded_surbs.into()))?
+				if let Some(m) = self
+					.fragments
+					.insert_fragment(payload, MessageType::WithSurbs(encoded_surbs.into()))?
 				{
 					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
@@ -444,7 +445,7 @@ impl<T: Topology> Mixnet<T> {
 
 		let num_hops = num_hops.clone().unwrap_or(self.num_hops);
 		if num_hops > sphinx::MAX_HOPS {
-			return Err(Error::TooManyHops);
+			return Err(Error::TooManyHops)
 		}
 
 		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", T::ACTIVE, num_hops);

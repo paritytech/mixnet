@@ -190,6 +190,32 @@ pub enum NetworkEvent {
 	Message(DecodedMessage),
 }
 
+/// Variant of message received.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MessageType {
+	/// Message only.
+	StandAlone,
+	/// Message with a surbs for reply.
+	WithSurbs(SurbsEncoded),
+	/// Message from a surbs reply (trusted).
+	FromSurbs,
+}
+
+impl MessageType {
+	/// can the message a surbs reply.
+	pub fn with_surbs(&self) -> bool {
+		matches!(self, &MessageType::WithSurbs(_))
+	}
+
+	/// Extract surbs.
+	pub fn surbs(self) -> Option<SurbsEncoded> {
+		match self {
+			MessageType::WithSurbs(surbs) => Some(surbs),
+			_ => None,
+		}
+	}
+}
+
 /// A full mixnet message that has reached its recipient.
 #[derive(Debug)]
 pub struct DecodedMessage {
@@ -198,8 +224,8 @@ pub struct DecodedMessage {
 	pub peer: PeerId,
 	/// Message data.
 	pub message: Vec<u8>,
-	/// Enveloppe for a possible surbs reply.
-	pub surbs_reply: Option<SurbsEncoded>,
+	/// Message kind.
+	pub kind: MessageType,
 }
 
 impl<T> NetworkBehaviour for Mixnet<T>
@@ -259,7 +285,7 @@ where
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					if let Ok(Some((message, surbs_reply))) =
+					if let Ok(Some((message, kind))) =
 						match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
 							(Some(mixnet), None) => mixnet.import_message(peer_id, message),
 							(None, Some((mixnet_in, _))) => {
@@ -276,7 +302,7 @@ where
 						self.events.push_front(NetworkEvent::Message(DecodedMessage {
 							peer: peer_id,
 							message,
-							surbs_reply,
+							kind,
 						}))
 					}
 				}
@@ -406,11 +432,11 @@ where
 						WorkerOut::Event(MixEvent::Disconnect(peer_id)) => {
 							self.connected.remove(&peer_id);
 						},
-						WorkerOut::ReceivedMessage(peer, message, surbs_reply) =>
+						WorkerOut::ReceivedMessage(peer, message, kind) =>
 							self.events.push_front(NetworkEvent::Message(DecodedMessage {
 								peer,
 								message,
-								surbs_reply,
+								kind,
 							})),
 					},
 					Poll::Ready(None) => {

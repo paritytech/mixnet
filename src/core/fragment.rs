@@ -26,7 +26,7 @@
 //! is only announced in this fragement.
 
 use super::{Error, MixnetCollection};
-use crate::core::sphinx::{SurbsEncoded, SURBS_REPLY_SIZE};
+use crate::{core::sphinx::SURBS_REPLY_SIZE, MessageType};
 use rand::Rng;
 use std::{
 	collections::{hash_map::Entry, HashMap},
@@ -126,12 +126,12 @@ struct IncompleteMessage {
 	target_iv: [u8; 32],
 	target_hash: MessageHash,
 	fragments: HashMap<u32, Vec<u8>>,
-	surbs: Option<SurbsEncoded>,
+	kind: MessageType,
 }
 
 impl IncompleteMessage {
 	fn current_len(&self) -> usize {
-		let surbs_len = if self.surbs.is_some() { SURBS_REPLY_SIZE } else { 0 };
+		let surbs_len = if self.kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
 		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surbs_len
 	}
 
@@ -147,12 +147,12 @@ impl IncompleteMessage {
 
 	fn total_expected_fragments(&self) -> Option<usize> {
 		self.target_len.map(|target_len| {
-			let surbs_len = if self.surbs.is_some() { SURBS_REPLY_SIZE } else { 0 };
+			let surbs_len = if self.kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
 			(target_len as usize + surbs_len) / FRAGMENT_PAYLOAD_SIZE + 1
 		})
 	}
 
-	fn reconstruct(mut self) -> Result<(Vec<u8>, Option<SurbsEncoded>), Error> {
+	fn reconstruct(mut self) -> Result<(Vec<u8>, MessageType), Error> {
 		let mut index = 0;
 		let target_len = if let Some(len) = self.target_len {
 			len as usize
@@ -177,7 +177,7 @@ impl IncompleteMessage {
 		if hash != self.target_hash {
 			return Err(Error::BadFragment)
 		}
-		Ok((result, self.surbs))
+		Ok((result, self.kind))
 	}
 }
 
@@ -194,9 +194,9 @@ impl MessageCollection {
 	pub fn insert_fragment(
 		&mut self,
 		mut fragment: Vec<u8>,
-		surbs: Option<SurbsEncoded>,
-	) -> Result<Option<(Vec<u8>, Option<SurbsEncoded>)>, Error> {
-		let surbs_len = if surbs.is_some() { SURBS_REPLY_SIZE } else { 0 };
+		kind: MessageType,
+	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
+		let surbs_len = if kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
 		if fragment.len() + surbs_len != FRAGMENT_PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
@@ -218,8 +218,8 @@ impl MessageCollection {
 					e.get_mut().0.target_iv = header.iv();
 				}
 				e.get_mut().0.fragments.insert(index, fragment);
-				if surbs.is_some() {
-					e.get_mut().0.surbs = surbs;
+				if kind.with_surbs() {
+					e.get_mut().0.kind = kind;
 				}
 				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().0.num_fragments(), e.get().0.total_expected_fragments());
 				if e.get().0.is_complete() {
@@ -241,7 +241,7 @@ impl MessageCollection {
 					target_len,
 					target_iv,
 					fragments: Default::default(),
-					surbs,
+					kind,
 				};
 				message.fragments.insert(index, fragment);
 				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{:?})", index, 1, message.total_expected_fragments());
@@ -346,8 +346,8 @@ mod test {
 		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE);
 
 		assert_eq!(
-			fragments.insert_fragment(small_fragment, None).unwrap(),
-			Some((vec![42], None))
+			fragments.insert_fragment(small_fragment, MessageType::FromSurbs).unwrap(),
+			Some((vec![42], MessageType::FromSurbs))
 		);
 
 		let mut large = Vec::new();
@@ -358,11 +358,11 @@ mod test {
 
 		large_fragments.shuffle(&mut rng);
 		for fragment in large_fragments.iter().skip(1) {
-			assert_eq!(fragments.insert_fragment(fragment.clone(), None).unwrap(), None);
+			assert_eq!(fragments.insert_fragment(fragment.clone(), MessageType::StandAlone).unwrap(), None);
 		}
 		assert_eq!(
-			fragments.insert_fragment(large_fragments[0].clone(), None).unwrap(),
-			Some((large, None))
+			fragments.insert_fragment(large_fragments[0].clone(), MessageType::StandAlone).unwrap(),
+			Some((large, MessageType::StandAlone))
 		);
 
 		let mut too_large = Vec::new();
@@ -373,10 +373,10 @@ mod test {
 	#[test]
 	fn insert_invalid() {
 		let mut fragments = MessageCollection::new();
-		assert_eq!(fragments.insert_fragment(vec![], None), Err(Error::BadFragment));
-		assert_eq!(fragments.insert_fragment(vec![42], None), Err(Error::BadFragment));
+		assert_eq!(fragments.insert_fragment(vec![], MessageType::StandAlone), Err(Error::BadFragment));
+		assert_eq!(fragments.insert_fragment(vec![42], MessageType::StandAlone), Err(Error::BadFragment));
 		let empty_packet = [0u8; FRAGMENT_PACKET_SIZE].to_vec();
-		assert_eq!(fragments.insert_fragment(empty_packet, None), Err(Error::BadFragment));
+		assert_eq!(fragments.insert_fragment(empty_packet, MessageType::StandAlone), Err(Error::BadFragment));
 	}
 
 	#[test]
@@ -394,7 +394,7 @@ mod test {
 		let mut message = Vec::new();
 		message.resize(FRAGMENT_PACKET_SIZE * 2, 0u8);
 		let message_fragments = create_fragments(&mut rng, message, false).unwrap();
-		assert_eq!(fragments.insert_fragment(message_fragments[0].clone(), None).unwrap(), None);
+		assert_eq!(fragments.insert_fragment(message_fragments[0].clone(), MessageType::StandAlone).unwrap(), None);
 		assert_eq!(1, fragments.0.messages.len());
 		fragments.cleanup(Instant::now());
 		assert_eq!(0, fragments.0.messages.len());

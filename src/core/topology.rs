@@ -68,7 +68,7 @@ pub trait Topology: Sized + Send + 'static {
 		max_hops: usize,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		if num_hops > max_hops {
-			return Err(Error::TooManyHops);
+			return Err(Error::TooManyHops)
 		}
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
