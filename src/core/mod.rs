@@ -401,10 +401,9 @@ impl<T: Topology> Mixnet<T> {
 		&mut self,
 		id: MixPeerId,
 		public_key: MixPublicKey,
-		connection_info: T::ConnectionInfo,
 	) {
 		self.connected_peers.insert(id, public_key);
-		self.topology.connected(id, public_key, connection_info);
+		self.topology.connected(id, public_key);
 	}
 
 	/// Should be called when a peer is disconnected.

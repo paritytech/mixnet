@@ -58,8 +58,6 @@ impl TopologyGraph {
 }
 
 impl mixnet::Topology for TopologyGraph {
-	type ConnectionInfo = ();
-
 	fn neighbors(&self, id: &PeerId) -> Option<Vec<(PeerId, MixPublicKey)>> {
 		self.connections.get(id).cloned()
 	}
@@ -71,16 +69,7 @@ impl mixnet::Topology for TopologyGraph {
 	fn routing(&self) -> bool {
 		true
 	}
-
-	fn encoded_connection_info(_: &Self::ConnectionInfo) -> Vec<u8> {
-		Vec::new()
-	}
-
-	fn read_connection_info(encoded: &[u8]) -> Option<Self::ConnectionInfo> {
-		(encoded.len() == 0).then(|| ())
-	}
-
-	fn connected(&mut self, _: PeerId, _: MixPublicKey, _: Self::ConnectionInfo) {}
+	fn connected(&mut self, _: PeerId, _: MixPublicKey) {}
 
 	fn disconnect(&mut self, _: &PeerId) {}
 }
@@ -119,7 +108,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			limit_per_window: None,
 		};
 
-		let mixnet = mixnet::Mixnet::new(cfg, topology.clone(), &());
+		let mixnet = mixnet::Mixnet::new(cfg, topology.clone());
 		let mut swarm = Swarm::new(trans, mixnet, id.clone());
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();

@@ -91,7 +91,6 @@ pub struct Mixnet<T: Topology> {
 	events: VecDeque<NetworkEvent>,
 	handshake_queue: VecDeque<PeerId>,
 	public_key: MixPublicKey,
-	encoded_connection_info: Vec<u8>,
 	default_limit_msg: Option<u32>,
 	current_window: Wrapping<usize>,
 	window_delay: Delay,
@@ -99,7 +98,7 @@ pub struct Mixnet<T: Topology> {
 
 impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
-	pub fn new(config: Config, topology: T, connection_info: &T::ConnectionInfo) -> Self {
+	pub fn new(config: Config, topology: T) -> Self {
 		Self {
 			public_key: config.public_key,
 			default_limit_msg: config.limit_per_window.clone(),
@@ -109,7 +108,6 @@ impl<T: Topology> Mixnet<T> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
-			encoded_connection_info: T::encoded_connection_info(&connection_info),
 			current_window: Wrapping(0),
 			window_delay: Delay::new(WINDOW_BACKPRESSURE),
 			pending_disconnect: Default::default(),
@@ -119,7 +117,6 @@ impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new_from_worker(
 		config: Config,
-		encoded_connection_info: Vec<u8>,
 		worker_in: WorkerSink,
 		worker_out: WorkerStream,
 	) -> Self {
@@ -131,7 +128,6 @@ impl<T: Topology> Mixnet<T> {
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
-			encoded_connection_info,
 			default_limit_msg: config.limit_per_window,
 			current_window: Wrapping(0),
 			window_delay: Delay::new(WINDOW_BACKPRESSURE),
@@ -197,9 +193,7 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	fn handshake_message(&self) -> Vec<u8> {
-		let mut message = self.public_key.to_bytes().to_vec();
-		message.extend_from_slice(&self.encoded_connection_info[..]);
-		message
+		self.public_key.to_bytes().to_vec()
 	}
 }
 
@@ -259,7 +253,6 @@ pub struct DecodedMessage {
 impl<T> NetworkBehaviour for Mixnet<T>
 where
 	T: Topology + Send + 'static,
-	T::ConnectionInfo: Send,
 {
 	type ProtocolsHandler = Handler;
 	type OutEvent = NetworkEvent;
@@ -272,7 +265,7 @@ where
 		match event {
 			Ok(Message(message)) => {
 				if let Some(mut connection) = self.handshakes.remove(&peer_id) {
-					if message.len() < PUBLIC_KEY_LEN {
+					if message.len() != PUBLIC_KEY_LEN {
 						log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
 						// Just drop the connection for now, it should terminate by timeout.
 						return
@@ -285,24 +278,13 @@ where
 					self.connected.insert(peer_id, connection);
 					match (self.mixnet.as_mut(), self.mixnet_worker.as_mut()) {
 						(Some(mixnet), None) => {
-							let connection_info =
-								match T::read_connection_info(&message[PUBLIC_KEY_LEN..]) {
-									Some(connection_info) => connection_info,
-									None => {
-										log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
-										self.connected.remove(&peer_id);
-										return
-									},
-								};
-
-							mixnet.add_connected_peer(peer_id, pub_key, connection_info);
+							mixnet.add_connected_peer(peer_id, pub_key);
 						},
 						(None, Some((mixnet_in, _))) => {
 							if let Err(e) =
 								mixnet_in.as_mut().start_send(WorkerIn::AddConnectedPeer(
 									peer_id,
 									pub_key,
-									message[PUBLIC_KEY_LEN..].to_vec(),
 								)) {
 								log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 							}

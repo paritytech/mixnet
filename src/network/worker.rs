@@ -38,7 +38,7 @@ pub type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
 pub enum WorkerIn {
 	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, SurbsEncoded),
-	AddConnectedPeer(MixPeerId, MixPublicKey, Vec<u8>),
+	AddConnectedPeer(MixPeerId, MixPublicKey),
 	RemoveConnectedPeer(MixPeerId),
 	ImportMessage(MixPeerId, Vec<u8>),
 }
@@ -118,24 +118,8 @@ impl<T: Topology> MixnetWorker<T> {
 						}
 						return Poll::Ready(true)
 					},
-					WorkerIn::AddConnectedPeer(peer, public_key, connection_info) => {
-						let connection_info = match T::read_connection_info(&connection_info[..]) {
-							Some(connection_info) => connection_info,
-							None => {
-								log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer);
-
-								if let Err(e) = self
-									.worker_out
-									.as_mut()
-									.start_send(WorkerOut::Event(MixEvent::Disconnect(peer)))
-								{
-									log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);
-								}
-								return Poll::Ready(true)
-							},
-						};
-
-						self.mixnet.add_connected_peer(peer, public_key, connection_info);
+					WorkerIn::AddConnectedPeer(peer, public_key) => {
+						self.mixnet.add_connected_peer(peer, public_key);
 					},
 					WorkerIn::RemoveConnectedPeer(peer) => {
 						self.mixnet.remove_connected_peer(&peer);
