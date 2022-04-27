@@ -80,7 +80,7 @@ impl<T: Topology> MixnetWorker<T> {
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
-		// TODO use futures::select
+		// TODO use futures::select and switch to async
 		if let Poll::Ready(e) = self.mixnet.poll(cx) {
 			if let Err(e) = self.worker_out.as_mut().start_send(WorkerOut::Event(e)) {
 				log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);

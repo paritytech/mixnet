@@ -177,6 +177,7 @@ impl ProtocolsHandler for Handler {
 			},
 			Some(ProtocolState::Sending(stream)) => {
 				self.outbound = Some(ProtocolState::Sending(stream));
+				// TODO ask ark if this should not buff (or safeguard ??).
 				log::warn!(target: "mixnet", "Dropped message, already sending");
 			},
 			None =>

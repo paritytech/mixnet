@@ -65,6 +65,8 @@ type SphinxPeerId = [u8; 32];
 pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
 	Disconnect(MixPeerId),
+	Blacklist(MixPeerId),
+	ChangeLimit(MixPeerId, Option<u32>),
 }
 
 fn to_sphinx_id(id: &MixPeerId) -> Result<SphinxPeerId, Error> {
@@ -509,6 +511,7 @@ impl<T: Topology> Mixnet<T> {
 			}
 			if self.topology.routing() {
 				// No packet to produce, generate cover traffic
+				// TODO alternate that generate cover per peer.
 				if let Some((recipient, data)) = self.cover_message() {
 					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
 					return Poll::Ready(MixEvent::SendMessage((recipient, data)))

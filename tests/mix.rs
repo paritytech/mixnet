@@ -116,6 +116,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			timeout_ms: 10000,
 			num_hops: 3,
 			average_message_delay_ms: 50,
+			limit_per_window: None,
 		};
 
 		let mixnet = mixnet::Mixnet::new(cfg, topology.clone(), &());
