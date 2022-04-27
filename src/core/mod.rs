@@ -65,7 +65,6 @@ type SphinxPeerId = [u8; 32];
 pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
 	Disconnect(MixPeerId),
-	Blacklist(MixPeerId),
 	ChangeLimit(MixPeerId, Option<u32>),
 }
 

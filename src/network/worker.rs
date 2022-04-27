@@ -66,6 +66,16 @@ impl<T: Topology> MixnetWorker<T> {
 		self.mixnet.local_id()
 	}
 
+	pub fn change_peer_limit_window(&mut self, peer: MixPeerId, new_limit: Option<u32>) {
+		if let Err(e) = self
+			.worker_out
+			.as_mut()
+			.start_send(WorkerOut::Event(MixEvent::ChangeLimit(peer, new_limit)))
+		{
+			log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);
+		}
+	}
+
 	/// Direct access to topology.
 	/// TODO rem (mixnet is pub)
 	pub fn topology(&self) -> Option<&T> {

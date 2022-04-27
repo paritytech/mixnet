@@ -38,7 +38,6 @@ use libp2p_swarm::{
 	CloseConnection, IntoProtocolsHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
 	PollParameters,
 };
-use lru::LruCache;
 use std::{
 	collections::{HashMap, VecDeque},
 	num::Wrapping,
@@ -50,7 +49,6 @@ pub use worker::MixnetWorker;
 
 type Result = std::result::Result<Message, Failure>;
 
-const BLACK_LIST_MAX_SIZE: usize = 10_000;
 pub const WINDOW_BACKPRESSURE: Duration = Duration::from_secs(5);
 
 /// Internal information tracked for an established connection.
@@ -85,7 +83,6 @@ pub type WorkerChannels = (worker::WorkerSink, worker::WorkerStream);
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct Mixnet<T: Topology> {
-	black_list: LruCache<PeerId, ()>,
 	connected: HashMap<PeerId, Connection>,
 	handshakes: HashMap<PeerId, Connection>,
 	pending_disconnect: VecDeque<(PeerId, ConnectionId)>,
@@ -104,7 +101,7 @@ impl<T: Topology> Mixnet<T> {
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new(config: Config, topology: T, connection_info: &T::ConnectionInfo) -> Self {
 		Self {
-			public_key: config.public_key.clone(),
+			public_key: config.public_key,
 			default_limit_msg: config.limit_per_window.clone(),
 			mixnet: Some(core::Mixnet::new(config, topology)),
 			mixnet_worker: None,
@@ -113,7 +110,6 @@ impl<T: Topology> Mixnet<T> {
 			events: Default::default(),
 			handshake_queue: Default::default(),
 			encoded_connection_info: T::encoded_connection_info(&connection_info),
-			black_list: LruCache::new(BLACK_LIST_MAX_SIZE),
 			current_window: Wrapping(0),
 			window_delay: Delay::new(WINDOW_BACKPRESSURE),
 			pending_disconnect: Default::default(),
@@ -122,15 +118,13 @@ impl<T: Topology> Mixnet<T> {
 
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new_from_worker(
-		kp: &libp2p_core::identity::ed25519::Keypair,
-		default_limit_msg: Option<u32>,
+		config: Config,
 		encoded_connection_info: Vec<u8>,
 		worker_in: WorkerSink,
 		worker_out: WorkerStream,
 	) -> Self {
-		let public_key = crate::core::public_from_ed25519(&kp.public());
 		Self {
-			public_key,
+			public_key: config.public_key,
 			mixnet: None,
 			mixnet_worker: Some((worker_in, worker_out)),
 			connected: Default::default(),
@@ -138,8 +132,7 @@ impl<T: Topology> Mixnet<T> {
 			events: Default::default(),
 			handshake_queue: Default::default(),
 			encoded_connection_info,
-			black_list: LruCache::new(BLACK_LIST_MAX_SIZE),
-			default_limit_msg,
+			default_limit_msg: config.limit_per_window,
 			current_window: Wrapping(0),
 			window_delay: Delay::new(WINDOW_BACKPRESSURE),
 			pending_disconnect: Default::default(),
@@ -278,11 +271,6 @@ where
 	fn inject_event(&mut self, peer_id: PeerId, con_id: ConnectionId, event: Result) {
 		match event {
 			Ok(Message(message)) => {
-				if self.black_list.contains(&peer_id) {
-					log::trace!(target: "mixnet", "Disconecting blacklisted peer {:?}.", peer_id);
-					self.pending_disconnect.push_front((peer_id, con_id));
-					return
-				}
 				if let Some(mut connection) = self.handshakes.remove(&peer_id) {
 					if message.len() < PUBLIC_KEY_LEN {
 						log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
@@ -501,14 +489,9 @@ where
 							}
 						},
 						WorkerOut::Event(MixEvent::ChangeLimit(peer_id, limit)) => {
-							self.black_list.pop(&peer_id);
 							if let Some(connection) = self.connected.get_mut(&peer_id) {
 								connection.limit_msg = limit;
 							}
-						},
-						WorkerOut::Event(MixEvent::Blacklist(peer_id)) => {
-							self.connected.remove(&peer_id);
-							self.black_list.push(peer_id, ());
 						},
 						WorkerOut::Event(MixEvent::Disconnect(peer_id)) => {
 							self.connected.remove(&peer_id);
