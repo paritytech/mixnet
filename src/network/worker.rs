@@ -76,18 +76,6 @@ impl<T: Topology> MixnetWorker<T> {
 		}
 	}
 
-	/// Direct access to topology.
-	/// TODO rem (mixnet is pub)
-	pub fn topology(&self) -> Option<&T> {
-		self.mixnet.topology()
-	}
-
-	/// Mutable direct access to topology.
-	/// TODO rem (mixnet is pub)
-	pub fn topology_mut(&mut self) -> Option<&mut T> {
-		self.mixnet.topology_mut()
-	}
-
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		// TODO use futures::select and switch to async

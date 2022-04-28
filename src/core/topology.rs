@@ -25,9 +25,6 @@ use rand::Rng;
 
 /// Provide network topology information to the mixnet.
 pub trait Topology: Sized + Send + 'static {
-	/// If topology is not active, we use direct connection.
-	const ACTIVE: bool = true;
-
 	/// Select a random recipient for the message to be delivered. This is
 	/// called when the user sends the message with no recipient specified.
 	/// E.g. this can select a random validator that can accept the blockchain
@@ -146,21 +143,60 @@ fn gen_paths<T: Topology>(
 	}
 }
 
-/// No specific topology defined, we use all connected peers instead.
-pub struct NoTopology;
+/// No topology try direct connection.
+pub struct NoTopology {
+	pub connected_peers: std::collections::HashMap<MixPeerId, MixPublicKey>,
+}
 
 impl Topology for NoTopology {
-	const ACTIVE: bool = false;
-
 	fn random_recipient(&self) -> Option<MixPeerId> {
-		None
+		use rand::prelude::IteratorRandom;
+		let mut rng = rand::thread_rng();
+		// Select a random connected peer
+		self.connected_peers.keys().choose(&mut rng).cloned()
 	}
-	fn neighbors(&self, _: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+
+	fn random_path(
+		&self,
+		_start: &MixPeerId,
+		recipient: &MixPeerId,
+		count: usize,
+		_num_hops: usize,
+		_max_hops: usize,
+	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
+		log::warn!(target: "mixnet", "No topology, direct transmission");
+		// No topology is defined. Check if direct connection is possible.
+		match self.connected_peers.get(&recipient) {
+			Some(key) => return Ok(vec![vec![(*recipient, key.clone())]; count]),
+			_ => return Err(Error::NoPath(Some(*recipient))),
+		}
+	}
+
+	fn random_cover_path(&self, _local_id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
+		let neighbors = self
+			.connected_peers
+			.iter()
+			.map(|(id, key)| (id.clone(), key.clone()))
+			.collect::<Vec<_>>();
+		if neighbors.is_empty() {
+			return Vec::new()
+		}
+
+		let mut rng = rand::thread_rng();
+		let n: usize = rng.gen_range(0..neighbors.len());
+		vec![neighbors[n].clone()]
+	}
+
+	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		None
 	}
 	fn routing(&self) -> bool {
 		true
 	}
-	fn connected(&mut self, _: MixPeerId, _: MixPublicKey) {}
-	fn disconnect(&mut self, _: &MixPeerId) {}
+	fn connected(&mut self, id: MixPeerId, key: MixPublicKey) {
+		self.connected_peers.insert(id, key);
+	}
+	fn disconnect(&mut self, id: &MixPeerId) {
+		self.connected_peers.remove(id);
+	}
 }

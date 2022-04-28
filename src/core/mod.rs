@@ -33,7 +33,7 @@ pub use error::Error;
 use futures::FutureExt;
 use futures_timer::Delay;
 use libp2p_core::{identity::ed25519, PeerId};
-use rand::{prelude::IteratorRandom, CryptoRng, Rng};
+use rand::{CryptoRng, Rng};
 use rand_distr::Distribution;
 pub use sphinx::Error as SphinxError;
 use std::{
@@ -140,13 +140,10 @@ impl std::cmp::Ord for QueuedPacket {
 
 /// Mixnet core. Mixes messages, tracks fragments and delays.
 pub struct Mixnet<T> {
-	topology: T,
+	pub topology: T,
 	num_hops: usize, // TODO should be part of topology.
 	secret: MixSecretKey,
 	local_id: MixPeerId,
-	// TODO remove and force usage of topology: then switch
-	// test to a topology of connected peer (using worker maybe).
-	connected_peers: HashMap<MixPeerId, MixPublicKey>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
 	// Message waiting for surbs.
@@ -171,7 +168,6 @@ impl<T: Topology> Mixnet<T> {
 			num_hops: config.num_hops as usize,
 			secret: config.secret_key,
 			local_id: config.local_id,
-			connected_peers: Default::default(),
 			fragments: MessageCollection::new(),
 			packet_queue: Default::default(),
 			next_message: Delay::new(Duration::from_millis(0)),
@@ -186,22 +182,6 @@ impl<T: Topology> Mixnet<T> {
 
 	pub fn local_id(&self) -> &MixPeerId {
 		&self.local_id
-	}
-
-	/// Direct access to topology.
-	pub fn topology(&self) -> Option<&T> {
-		if !T::ACTIVE {
-			return None
-		}
-		Some(&self.topology)
-	}
-
-	/// Mutable direct access to topology.
-	pub fn topology_mut(&mut self) -> Option<&mut T> {
-		if !T::ACTIVE {
-			return None
-		}
-		Some(&mut self.topology)
 	}
 
 	fn queue_packet(
@@ -244,12 +224,7 @@ impl<T: Topology> Mixnet<T> {
 		let maybe_peer_id = if let Some(id) = peer_id {
 			Some(id)
 		} else {
-			if T::ACTIVE {
-				self.topology.random_recipient()
-			} else {
-				// Select a random connected peer
-				self.connected_peers.keys().choose(&mut rng).cloned()
-			}
+			self.topology.random_recipient()
 		};
 
 		let peer_id =
@@ -402,13 +377,11 @@ impl<T: Topology> Mixnet<T> {
 		id: MixPeerId,
 		public_key: MixPublicKey,
 	) {
-		self.connected_peers.insert(id, public_key);
 		self.topology.connected(id, public_key);
 	}
 
 	/// Should be called when a peer is disconnected.
 	pub fn remove_connected_peer(&mut self, id: &MixPeerId) {
-		self.connected_peers.remove(id);
 		self.topology.disconnect(id);
 	}
 
@@ -448,36 +421,12 @@ impl<T: Topology> Mixnet<T> {
 			return Err(Error::TooManyHops)
 		}
 
-		log::trace!(target: "mixnet", "Random path, topology {:?}, length {:?}", T::ACTIVE, num_hops);
-		if !T::ACTIVE {
-			log::warn!(target: "mixnet", "No topology, direct transmission");
-			// No topology is defined. Check if direct connection is possible.
-			match self.connected_peers.get(&recipient) {
-				Some(key) => return Ok(vec![vec![(*recipient, key.clone())]; count]),
-				_ => return Err(Error::NoPath(Some(*recipient))),
-			}
-		}
-
+		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
 		self.topology.random_path(start, recipient, count, num_hops, sphinx::MAX_HOPS)
 	}
 
 	fn random_cover_paths(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		if !T::ACTIVE {
-			let neighbors = self
-				.connected_peers
-				.iter()
-				.map(|(id, key)| (id.clone(), key.clone()))
-				.collect::<Vec<_>>();
-			if neighbors.is_empty() {
-				return Vec::new()
-			}
-
-			let mut rng = rand::thread_rng();
-			let n: usize = rng.gen_range(0..neighbors.len());
-			vec![neighbors[n].clone()]
-		} else {
-			self.topology.random_cover_path(&self.local_id)
-		}
+		self.topology.random_cover_path(&self.local_id)
 	}
 
 	fn cleanup(&mut self) {
