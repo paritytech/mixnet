@@ -62,7 +62,9 @@ impl Config {
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
-			limit_per_window: Some((crate::network::WINDOW_BACKPRESSURE.as_millis() as u32 / 500) * 2),
+			limit_per_window: Some(
+				(crate::network::WINDOW_BACKPRESSURE.as_millis() as u32 / 500) * 2,
+			),
 		}
 	}
 }

@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use futures::{channel::mpsc, future::Either, prelude::*};
+use futures::{channel::mpsc, future::Either, prelude::*, task::SpawnExt};
 use libp2p_core::{
 	identity::{self},
 	muxing::StreamMuxerBox,
@@ -30,7 +30,7 @@ use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::TcpConfig;
 use rand::{prelude::IteratorRandom, RngCore};
-use std::collections::HashMap;
+use std::{collections::HashMap, task::Poll};
 
 use mixnet::{MixPublicKey, SendOptions};
 
@@ -80,6 +80,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	source_message.resize(message_size, 0);
 	rand::thread_rng().fill_bytes(&mut source_message);
 
+	let executor = futures::executor::ThreadPool::new().unwrap();
 	let mut nodes = Vec::new();
 	let mut secrets = Vec::new();
 	let mut transports = Vec::new();
@@ -108,7 +109,26 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			limit_per_window: None,
 		};
 
-		let mixnet = mixnet::Mixnet::new(cfg, topology.clone());
+		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);
+		let (from_worker_sink, from_worker_stream) = mpsc::channel(1000);
+		let mixnet = mixnet::MixnetBehaviour::new(
+			cfg.clone(),
+			Box::pin(to_worker_sink),
+			Box::pin(from_worker_stream),
+		);
+		let mut worker = mixnet::MixnetWorker::new(
+			cfg,
+			topology.clone(),
+			(Box::pin(from_worker_sink), Box::pin(to_worker_stream)),
+		);
+		let worker = future::poll_fn(move |cx| {
+			if worker.poll(cx) == Poll::Ready(false) {
+				Poll::Ready(())
+			} else {
+				Poll::Pending
+			}
+		});
+		executor.spawn(worker).unwrap();
 		let mut swarm = Swarm::new(trans, mixnet, id.clone());
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();

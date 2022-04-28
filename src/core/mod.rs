@@ -221,11 +221,8 @@ impl<T: Topology> Mixnet<T> {
 	) -> Result<(), Error> {
 		let mut rng = rand::thread_rng();
 
-		let maybe_peer_id = if let Some(id) = peer_id {
-			Some(id)
-		} else {
-			self.topology.random_recipient()
-		};
+		let maybe_peer_id =
+			if let Some(id) = peer_id { Some(id) } else { self.topology.random_recipient() };
 
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
@@ -372,11 +369,7 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	/// Should be called when a new peer is connected.
-	pub fn add_connected_peer(
-		&mut self,
-		id: MixPeerId,
-		public_key: MixPublicKey,
-	) {
+	pub fn add_connected_peer(&mut self, id: MixPeerId, public_key: MixPublicKey) {
 		self.topology.connected(id, public_key);
 	}
 

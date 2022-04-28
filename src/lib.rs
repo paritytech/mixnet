@@ -29,8 +29,8 @@ pub use crate::core::{
 	NoTopology, SurbsEncoded, Topology, PACKET_SIZE,
 };
 pub use network::{
-	DecodedMessage, MessageType, Mixnet, MixnetWorker, NetworkEvent, WorkerChannels, WorkerSink,
-	WorkerStream,
+	DecodedMessage, MessageType, MixnetBehaviour, MixnetWorker, NetworkEvent, WorkerChannels,
+	WorkerSink, WorkerStream,
 };
 
 /// Mixnet peer identity.

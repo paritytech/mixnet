@@ -105,11 +105,7 @@ pub trait Topology: Sized + Send + 'static {
 	}
 
 	/// On connection successful handshake.
-	fn connected(
-		&mut self,
-		id: MixPeerId,
-		public_key: MixPublicKey,
-	);
+	fn connected(&mut self, id: MixPeerId, public_key: MixPublicKey);
 
 	/// On disconnect.
 	fn disconnect(&mut self, id: &MixPeerId);
