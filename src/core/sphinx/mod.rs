@@ -146,7 +146,7 @@ pub enum Unwrapped {
 	Forward((NodeId, Delay, Vec<u8>)),
 	Payload(Vec<u8>),
 	SurbsQuery(Vec<u8>, Vec<u8>),
-	SurbsReply(Vec<u8>),
+	SurbsReply(Vec<u8>, Option<Vec<u8>>),
 }
 
 enum DoNextHop {
@@ -157,8 +157,8 @@ enum DoNextHop {
 }
 
 pub struct SurbsPersistance {
-	// TODO consider optional message.
 	pub keys: Vec<SprpKey>,
+	pub query: Option<Vec<u8>>,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -504,7 +504,7 @@ pub fn unwrap_packet(
 					return Err(Error::PayloadError)
 				}
 				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				Ok(Unwrapped::SurbsReply(decrypted_payload)) // TODO optionally attach origin message??
+				Ok(Unwrapped::SurbsReply(decrypted_payload, surbs.query))
 			} else {
 				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
 				return Err(Error::MissingSurbs)
@@ -566,6 +566,12 @@ mod test {
     closed doors, secret handshakes, and couriers. The technologies of the past did not allow for strong \
     privacy, but electronic technologies do.";
 
+		let keypair = libp2p_core::identity::Keypair::generate_ed25519();
+		let config = if let libp2p_core::identity::Keypair::Ed25519(kp) = &keypair {
+			crate::Config::new_with_ed25519_keypair(&kp, keypair.public().clone().into())
+		} else {
+			unreachable!()
+		};
 		// Generate the "nodes" and path for the forward sphinx packet.
 		let mut num_hops = 1;
 		while num_hops <= MAX_HOPS {
@@ -574,14 +580,14 @@ mod test {
 			let path = _tuple.1;
 			let delays = _tuple.2;
 			let path_c = path.clone();
-			let mut surbs_collection = super::SurbsCollection::new();
-			let mut replay_filter = super::ReplayFilter::new();
+			let mut surbs_collection = super::SurbsCollection::new(&config);
+			let mut replay_filter = super::ReplayFilter::new(&config);
 
 			// Create the packet.
 			let (mut packet, surbs_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
 			if let Some((keys, surbs_id)) = surbs_keys {
-				let persistance = crate::core::sphinx::SurbsPersistance { keys };
+				let persistance = crate::core::sphinx::SurbsPersistance { keys, query: None };
 				surbs_collection.insert(surbs_id, persistance, std::time::Instant::now());
 			}
 

@@ -54,8 +54,9 @@ pub struct Config {
 	pub surbs_ttl_ms: u64,
 	/// Retention time until we drop surbs replay protection.
 	pub replay_ttl_ms: u64,
+	/// Do we keep trace of query with the surbs keys.
+	pub persist_surbs_query: bool,
 }
-
 
 impl Config {
 	pub fn new_with_ed25519_keypair(kp: &Keypair, id: MixPeerId) -> Self {
@@ -72,6 +73,7 @@ impl Config {
 			),
 			surbs_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
+			persist_surbs_query: true,
 		}
 	}
 }

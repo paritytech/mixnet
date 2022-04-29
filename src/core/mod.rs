@@ -158,6 +158,9 @@ pub struct Mixnet<T> {
 	average_traffic_delay: Duration,
 	// Average delay for each packet at each hop.
 	average_hop_delay: Duration,
+	// If true keep original message with surbs
+	// and return it with surbs reply.
+	persist_surbs_query: bool,
 }
 
 impl<T: Topology> Mixnet<T> {
@@ -167,6 +170,7 @@ impl<T: Topology> Mixnet<T> {
 			topology,
 			surbs: SurbsCollection::new(&config),
 			replay_filter: ReplayFilter::new(&config),
+			persist_surbs_query: config.persist_surbs_query,
 			num_hops: config.num_hops as usize,
 			secret: config.secret_key,
 			local_id: config.local_id,
@@ -226,6 +230,9 @@ impl<T: Topology> Mixnet<T> {
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
+		let mut surbs_query =
+			(self.persist_surbs_query && send_options.with_surbs).then(|| message.clone());
+
 		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surbs)?;
 		let paths = self.random_paths(&peer_id, &send_options.num_hop, chunks.len(), false)?;
 
@@ -261,7 +268,7 @@ impl<T: Topology> Mixnet<T> {
 				.map_err(|e| Error::SphinxError(e))?;
 			debug_assert!(packet.len() == PACKET_SIZE);
 			if let Some((keys, surbs_id)) = surbs_keys {
-				let persistance = SurbsPersistance { keys };
+				let persistance = SurbsPersistance { keys, query: surbs_query.take() };
 				self.surbs.insert(surbs_id, persistance, Instant::now());
 			}
 			packets.push((first_id, packet));
@@ -337,8 +344,10 @@ impl<T: Topology> Mixnet<T> {
 					log::trace!(target: "mixnet", "Inserted fragment message from {}", peer_id);
 				}
 			},
-			Ok(Unwrapped::SurbsReply(payload)) => {
-				if let Some(m) = self.fragments.insert_fragment(payload, MessageType::FromSurbs)? {
+			Ok(Unwrapped::SurbsReply(payload, query)) => {
+				if let Some(m) =
+					self.fragments.insert_fragment(payload, MessageType::FromSurbs(query))?
+				{
 					log::debug!(target: "mixnet", "Imported surbs from {} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {

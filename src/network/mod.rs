@@ -185,8 +185,9 @@ pub enum MessageType {
 	StandAlone,
 	/// Message with a surbs for reply.
 	WithSurbs(SurbsEncoded),
-	/// Message from a surbs reply (trusted).
-	FromSurbs,
+	/// Message from a surbs reply (trusted), and initial query
+	/// if stored.
+	FromSurbs(Option<Vec<u8>>),
 }
 
 impl MessageType {

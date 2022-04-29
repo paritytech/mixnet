@@ -107,6 +107,9 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			num_hops: 3,
 			average_message_delay_ms: 50,
 			limit_per_window: None,
+			persist_surbs_query: false,
+			replay_ttl_ms: 100_000,
+			surbs_ttl_ms: 100_000,
 		};
 
 		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);

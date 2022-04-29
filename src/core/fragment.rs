@@ -346,8 +346,10 @@ mod test {
 		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE);
 
 		assert_eq!(
-			fragments.insert_fragment(small_fragment, MessageType::FromSurbs).unwrap(),
-			Some((vec![42], MessageType::FromSurbs))
+			fragments
+				.insert_fragment(small_fragment, MessageType::FromSurbs(Some(vec![1])))
+				.unwrap(),
+			Some((vec![42], MessageType::FromSurbs(Some(vec![1]))))
 		);
 
 		let mut large = Vec::new();
