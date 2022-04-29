@@ -50,7 +50,12 @@ pub struct Config {
 	/// `None` is unlimited.
 	/// Window is `WINDOW_BACKPRESSURE` duration.
 	pub limit_per_window: Option<u32>,
+	/// Retention time until we drop surbs query.
+	pub surbs_ttl_ms: u64,
+	/// Retention time until we drop surbs replay protection.
+	pub replay_ttl_ms: u64,
 }
+
 
 impl Config {
 	pub fn new_with_ed25519_keypair(kp: &Keypair, id: MixPeerId) -> Self {
@@ -65,6 +70,8 @@ impl Config {
 			limit_per_window: Some(
 				(crate::network::WINDOW_BACKPRESSURE.as_millis() as u32 / 500) * 2,
 			),
+			surbs_ttl_ms: 100_000,
+			replay_ttl_ms: 100_000,
 		}
 	}
 }

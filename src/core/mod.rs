@@ -141,7 +141,7 @@ impl std::cmp::Ord for QueuedPacket {
 /// Mixnet core. Mixes messages, tracks fragments and delays.
 pub struct Mixnet<T> {
 	pub topology: T,
-	num_hops: usize, // TODO should be part of topology.
+	num_hops: usize,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
 	// Incomplete incoming message fragments.
@@ -165,6 +165,8 @@ impl<T: Topology> Mixnet<T> {
 	pub fn new(config: Config, topology: T) -> Self {
 		Mixnet {
 			topology,
+			surbs: SurbsCollection::new(&config),
+			replay_filter: ReplayFilter::new(&config),
 			num_hops: config.num_hops as usize,
 			secret: config.secret_key,
 			local_id: config.local_id,
@@ -175,8 +177,6 @@ impl<T: Topology> Mixnet<T> {
 			average_traffic_delay: Duration::from_nanos(
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
-			surbs: SurbsCollection::new(),
-			replay_filter: ReplayFilter::new(),
 		}
 	}
 
@@ -199,8 +199,7 @@ impl<T: Topology> Mixnet<T> {
 	}
 
 	// When node are not routing, the packet is not delayed
-	// and sent quicker. TODO could just send wait first peer reply.
-	// Leading to earlier error.
+	// and sent immediatly.
 	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Vec<u8>) -> Result<(), Error> {
 		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
 			return Err(Error::QueueFull)
@@ -285,7 +284,7 @@ impl<T: Topology> Mixnet<T> {
 	/// Message cannot be bigger than a single fragment.
 	pub fn register_surbs(&mut self, message: Vec<u8>, surbs: SurbsEncoded) -> Result<(), Error> {
 		let SurbsEncoded { first_node, first_key, header } = surbs;
-		let mut rng = rand::thread_rng(); // TODO get a handle to rng in self.
+		let mut rng = rand::thread_rng();
 
 		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
 		if chunks.len() != 1 {
@@ -384,7 +383,6 @@ impl<T: Topology> Mixnet<T> {
 		let path = self.random_cover_paths();
 
 		if let Some(id) = path.get(0).map(|p| p.0.clone()) {
-			// TODO have neighbor return pathhop directly
 			let hops = path
 				.into_iter()
 				.map(|(id, key)| sphinx::PathHop {
@@ -431,7 +429,6 @@ impl<T: Topology> Mixnet<T> {
 
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixEvent> {
-		// TODO use select macro??
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			cx.waker().wake_by_ref();
 			self.cleanup();
@@ -450,8 +447,8 @@ impl<T: Topology> Mixnet<T> {
 				}
 			}
 			if self.topology.routing() {
-				// No packet to produce, generate cover traffic
-				// TODO alternate that generate cover per peer.
+				// No packet to forward, generate cover traffic
+				// TODO generate cover per peer? not random global
 				if let Some((recipient, data)) = self.cover_message() {
 					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
 					return Poll::Ready(MixEvent::SendMessage((recipient, data)))
@@ -467,17 +464,13 @@ impl<T: Topology> Mixnet<T> {
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub struct ReplayTag([u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
 
-const SURBS_TTL_MS: u64 = 100_000; // TODO in config
-
 pub struct SurbsCollection {
-	// TODO LRU this so we clean up old persistance.
-	// TODO define collection in sphinx module? (rem lot of pub)
 	pending: MixnetCollection<ReplayTag, SurbsPersistance>,
 }
 
 impl SurbsCollection {
-	pub fn new() -> Self {
-		SurbsCollection { pending: MixnetCollection::new(SURBS_TTL_MS) }
+	pub fn new(config: &Config) -> Self {
+		SurbsCollection { pending: MixnetCollection::new(config.surbs_ttl_ms) }
 	}
 
 	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance, now: Instant) {
@@ -488,8 +481,6 @@ impl SurbsCollection {
 		self.pending.cleanup(now);
 	}
 }
-
-const REPLAY_TTL_MS: u64 = 100_000; // TODO in config
 
 /// Filter packet that have already be seen filter.
 /// Warning, this is a weak security, and does not avoid
@@ -503,8 +494,8 @@ pub struct ReplayFilter {
 }
 
 impl ReplayFilter {
-	pub fn new() -> Self {
-		ReplayFilter { seen: MixnetCollection::new(REPLAY_TTL_MS) }
+	pub fn new(config: &Config) -> Self {
+		ReplayFilter { seen: MixnetCollection::new(config.replay_ttl_ms) }
 	}
 
 	pub fn insert(&mut self, tag: ReplayTag, now: Instant) {
