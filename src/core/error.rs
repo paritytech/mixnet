@@ -19,7 +19,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, MixPeerId, SphinxPeerId};
+use crate::core::{sphinx::Error as SphinxError, SphinxPeerId};
+use crate::MixPeerId;
 use std::fmt;
 
 /// Mixnet generic error.
@@ -31,6 +32,8 @@ pub enum Error {
 	SphinxError(SphinxError),
 	/// No path to give peer or no random peer to select from.
 	NoPath(Option<MixPeerId>),
+	/// Not enough peers.
+	NotEnoughRoutingPeers,
 	/// Invalid network id.
 	InvalidId(MixPeerId),
 	/// Invalid id in the Sphinx packet.
@@ -39,6 +42,12 @@ pub enum Error {
 	BadFragment,
 	/// Packet queue is full.
 	QueueFull,
+	/// Requested number of hop is too big.
+	TooManyHops,
+	/// Surbs message exceed single fragment length.
+	BadSurbsLength,
+	/// Worker channel is full.
+	WorkerChannelFull,
 }
 
 impl fmt::Display for Error {
@@ -51,11 +60,15 @@ impl fmt::Display for Error {
 				"No path to {}.",
 				p.map(|p| p.to_string()).unwrap_or_else(|| "unknown peer".into())
 			),
+			Error::NotEnoughRoutingPeers => write!(f, "Not enough routing peers."),
 			Error::InvalidId(id) => write!(f, "Invalid peer id: {}.", id),
 			Error::InvalidSphinxId(id) =>
 				write!(f, "Invalid peer id in the Sphinx packet: {:?}.", id),
 			Error::BadFragment => write!(f, "Bad message fragment."),
+			Error::BadSurbsLength => write!(f, "Surbs message too long."),
 			Error::QueueFull => write!(f, "Packet queue is full."),
+			Error::WorkerChannelFull => write!(f, "Worker channel is full."),
+			Error::TooManyHops => write!(f, "Too many hops for mixnet."),
 		}
 	}
 }

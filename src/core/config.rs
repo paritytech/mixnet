@@ -22,18 +22,15 @@
 
 use libp2p_core::identity::ed25519::Keypair;
 
-use super::MixPeerId;
-use crate::{public_from_ed25519, secret_from_ed25519, MixPublicKey, MixSecretKey, Topology};
+use crate::{public_from_ed25519, secret_from_ed25519, MixPeerId, MixPublicKey, MixSecretKey};
 
 /// Configuration data for the mixnet protocol.
+#[derive(Clone)]
 pub struct Config {
 	/// Static DH secret for this node
 	pub secret_key: MixSecretKey,
 	/// DH public key for this node
 	pub public_key: MixPublicKey,
-	/// Topology information provider. If this set to none a fallback topology is used, only
-	/// allowing communication with immediately connected peers.
-	pub topology: Option<Box<dyn Topology>>,
 	/// Local node id.
 	pub local_id: MixPeerId,
 	/// Target traffic rate. This is combined for the stream of real and cover messages. If the
@@ -46,6 +43,19 @@ pub struct Config {
 	pub num_hops: u32,
 	/// Average number of seconds to delay each each message fragment at each hop.
 	pub average_message_delay_ms: u32,
+	/// Limit number of message in a windows of time for a peer.
+	/// Default value, this can be change from topology.
+	/// Above limit message are drop, so topology should raise the
+	/// limit for routing peers.
+	/// `None` is unlimited.
+	/// Window is `WINDOW_BACKPRESSURE` duration.
+	pub limit_per_window: Option<u32>,
+	/// Retention time until we drop surbs query.
+	pub surbs_ttl_ms: u64,
+	/// Retention time until we drop surbs replay protection.
+	pub replay_ttl_ms: u64,
+	/// Do we keep trace of query with the surbs keys.
+	pub persist_surbs_query: bool,
 }
 
 impl Config {
@@ -53,17 +63,17 @@ impl Config {
 		Self {
 			secret_key: secret_from_ed25519(&kp.secret()),
 			public_key: public_from_ed25519(&kp.public()),
-			topology: None,
 			local_id: id,
 			target_bits_per_second: 128 * 1024,
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
+			limit_per_window: Some(
+				(crate::network::WINDOW_BACKPRESSURE.as_millis() as u32 / 500) * 2,
+			),
+			surbs_ttl_ms: 100_000,
+			replay_ttl_ms: 100_000,
+			persist_surbs_query: true,
 		}
-	}
-
-	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
-		self.topology = Some(topology);
-		self
 	}
 }

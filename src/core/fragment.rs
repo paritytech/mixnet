@@ -1,5 +1,4 @@
 // Copyright 2022 Parity Technologies (UK) Ltd.
-//
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
 // to deal in the Software without restriction, including without limitation
@@ -18,184 +17,289 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Mix message fragment management
+//! Mix message fragment management.
+//!
+//! Size is bounded to `MAX_MESSAGE_SIZE`.
+//!
+//! In case the content allow reply, the surbs must
+//! fit in the first fragment and is presence
+//! is only announced in this fragement.
 
-use super::Error;
-use instant::Duration;
+use super::{Error, MixnetCollection};
+use crate::{core::sphinx::SURBS_REPLY_SIZE, MessageType};
 use rand::Rng;
 use std::{
 	collections::{hash_map::Entry, HashMap},
 	time::Instant,
 };
 
-struct FragmentHeader<'a>(&'a mut [u8]);
-
 type MessageHash = [u8; 32];
 
 /// Target fragment size. Includes the header and the payload.
 pub const FRAGMENT_PACKET_SIZE: usize = 2048;
-const FRAGMENT_HEADER_SIZE: usize = 32 + 4 + 4;
-const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
-const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 
-const FRAGMENT_EXPIRATION_MS: u64 = 10000;
-
-const COVER_TAG: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-
-fn hash(data: &[u8]) -> MessageHash {
-	let mut r = MessageHash::default();
-	r.copy_from_slice(blake2_rfc::blake2b::blake2b(32, &[], data).as_bytes());
-	r
+/// Fragment.
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub struct Fragment {
+	buf: Vec<u8>,
+	index: u32,
+	with_surbs: bool,
 }
 
-impl<'a> FragmentHeader<'a> {
-	fn new(slice: &'a mut [u8]) -> Self {
-		assert!(slice.len() >= FRAGMENT_HEADER_SIZE);
-		FragmentHeader(slice)
+impl Fragment {
+	/// Create a single fragment filled with random data.
+	pub fn create_cover_fragment(rng: &mut impl Rng) -> Fragment {
+		let mut buf = vec![0; FRAGMENT_PACKET_SIZE];
+		buf[0..4].copy_from_slice(&COVER_TAG[..]);
+		rng.fill_bytes(&mut buf[4..]);
+		Fragment { buf, index: 0, with_surbs: false }
 	}
 
-	fn set_hash(&mut self, hash: MessageHash) {
-		self.0[0..32].copy_from_slice(&hash)
-	}
+	pub fn create(
+		index: u32,
+		hash: MessageHash,
+		iv: &[u8],
+		message_len: u32,
+		chunk: &[u8],
+		with_surbs: bool,
+	) -> Fragment {
+		let mut buf = Vec::with_capacity(FRAGMENT_PACKET_SIZE);
+		buf.extend_from_slice(&index.to_be_bytes());
+		buf.extend_from_slice(&hash);
+		if index == 0 {
+			buf.extend_from_slice(&iv);
+			buf.extend_from_slice(&message_len.to_be_bytes());
+		}
 
-	fn set_message_len(&mut self, len: u32) {
-		self.0[32..36].copy_from_slice(&len.to_be_bytes())
-	}
+		// chunk size must match (need to be padded).
+		buf.extend_from_slice(chunk);
 
-	fn set_index(&mut self, index: u32) {
-		self.0[36..40].copy_from_slice(&index.to_be_bytes())
-	}
+		debug_assert!(if with_surbs && index == 0 {
+			buf.len() == FRAGMENT_PACKET_SIZE - SURBS_REPLY_SIZE
+		} else {
+			buf.len() == FRAGMENT_PACKET_SIZE
+		});
 
-	fn set_cover(&mut self) {
-		self.0[36..40].copy_from_slice(&COVER_TAG)
+		Fragment { buf, index, with_surbs }
 	}
 
 	fn hash(&self) -> MessageHash {
 		let mut hash: MessageHash = Default::default();
-		hash.copy_from_slice(&self.0[0..32]);
+		hash.copy_from_slice(&self.buf[4..36]);
 		hash
 	}
 
-	fn message_len(&self) -> u32 {
-		let mut len: [u8; 4] = Default::default();
-		len.copy_from_slice(&self.0[32..36]);
-		u32::from_be_bytes(len)
-	}
+	// TODO just use packet buff?: likely -> yes for building.
+	pub fn from_message(fragment: Vec<u8>, kind: &MessageType) -> Result<Option<Self>, Error> {
+		let with_surbs = kind.with_surbs();
+		if !with_surbs && fragment.len() != FRAGMENT_PACKET_SIZE {
+			return Err(Error::BadFragment)
+		}
+		if fragment[..4] == COVER_TAG {
+			return Ok(None)
+		}
 
-	fn index(&self) -> u32 {
 		let mut index: [u8; 4] = Default::default();
-		index.copy_from_slice(&self.0[36..40]);
-		u32::from_be_bytes(index)
+		index.copy_from_slice(&fragment[..4]);
+		let index = u32::from_be_bytes(index);
+
+		if with_surbs {
+			if fragment.len() != FRAGMENT_PACKET_SIZE - SURBS_REPLY_SIZE {
+				return Err(Error::BadFragment)
+			}
+			if index != 0 {
+				return Err(Error::BadFragment)
+			}
+		}
+
+		Ok(Some(Fragment { buf: fragment, index, with_surbs }))
 	}
 
-	fn is_cover(&self) -> bool {
-		&self.0[36..40] == &COVER_TAG
+	pub fn iv(&self) -> Option<Box<[u8; 32]>> {
+		if self.index == 0 {
+			let mut iv = [0u8; 32];
+			iv.copy_from_slice(&self.buf[36..68]);
+			Some(Box::new(iv))
+		} else {
+			None
+		}
 	}
+
+	pub fn message_len(&self) -> Option<u32> {
+		if self.index == 0 {
+			let mut len: [u8; 4] = Default::default();
+			len.copy_from_slice(&self.buf[68..72]);
+			Some(u32::from_be_bytes(len))
+		} else {
+			None
+		}
+	}
+
+	pub fn data(&self) -> &[u8] {
+		let offset =
+			if self.index == 0 { FRAGMENT_FIRST_CHUNK_HEADER_SIZE } else { FRAGMENT_HEADER_SIZE };
+		&self.buf[offset..]
+	}
+
+	pub fn into_vec(self) -> Vec<u8> {
+		self.buf
+	}
+}
+
+const FRAGMENT_HEADER_SIZE: usize = 4 + 32;
+const FRAGMENT_FIRST_CHUNK_HEADER_SIZE: usize = FRAGMENT_HEADER_SIZE + 32 + 4;
+const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
+const FRAGMENT_FIRST_CHUNK_PAYLOAD_SIZE: usize =
+	FRAGMENT_PACKET_SIZE - FRAGMENT_FIRST_CHUNK_HEADER_SIZE;
+const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+
+const FRAGMENT_EXPIRATION_MS: u64 = 10000;
+
+// TODO remove this tag, make cover a command in header and don't open payload?
+const COVER_TAG: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+
+// hash is using tag as iv to avoid collision.
+fn hash(iv: &[u8], data: &[u8]) -> MessageHash {
+	let mut r = MessageHash::default();
+	r.copy_from_slice(blake2_rfc::blake2b::blake2b(32, iv, data).as_bytes());
+	r
 }
 
 struct IncompleteMessage {
-	target_len: u32,
+	target_len: Option<u32>,
+	target_iv: Option<Box<[u8; 32]>>,
 	target_hash: MessageHash,
-	fragments: HashMap<u32, Vec<u8>>,
-	expires: Instant,
+	fragments: HashMap<u32, Fragment>,
+	kind: MessageType,
 }
 
 impl IncompleteMessage {
+	fn current_len(&self) -> usize {
+		let surbs_len = if self.kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
+		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surbs_len
+	}
+
 	fn is_complete(&self) -> bool {
-		self.fragments.len() * FRAGMENT_PAYLOAD_SIZE >= self.target_len as usize
+		self.target_len
+			.map(|target_len| self.current_len() >= target_len as usize)
+			.unwrap_or(false)
 	}
 
 	fn num_fragments(&self) -> usize {
 		self.fragments.len()
 	}
 
-	fn total_fragments(&self) -> usize {
-		self.target_len as usize / FRAGMENT_PAYLOAD_SIZE + 1
+	fn total_expected_fragments(&self) -> Option<usize> {
+		self.target_len.map(|target_len| {
+			let surbs_len = if self.kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
+			(target_len as usize + surbs_len) / FRAGMENT_PAYLOAD_SIZE + 1
+		})
 	}
 
-	fn reconstruct(mut self) -> Result<Vec<u8>, Error> {
+	fn reconstruct(mut self) -> Result<(Vec<u8>, MessageType), Error> {
 		let mut index = 0;
-		let mut result = Vec::with_capacity(self.target_len as usize);
-		while result.len() < self.target_len as usize {
+		let target_len = if let Some(len) = self.target_len {
+			len as usize
+		} else {
+			return Err(Error::BadFragment)
+		};
+		let mut result = Vec::with_capacity(target_len);
+		while result.len() < target_len {
 			let fragment = match self.fragments.remove(&index) {
 				Some(fragment) => fragment,
 				None => return Err(Error::BadFragment),
 			};
-			result.extend_from_slice(&fragment[FRAGMENT_HEADER_SIZE..]);
+			result.extend_from_slice(fragment.data());
 			index += 1;
 		}
-		result.resize(self.target_len as usize, 0u8);
-		let hash = hash(&result);
-		if hash != self.target_hash {
+		if result.len() < target_len {
 			return Err(Error::BadFragment)
 		}
-		Ok(result)
+		// check padding
+		if !result[target_len..].iter().all(|c| c == &0) {
+			return Err(Error::BadFragment)
+		}
+		result.resize(target_len, 0u8);
+
+		if let Some(iv) = self.target_iv {
+			let hash = hash(&iv[..], &result);
+			if hash == self.target_hash {
+				return Ok((result, self.kind))
+			}
+		}
+		Err(Error::BadFragment)
 	}
 }
 
 /// Manages partial message fragments.
-pub struct MessageCollection {
-	messages: HashMap<MessageHash, IncompleteMessage>,
-	expiration: Duration,
-}
+pub struct MessageCollection(MixnetCollection<MessageHash, IncompleteMessage>);
 
 impl MessageCollection {
 	pub fn new() -> Self {
-		Self {
-			messages: Default::default(),
-			expiration: Duration::from_millis(FRAGMENT_EXPIRATION_MS),
-		}
+		MessageCollection(MixnetCollection::new(FRAGMENT_EXPIRATION_MS))
 	}
 
 	/// Insert a new new message fragment in the collection. If the fragment completes some message,
 	/// full message is returned.
-	pub fn insert_fragment(&mut self, mut fragment: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-		if fragment.len() != FRAGMENT_PACKET_SIZE {
-			return Err(Error::BadFragment)
-		}
-		let (hash, len, index) = {
-			let header = FragmentHeader::new(&mut fragment);
-			if header.is_cover() {
-				// Discard cover message
-				return Ok(None)
-			}
-			(header.hash(), header.message_len(), header.index())
+	pub fn insert_fragment(
+		&mut self,
+		fragment: Vec<u8>,
+		kind: MessageType,
+	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
+		let fragment = if let Some(fragment) = Fragment::from_message(fragment, &kind)? {
+			fragment
+		} else {
+			// Discard cover message
+			return Ok(None)
 		};
 
-		match self.messages.entry(hash.clone()) {
+		let expires_ix = self.0.next_inserted_entry();
+		match self.0.entry(fragment.hash()) {
 			Entry::Occupied(mut e) => {
-				e.get_mut().fragments.insert(index, fragment);
-				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{})", index, e.get().num_fragments(), e.get().total_fragments());
-				if e.get().is_complete() {
+				let with_surbs = fragment.with_surbs;
+				let index = fragment.index;
+				if index == 0 {
+					e.get_mut().0.target_len = fragment.message_len();
+					e.get_mut().0.target_iv = fragment.iv();
+				}
+				e.get_mut().0.fragments.insert(index, fragment);
+				if with_surbs {
+					e.get_mut().0.kind = kind;
+				}
+				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().0.num_fragments(), e.get().0.total_expected_fragments());
+				if e.get().0.is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
-					return Ok(Some(e.remove().reconstruct()?))
+					let e = e.remove();
+					let e = self.0.removed_entry(e);
+					return Ok(Some(e.reconstruct()?))
 				}
 			},
 			Entry::Vacant(e) => {
+				let index = fragment.index;
 				let mut message = IncompleteMessage {
-					target_hash: hash,
-					target_len: len,
+					target_hash: fragment.hash(),
+					target_len: fragment.message_len(),
+					target_iv: fragment.iv(),
 					fragments: Default::default(),
-					expires: Instant::now() + self.expiration,
+					kind,
 				};
+				let hash = fragment.hash();
 				message.fragments.insert(index, fragment);
-				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{})", index, 1, message.total_fragments());
+				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{:?})", index, 1, message.total_expected_fragments());
 				if message.is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
 					return Ok(Some(message.reconstruct()?))
 				}
-				e.insert(message);
+				e.insert((message, expires_ix));
+				self.0.inserted_entry(hash, Instant::now());
 			},
 		}
 		Ok(None)
 	}
 
 	/// Perform periodic maintenance. Messages that sit in the collection for too long are expunged.
-	pub fn cleanup(&mut self) {
-		let now = Instant::now();
-		let count = self.messages.len();
-		self.messages.retain(|_, m| m.expires > now);
-		let removed = count - self.messages.len();
+	pub fn cleanup(&mut self, now: Instant) {
+		let removed = self.0.cleanup(now);
 		if removed > 0 {
 			log::trace!(target: "mixnet", "Fragment cleanup. Removed {} fragments", removed)
 		}
@@ -204,102 +308,130 @@ impl MessageCollection {
 
 /// Utility function to split message body into equal-sized chunks. Each chunk contains a header
 /// that allows for message reconstruction.
-pub fn create_fragments(mut message: Vec<u8>) -> Result<Vec<Vec<u8>>, Error> {
-	let len = message.len();
-	if len > MAX_MESSAGE_SIZE {
+pub fn create_fragments(
+	rng: &mut impl Rng,
+	mut message: Vec<u8>,
+	with_surbs: bool,
+) -> Result<Vec<Fragment>, Error> {
+	assert!(SURBS_REPLY_SIZE < FRAGMENT_FIRST_CHUNK_PAYLOAD_SIZE); // TODO const assert?
+	let surbs_len = if with_surbs { SURBS_REPLY_SIZE } else { 0 };
+	let additional_first_header = FRAGMENT_FIRST_CHUNK_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
+	if message.len() > MAX_MESSAGE_SIZE {
 		return Err(Error::MessageTooLarge)
 	}
-	let pad = FRAGMENT_PAYLOAD_SIZE;
-	let hash = hash(&message);
-	message.resize(len + (pad - len % pad) % pad, 0);
-	let chunks = message.chunks(FRAGMENT_PAYLOAD_SIZE);
-
-	let mut fragments = Vec::with_capacity(message.len() / FRAGMENT_PAYLOAD_SIZE);
-	for (n, chunk) in chunks.enumerate() {
-		let mut fragment = Vec::with_capacity(FRAGMENT_PACKET_SIZE);
-		fragment.resize(FRAGMENT_HEADER_SIZE, 0u8);
-		let mut header = FragmentHeader::new(&mut fragment);
-		header.set_hash(hash);
-		header.set_message_len(len as u32);
-		header.set_index(n as u32);
-		fragment.extend_from_slice(chunk);
+	let len_no_header = message.len() + surbs_len + additional_first_header;
+	let mut iv = [0u8; 32];
+	rng.fill_bytes(&mut iv);
+	let hash = hash(&iv[..], &message);
+	let message_len = message.len();
+	let pad =
+		(FRAGMENT_PAYLOAD_SIZE - len_no_header % FRAGMENT_PAYLOAD_SIZE) % FRAGMENT_PAYLOAD_SIZE;
+	message.resize(message.len() + pad, 0);
+	let nb_chunks = (message.len() + surbs_len + additional_first_header) / FRAGMENT_PAYLOAD_SIZE;
+	debug_assert!(
+		(message.len() + surbs_len + additional_first_header) % FRAGMENT_PAYLOAD_SIZE == 0
+	);
+	let mut offset = 0;
+	let mut fragments = Vec::with_capacity(nb_chunks);
+	for n in 0..nb_chunks {
+		let additional_header = if n == 0 { additional_first_header } else { 0 };
+		let fragment_len = if with_surbs && n == 0 {
+			FRAGMENT_PAYLOAD_SIZE - SURBS_REPLY_SIZE - additional_header
+		} else {
+			FRAGMENT_PAYLOAD_SIZE - additional_header
+		};
+		let chunk = &message[offset..offset + fragment_len];
+		offset += fragment_len;
+		let fragment =
+			Fragment::create(n as u32, hash, iv.as_slice(), message_len as u32, chunk, with_surbs);
 		fragments.push(fragment);
 	}
 	Ok(fragments)
 }
 
-/// Create a single fragment filled with random data.
-pub fn create_cover_fragment<R: Rng>(rng: &mut R) -> Vec<u8> {
-	let mut message = Vec::with_capacity(FRAGMENT_PACKET_SIZE);
-	message.resize(FRAGMENT_PACKET_SIZE, 0u8);
-	let mut header = FragmentHeader::new(&mut message);
-	let mut hash = MessageHash::default();
-	rng.fill_bytes(&mut hash);
-	header.set_hash(hash);
-	header.set_cover();
-	message
-}
-
 #[cfg(test)]
 mod test {
+	use super::*;
 	use rand::{prelude::SliceRandom, RngCore};
 
-	use super::*;
 	#[test]
 	fn create_and_insert_small() {
 		let mut rng = rand::thread_rng();
 		let mut fragments = MessageCollection::new();
 
-		let mut small_fragment = create_fragments(vec![42]).unwrap();
+		let small_fragment = create_fragments(&mut rng, vec![42], false).unwrap();
 		assert_eq!(small_fragment.len(), 1);
-		let small_fragment = std::mem::take(&mut small_fragment[0]);
+		let small_fragment = small_fragment[0].clone().into_vec();
 		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE);
 
-		assert_eq!(fragments.insert_fragment(small_fragment).unwrap(), Some(vec![42]));
+		assert_eq!(
+			fragments
+				.insert_fragment(small_fragment, MessageType::FromSurbs(Some(vec![1])))
+				.unwrap(),
+			Some((vec![42], MessageType::FromSurbs(Some(vec![1]))))
+		);
 
 		let mut large = Vec::new();
 		large.resize(60000, 0u8);
 		rng.fill_bytes(&mut large);
-		let mut large_fragments = create_fragments(large.clone()).unwrap();
+		let mut large_fragments = create_fragments(&mut rng, large.clone(), false).unwrap();
 		assert_eq!(large_fragments.len(), 30);
 
 		large_fragments.shuffle(&mut rng);
 		for fragment in large_fragments.iter().skip(1) {
-			assert_eq!(fragments.insert_fragment(fragment.clone()).unwrap(), None);
+			assert_eq!(
+				fragments
+					.insert_fragment(fragment.clone().into_vec(), MessageType::StandAlone)
+					.unwrap(),
+				None
+			);
 		}
-		assert_eq!(fragments.insert_fragment(large_fragments[0].clone()).unwrap(), Some(large));
+		assert_eq!(
+			fragments
+				.insert_fragment(large_fragments[0].clone().into_vec(), MessageType::StandAlone)
+				.unwrap(),
+			Some((large, MessageType::StandAlone))
+		);
 
 		let mut too_large = Vec::new();
 		too_large.resize(MAX_MESSAGE_SIZE + 1, 0u8);
-		assert_eq!((create_fragments(too_large)), Err(Error::MessageTooLarge));
+		assert_eq!((create_fragments(&mut rng, too_large, false)), Err(Error::MessageTooLarge));
 	}
 
 	#[test]
 	fn insert_invalid() {
 		let mut fragments = MessageCollection::new();
-		assert_eq!(fragments.insert_fragment(vec![]), Err(Error::BadFragment));
-		assert_eq!(fragments.insert_fragment(vec![42]), Err(Error::BadFragment));
+		assert_eq!(
+			fragments.insert_fragment(vec![], MessageType::StandAlone),
+			Err(Error::BadFragment)
+		);
+		assert_eq!(
+			fragments.insert_fragment(vec![42], MessageType::StandAlone),
+			Err(Error::BadFragment)
+		);
 		let empty_packet = [0u8; FRAGMENT_PACKET_SIZE].to_vec();
-		assert_eq!(fragments.insert_fragment(empty_packet), Err(Error::BadFragment));
-	}
-
-	#[test]
-	fn create_cover() {
-		let mut rng = rand::thread_rng();
-		let fragment = create_cover_fragment(&mut rng);
-		assert_eq!(fragment.len(), FRAGMENT_PACKET_SIZE);
+		assert_eq!(
+			fragments.insert_fragment(empty_packet, MessageType::StandAlone),
+			Err(Error::BadFragment)
+		);
 	}
 
 	#[test]
 	fn cleanup() {
+		let mut rng = rand::thread_rng();
 		let mut fragments = MessageCollection::new();
-		fragments.expiration = Duration::from_millis(0);
+		fragments.0.expiration = std::time::Duration::from_millis(0);
 		let mut message = Vec::new();
 		message.resize(FRAGMENT_PACKET_SIZE * 2, 0u8);
-		let message_fragments = create_fragments(message).unwrap();
-		assert_eq!(fragments.insert_fragment(message_fragments[0].clone()).unwrap(), None);
-		assert_eq!(1, fragments.messages.len());
-		fragments.cleanup();
-		assert_eq!(0, fragments.messages.len());
+		let message_fragments = create_fragments(&mut rng, message, false).unwrap();
+		assert_eq!(
+			fragments
+				.insert_fragment(message_fragments[0].clone().into_vec(), MessageType::StandAlone)
+				.unwrap(),
+			None
+		);
+		assert_eq!(1, fragments.0.messages.len());
+		fragments.cleanup(Instant::now());
+		assert_eq!(0, fragments.0.messages.len());
 	}
 }

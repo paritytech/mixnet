@@ -25,6 +25,24 @@ mod core;
 mod network;
 
 pub use crate::core::{
-	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey, Topology,
+	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey,
+	NoTopology, Packet, SurbsPayload, Topology, PACKET_SIZE,
 };
-pub use network::{DecodedMessage, Mixnet, NetworkEvent};
+pub use network::{
+	DecodedMessage, MessageType, MixnetBehaviour, MixnetWorker, NetworkEvent, WorkerChannels,
+	WorkerSink, WorkerStream,
+};
+
+/// Mixnet peer identity.
+pub type MixPeerId = libp2p_core::PeerId;
+
+/// Options for sending a message in the mixnet.
+pub struct SendOptions {
+	/// Number of hop for the message.
+	/// If undefined, mixnet defined number of hop will be used.
+	/// For its surbs the same number will be use.
+	pub num_hop: Option<usize>,
+
+	/// Do we attach a surbs with the message.
+	pub with_surbs: bool,
+}
