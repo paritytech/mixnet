@@ -35,7 +35,7 @@ use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
-	CloseConnection, IntoProtocolsHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
+	CloseConnection, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
 	PollParameters,
 };
 use std::{
@@ -212,10 +212,10 @@ pub struct DecodedMessage {
 }
 
 impl NetworkBehaviour for MixnetBehaviour {
-	type ProtocolsHandler = Handler;
+	type ConnectionHandler = Handler;
 	type OutEvent = NetworkEvent;
 
-	fn new_handler(&mut self) -> Self::ProtocolsHandler {
+	fn new_handler(&mut self) -> Self::ConnectionHandler {
 		Handler::new(handler::Config::new())
 	}
 
@@ -291,6 +291,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		conn: &ConnectionId,
 		endpoint: &ConnectedPoint,
 		_errors: Option<&Vec<Multiaddr>>,
+		_: usize,
 	) {
 		if self.handshakes.contains_key(peer_id) || self.connected.contains_key(peer_id) {
 			log::trace!(target: "mixnet", "Duplicate connection: {}", peer_id);
@@ -298,7 +299,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		}
 		log::trace!(target: "mixnet", "Connected: {}", peer_id);
 		let address = match endpoint {
-			ConnectedPoint::Dialer { address } => Some(address.clone()),
+			ConnectedPoint::Dialer { address, role_override: _ } => Some(address.clone()),
 			ConnectedPoint::Listener { .. } => None,
 		};
 		//log::trace!(target: "mixnet", "Connected: {}", peer_id);
@@ -316,31 +317,20 @@ impl NetworkBehaviour for MixnetBehaviour {
 		peer_id: &PeerId,
 		_conn: &ConnectionId,
 		_: &ConnectedPoint,
-		_: <Self::ProtocolsHandler as IntoProtocolsHandler>::Handler,
+		_: <Self::ConnectionHandler as IntoConnectionHandler>::Handler,
+		_: usize,
 	) {
-		self.handshakes.remove(peer_id);
-		self.connected.remove(peer_id);
-		if let Err(e) = self
-			.mixnet_worker_sink
-			.as_mut()
-			.start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
-		{
-			log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
-		}
-	}
-
-	fn inject_disconnected(&mut self, peer_id: &PeerId) {
 		log::trace!(target: "mixnet", "Disconnected: {}", peer_id);
 		self.handshakes.remove(peer_id);
+		if self.connected.remove(peer_id).is_some() {
+			self.events.push_back(NetworkEvent::Disconnected(peer_id.clone()));
+		}
 		if let Err(e) = self
 			.mixnet_worker_sink
 			.as_mut()
 			.start_send(WorkerIn::RemoveConnectedPeer(peer_id.clone()))
 		{
 			log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
-		}
-		if self.connected.remove(peer_id).is_some() {
-			self.events.push_back(NetworkEvent::Disconnected(peer_id.clone()));
 		}
 	}
 
@@ -348,7 +338,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		&mut self,
 		cx: &mut Context<'_>,
 		_: &mut impl PollParameters,
-	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ProtocolsHandler>> {
+	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
 		if let Some((peer_id, con_id)) = self.pending_disconnect.pop_back() {
 			return Poll::Ready(NetworkBehaviourAction::CloseConnection {
 				peer_id,

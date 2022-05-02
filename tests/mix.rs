@@ -167,7 +167,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 							tx.send(address.clone()).await.unwrap()
 						}
 						for mut rx in to_wait.drain(..) {
-							swarm.dial_addr(rx.next().await.unwrap()).unwrap();
+							swarm.dial(rx.next().await.unwrap()).unwrap();
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Connected(_, _)) => {
