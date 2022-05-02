@@ -141,7 +141,7 @@ impl Fragment {
 		&self.buf[offset..]
 	}
 
-	pub fn buffer(self) -> Vec<u8> {
+	pub fn into_vec(self) -> Vec<u8> {
 		self.buf
 	}
 }
@@ -361,7 +361,7 @@ mod test {
 
 		let small_fragment = create_fragments(&mut rng, vec![42], false).unwrap();
 		assert_eq!(small_fragment.len(), 1);
-		let small_fragment = small_fragment[0].clone().buffer();
+		let small_fragment = small_fragment[0].clone().into_vec();
 		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE);
 
 		assert_eq!(
@@ -381,17 +381,14 @@ mod test {
 		for fragment in large_fragments.iter().skip(1) {
 			assert_eq!(
 				fragments
-					.insert_fragment(fragment.clone().buffer().to_vec(), MessageType::StandAlone)
+					.insert_fragment(fragment.clone().into_vec(), MessageType::StandAlone)
 					.unwrap(),
 				None
 			);
 		}
 		assert_eq!(
 			fragments
-				.insert_fragment(
-					large_fragments[0].clone().buffer().to_vec(),
-					MessageType::StandAlone
-				)
+				.insert_fragment(large_fragments[0].clone().into_vec(), MessageType::StandAlone)
 				.unwrap(),
 			Some((large, MessageType::StandAlone))
 		);
@@ -429,10 +426,7 @@ mod test {
 		let message_fragments = create_fragments(&mut rng, message, false).unwrap();
 		assert_eq!(
 			fragments
-				.insert_fragment(
-					message_fragments[0].clone().buffer().to_vec(),
-					MessageType::StandAlone
-				)
+				.insert_fragment(message_fragments[0].clone().into_vec(), MessageType::StandAlone)
 				.unwrap(),
 			None
 		);

@@ -35,7 +35,7 @@
 ///! Sphinx packet format.
 mod crypto;
 
-use crate::core::{ReplayFilter, ReplayTag, SurbsCollection, PACKET_SIZE};
+use crate::core::{Packet, ReplayFilter, ReplayTag, SurbsCollection};
 pub use crypto::HASH_OUTPUT_SIZE;
 use crypto::{
 	hash, PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE,
@@ -143,7 +143,7 @@ struct NextHop {
 }
 
 pub enum Unwrapped {
-	Forward((NodeId, Delay, Vec<u8>)),
+	Forward((NodeId, Delay, Packet)),
 	Payload(Vec<u8>),
 	SurbsQuery(Vec<u8>, Vec<u8>),
 	SurbsReply(Vec<u8>, Option<Vec<u8>>),
@@ -321,13 +321,12 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	path: Vec<PathHop>,
 	payload: Vec<u8>,
 	with_surbs: Option<(NodeId, Vec<PathHop>)>,
-) -> Result<(Vec<u8>, Option<(Vec<SprpKey>, ReplayTag)>), Error> {
+) -> Result<(Packet, Option<(Vec<SprpKey>, ReplayTag)>), Error> {
 	let (header, sprp_keys, _) = create_header(&mut rng, path, false, with_surbs.is_some())?;
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
 	let surbs_key = if let Some((first_node, path)) = with_surbs {
-		// TODO Box<[u8; FIX_LEN]>?? for all packet!!
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
 		let (header, sprp_keys, surbs_id) = create_header(&mut rng, path, true, false)?;
 		let surbs_id = surbs_id.unwrap();
@@ -360,10 +359,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 			.map_err(|_| Error::PayloadEncryptError)?;
 	}
 
-	// attached Sphinx head to Sphinx body
-	let mut packet: Vec<u8> = Vec::with_capacity(header.len() + tagged_payload.len());
-	packet.extend_from_slice(&header);
-	packet.extend_from_slice(&tagged_payload);
+	let packet = Packet::new(&header[..], &tagged_payload[..])?;
 	return Ok((packet, surbs_key))
 }
 
@@ -372,33 +368,27 @@ pub fn new_surbs_packet(
 	first_key: SprpKey,
 	message: Vec<u8>,
 	surbs_header: [u8; HEADER_SIZE],
-) -> Result<Vec<u8>, Error> {
+) -> Result<Packet, Error> {
 	let mut tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + message.len());
 	tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 	tagged_payload.extend_from_slice(&message[..]);
 	tagged_payload = crypto::sprp_encrypt(&first_key.key, tagged_payload)
 		.map_err(|_| Error::PayloadEncryptError)?;
 
-	let mut packet = Vec::with_capacity(PACKET_SIZE);
-	packet.extend_from_slice(&surbs_header[..]);
-	packet.extend_from_slice(&tagged_payload);
-	debug_assert!(packet.len() == PACKET_SIZE);
+	let packet = Packet::new(&surbs_header[..], &tagged_payload[..])?;
 	Ok(packet)
 }
 
 /// Unwrap one layer of encryption and return next layer information or the final payload.
 pub fn unwrap_packet(
 	private_key: &StaticSecret,
-	mut packet: Vec<u8>,
+	mut packet: Packet,
 	surbs: &mut SurbsCollection,
 	filter: &mut ReplayFilter,
 	next_delay: impl FnOnce() -> u32,
 ) -> Result<Unwrapped, Error> {
 	// Split into mutable references and validate the AD
-	if packet.len() < HEADER_SIZE {
-		return Err(Error::InvalidPacket)
-	}
-	let (header, payload) = packet.split_at_mut(HEADER_SIZE);
+	let (header, payload) = packet.as_mut().split_at_mut(HEADER_SIZE);
 	let (authed_header, header_mac) = header.split_at_mut(MAC_OFFSET);
 	let (ad, _after_ad) = authed_header.split_at_mut(AD_SIZE);
 	let after_ad = array_mut_ref![_after_ad, 0, GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE];
@@ -583,6 +573,11 @@ mod test {
 			let mut surbs_collection = super::SurbsCollection::new(&config);
 			let mut replay_filter = super::ReplayFilter::new(&config);
 
+			let mut payload = payload.to_vec();
+			let paylod_len = crate::core::PACKET_SIZE -
+				crate::core::sphinx::HEADER_SIZE -
+				crate::core::sphinx::PAYLOAD_TAG_SIZE;
+			payload.resize(paylod_len, 0u8);
 			// Create the packet.
 			let (mut packet, surbs_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
@@ -609,7 +604,7 @@ mod test {
 						_ => panic!("Unexpected result"),
 					};
 					assert_eq!(p.as_slice(), &payload[..]);
-					packet = Vec::new();
+					return
 				} else {
 					let (id, delay, next) = match unwrap_result {
 						Unwrapped::Forward(f) => f,

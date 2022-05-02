@@ -22,7 +22,7 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsPayload, Topology},
+	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload, Topology},
 	MessageType, MixPeerId, SendOptions,
 };
 use futures::{channel::mpsc::SendError, Sink, Stream};
@@ -40,7 +40,7 @@ pub enum WorkerIn {
 	RegisterSurbs(Vec<u8>, SurbsPayload),
 	AddConnectedPeer(MixPeerId, MixPublicKey),
 	RemoveConnectedPeer(MixPeerId),
-	ImportMessage(MixPeerId, Vec<u8>),
+	ImportMessage(MixPeerId, Packet),
 }
 
 pub enum WorkerOut {

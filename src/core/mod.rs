@@ -60,8 +60,37 @@ const MAX_QUEUED_PACKETS: usize = 8192;
 /// Size of a mixnet packent.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
-/// Sphinx packet are fix size.
-pub type Packet = Box<[u8; PACKET_SIZE]>;
+/// Sphinx packet struct ensuring fix len of inner array.
+#[derive(PartialEq, Eq)]
+pub struct Packet(Vec<u8>);
+
+impl Packet {
+	fn new(header: &[u8], payload: &[u8]) -> Result<Self, SphinxError> {
+		let mut packet = Vec::with_capacity(PACKET_SIZE);
+		if header.len() != sphinx::HEADER_SIZE {
+			return Err(SphinxError::InvalidPacket)
+		}
+		packet.extend_from_slice(&header[..]);
+		packet.extend_from_slice(&payload[..]);
+		Self::from_vec(packet)
+	}
+
+	pub fn from_vec(data: Vec<u8>) -> Result<Self, SphinxError> {
+		if data.len() == PACKET_SIZE {
+			Ok(Packet(data))
+		} else {
+			Err(SphinxError::InvalidPacket)
+		}
+	}
+
+	fn into_vec(self) -> Vec<u8> {
+		self.0
+	}
+
+	fn as_mut(&mut self) -> &mut [u8] {
+		self.0.as_mut()
+	}
+}
 
 type SphinxPeerId = [u8; 32];
 
@@ -126,7 +155,7 @@ pub fn public_from_ed25519(ed25519_pk: &ed25519::PublicKey) -> MixPublicKey {
 struct QueuedPacket {
 	deadline: Option<Instant>,
 	recipient: MixPeerId,
-	data: Vec<u8>,
+	data: Packet,
 }
 
 impl std::cmp::PartialOrd for QueuedPacket {
@@ -194,7 +223,7 @@ impl<T: Topology> Mixnet<T> {
 	fn queue_packet(
 		&mut self,
 		recipient: MixPeerId,
-		data: Vec<u8>,
+		data: Packet,
 		delay: Duration,
 	) -> Result<(), Error> {
 		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
@@ -207,7 +236,7 @@ impl<T: Topology> Mixnet<T> {
 
 	// When node are not routing, the packet is not delayed
 	// and sent immediatly.
-	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Vec<u8>) -> Result<(), Error> {
+	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Packet) -> Result<(), Error> {
 		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
 			return Err(Error::QueueFull)
 		}
@@ -268,9 +297,8 @@ impl<T: Topology> Mixnet<T> {
 				.collect();
 			let chunk_surbs = if n == 0 { surbs.take() } else { None };
 			let (packet, surbs_keys) =
-				sphinx::new_packet(&mut rng, hops, chunk.buffer(), chunk_surbs)
+				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surbs)
 					.map_err(|e| Error::SphinxError(e))?;
-			debug_assert!(packet.len() == PACKET_SIZE);
 			if let Some((keys, surbs_id)) = surbs_keys {
 				let persistance = SurbsPersistance { keys, query: surbs_query.take() };
 				self.surbs.insert(surbs_id, persistance, Instant::now());
@@ -302,7 +330,7 @@ impl<T: Topology> Mixnet<T> {
 			return Err(Error::BadSurbsLength)
 		}
 
-		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0).buffer(), header)
+		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(|e| Error::SphinxError(e))?;
 		let dest = to_libp2p_id(first_node)?;
 		if self.topology.routing() {
@@ -320,12 +348,8 @@ impl<T: Topology> Mixnet<T> {
 	pub fn import_message(
 		&mut self,
 		peer_id: MixPeerId,
-		message: Vec<u8>,
+		message: Packet,
 	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
-		if message.len() != PACKET_SIZE {
-			return Err(Error::BadFragment)
-		}
-
 		let next_delay =
 			|| exp_delay(&mut rand::thread_rng(), self.average_hop_delay).as_millis() as u32;
 		let result = sphinx::unwrap_packet(
@@ -390,7 +414,7 @@ impl<T: Topology> Mixnet<T> {
 		self.topology.disconnect(id);
 	}
 
-	fn cover_message(&mut self) -> Option<(MixPeerId, Vec<u8>)> {
+	fn cover_message(&mut self) -> Option<(MixPeerId, Packet)> {
 		let mut rng = rand::thread_rng();
 		let message = fragment::Fragment::create_cover_fragment(&mut rng);
 		let path = self.random_cover_paths();
@@ -404,7 +428,7 @@ impl<T: Topology> Mixnet<T> {
 				})
 				.collect();
 			let (packet, _no_surbs) =
-				sphinx::new_packet(&mut rng, hops, message.buffer(), None).ok()?;
+				sphinx::new_packet(&mut rng, hops, message.into_vec(), None).ok()?;
 			Some((id, packet))
 		} else {
 			None
@@ -457,7 +481,10 @@ impl<T: Topology> Mixnet<T> {
 			if deadline {
 				if let Some(packet) = self.packet_queue.pop() {
 					log::trace!(target: "mixnet", "Outbound message for {:?}", packet.recipient);
-					return Poll::Ready(MixEvent::SendMessage((packet.recipient, packet.data)))
+					return Poll::Ready(MixEvent::SendMessage((
+						packet.recipient,
+						packet.data.into_vec(),
+					)))
 				}
 			}
 			if self.topology.routing() {
@@ -465,7 +492,7 @@ impl<T: Topology> Mixnet<T> {
 				// TODO generate cover per peer? not random global
 				if let Some((recipient, data)) = self.cover_message() {
 					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
-					return Poll::Ready(MixEvent::SendMessage((recipient, data)))
+					return Poll::Ready(MixEvent::SendMessage((recipient, data.into_vec())))
 				}
 			}
 		}

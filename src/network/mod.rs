@@ -26,7 +26,7 @@ mod protocol;
 mod worker;
 
 use crate::{
-	core::{self, Config, MixEvent, SurbsPayload, PUBLIC_KEY_LEN},
+	core::{self, Config, MixEvent, Packet, SurbsPayload, PUBLIC_KEY_LEN},
 	network::worker::{WorkerIn, WorkerOut},
 	MixPublicKey, SendOptions,
 };
@@ -268,6 +268,14 @@ impl NetworkBehaviour for MixnetBehaviour {
 						connection.window_count = 1;
 					}
 					connection.read_timeout.reset(Duration::new(2, 0));
+
+					let message = if let Ok(message) = Packet::from_vec(message) {
+						message
+					} else {
+						log::trace!(target: "mixnet", "Bad message len from {:?}", peer_id);
+						return
+					};
+
 					if let Err(e) = self
 						.mixnet_worker_sink
 						.as_mut()
