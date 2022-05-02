@@ -162,22 +162,22 @@ pub struct SurbsPersistance {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct SurbsEncoded {
+pub struct SurbsPayload {
 	pub first_node: [u8; NODE_ID_SIZE],
 	pub first_key: SprpKey,
 	pub header: [u8; HEADER_SIZE],
 }
 
-impl From<Vec<u8>> for SurbsEncoded {
+impl From<Vec<u8>> for SurbsPayload {
 	fn from(mut encoded: Vec<u8>) -> Self {
 		let buf = array_mut_ref![encoded, 0, SURBS_REPLY_SIZE];
 		let (id, first_key, header) =
 			mut_array_refs![buf, NODE_ID_SIZE, SPRP_KEY_SIZE, HEADER_SIZE];
-		SurbsEncoded { first_node: *id, first_key: SprpKey { key: *first_key }, header: *header }
+		SurbsPayload { first_node: *id, first_key: SprpKey { key: *first_key }, header: *header }
 	}
 }
 
-impl SurbsEncoded {
+impl SurbsPayload {
 	fn append(&self, dest: &mut Vec<u8>) {
 		dest.extend_from_slice(&self.first_node[..]);
 		dest.extend_from_slice(&self.first_key.key[..]);
@@ -233,7 +233,7 @@ fn create_header<T: Rng + CryptoRng>(
 	header[0..AD_SIZE].copy_from_slice(&V0_AD);
 
 	for i in 1..num_hops {
-		// TODO for surbs last key do not need to be derived (it is only use by emmitter).
+		// TODO for surbs last key do not need to be derived (it is only used by emmitter).
 		shared_secret = secret_key.diffie_hellman(&path[i].public_key).to_bytes();
 		let mut j = 0;
 		while j < i {
@@ -335,7 +335,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone() };
-		let encoded = SurbsEncoded { first_node, first_key, header };
+		let encoded = SurbsPayload { first_node, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);
 		debug_assert!(

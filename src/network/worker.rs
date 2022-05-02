@@ -22,7 +22,7 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsEncoded, Topology},
+	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsPayload, Topology},
 	MessageType, MixPeerId, SendOptions,
 };
 use futures::{channel::mpsc::SendError, Sink, Stream};
@@ -37,7 +37,7 @@ pub type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
 // TODO Arc those Vec<u8>
 pub enum WorkerIn {
 	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
-	RegisterSurbs(Vec<u8>, SurbsEncoded),
+	RegisterSurbs(Vec<u8>, SurbsPayload),
 	AddConnectedPeer(MixPeerId, MixPublicKey),
 	RemoveConnectedPeer(MixPeerId),
 	ImportMessage(MixPeerId, Vec<u8>),

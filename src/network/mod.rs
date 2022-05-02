@@ -26,7 +26,7 @@ mod protocol;
 mod worker;
 
 use crate::{
-	core::{self, Config, MixEvent, SurbsEncoded, PUBLIC_KEY_LEN},
+	core::{self, Config, MixEvent, SurbsPayload, PUBLIC_KEY_LEN},
 	network::worker::{WorkerIn, WorkerOut},
 	MixPublicKey, SendOptions,
 };
@@ -150,7 +150,7 @@ impl MixnetBehaviour {
 	pub fn send_surbs(
 		&mut self,
 		message: Vec<u8>,
-		surbs: SurbsEncoded,
+		surbs: SurbsPayload,
 	) -> std::result::Result<(), core::Error> {
 		self.mixnet_worker_sink
 			.as_mut()
@@ -184,7 +184,7 @@ pub enum MessageType {
 	/// Message only.
 	StandAlone,
 	/// Message with a surbs for reply.
-	WithSurbs(SurbsEncoded),
+	WithSurbs(SurbsPayload),
 	/// Message from a surbs reply (trusted), and initial query
 	/// if stored.
 	FromSurbs(Option<Vec<u8>>),
@@ -197,7 +197,7 @@ impl MessageType {
 	}
 
 	/// Extract surbs.
-	pub fn surbs(self) -> Option<SurbsEncoded> {
+	pub fn surbs(self) -> Option<SurbsPayload> {
 		match self {
 			MessageType::WithSurbs(surbs) => Some(surbs),
 			_ => None,

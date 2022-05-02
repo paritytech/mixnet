@@ -144,7 +144,6 @@ pub fn hmac_list(key: &[u8; MAC_KEY_SIZE], data: &[&[u8]]) -> [u8; MAC_SIZE] {
 
 /// returns the plaintext of the message msg, decrypted via the
 /// Sphinx SPRP with a given key.
-/// TODO this should reuse buffer.
 pub fn sprp_decrypt(key: &[u8; SPRP_KEY_SIZE], mut msg: Vec<u8>) -> Result<Vec<u8>, ()> {
 	let cipher = LionessCipher::new_raw(key);
 	cipher.decrypt(&mut msg).map_err(|_| ())?;
