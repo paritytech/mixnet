@@ -233,7 +233,7 @@ fn create_header<T: Rng + CryptoRng>(
 	header[0..AD_SIZE].copy_from_slice(&V0_AD);
 
 	for i in 1..num_hops {
-		// TODO for surbs last key do not need to be derived (it is only used by emmitter).
+		// Last key of surbs do not have to be derived, but doing for code clarity.
 		shared_secret = secret_key.diffie_hellman(&path[i].public_key).to_bytes();
 		let mut j = 0;
 		while j < i {
@@ -478,9 +478,9 @@ pub fn unwrap_packet(
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
 		DoNextHop::SurbsReply => {
-			// TODO could systematically query and skip header reading,
-			// but here we check mac.
+			// Previous reading of header was only for hmac.
 			if let Some(surbs) = surbs.pending.remove(&replay_tag) {
+				//
 				let mut decrypted_payload = payload.to_vec();
 				let nb_key = surbs.keys.len();
 				for key in surbs.keys[..nb_key - 1].iter().rev() {

@@ -34,7 +34,6 @@ use std::{
 pub type WorkerStream = Pin<Box<dyn Stream<Item = WorkerIn> + Send>>;
 pub type WorkerSink = Pin<Box<dyn Sink<WorkerOut, Error = SendError> + Send>>;
 
-// TODO Arc those Vec<u8>
 pub enum WorkerIn {
 	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, SurbsPayload),
@@ -44,7 +43,7 @@ pub enum WorkerIn {
 }
 
 pub enum WorkerOut {
-	Event(MixEvent), // TODO could be simplified
+	Event(MixEvent),
 	ReceivedMessage(MixPeerId, Vec<u8>, MessageType),
 }
 
@@ -78,10 +77,12 @@ impl<T: Topology> MixnetWorker<T> {
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
-		// TODO use futures::select and switch to async
 		if let Poll::Ready(e) = self.mixnet.poll(cx) {
 			if let Err(e) = self.worker_out.as_mut().start_send(WorkerOut::Event(e)) {
 				log::error!(target: "mixnet", "Error sending event to channel: {:?}", e);
+				if e.is_disconnected() {
+					return Poll::Ready(false)
+				}
 			}
 		}
 
@@ -119,6 +120,9 @@ impl<T: Topology> MixnetWorker<T> {
 									WorkerOut::ReceivedMessage(peer, full_message, surbs),
 								) {
 									log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+									if e.is_disconnected() {
+										return Poll::Ready(false)
+									}
 								}
 							},
 							Ok(None) => (),
