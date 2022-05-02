@@ -34,12 +34,6 @@ pub trait Topology: Sized + Send + 'static {
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
 	/// Return `None` if peer is not routing.
-	/// TODO when `None` allow sending even if not part of topology but in the mixnet:
-	/// external hop for latest (see gen_path function). Then last hop will expose
-	/// a new connection, so it need to be an additional hop (if possible).
-	///
-	/// TODO change to return a iter (avoid costy implementation by api design).
-	///
 	/// TODO if removing random_path default implementation, this can be removed too.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
