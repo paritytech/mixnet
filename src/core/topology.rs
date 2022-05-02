@@ -69,10 +69,8 @@ pub trait Topology: Sized + Send + 'static {
 		let mut rng = rand::thread_rng();
 		let mut result = Vec::new();
 		while result.len() < count {
-			// TODO this path pool looks fishy: should persist or it is very costy for nothing
-			// actually would make sense to put in topology: in a star where neighbor fn return
-			// same thing for every one it is full useless. In layer, maybe we want
-			// to favor some nodes in first hop due to later possibles.
+			// TODO path pool could be persisted, but at this point this implementation
+			// is not really targetted.
 			let n: usize = rng.gen_range(0..paths.len());
 			result.push(paths[n].clone());
 		}
