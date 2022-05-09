@@ -41,37 +41,28 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(120); // TODO a bit less
 impl crate::core::connection::Connection for Connection {
 	fn poll(&mut self, cx: &mut Context, handshake: &MixPublicKey) -> Poll<ConnectionEvent> {
 		if !self.is_ready() {
-			let mut established = None;
+			let mut result = Poll::Pending;
 			match self.try_recv_handshake(cx) {
 				Poll::Ready(Ok(key)) => {
-					key.map(|key| {
-						/* TODO from core mixnet
-												// TODO only send if configured to. (used in test only) if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Connected(
-													connection.peer_id.clone(),
-													key.clone(),
-												)) {
-													log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-												}
-						*/
-						//						self.mixnet.add_connected_peer(connection.peer_id.clone(), key)
-						/*					});
-						result = Poll::Ready(true);*/
-						established = Some(key);
-					});
+					if let Some(key) = key {
+						result = Poll::Ready(ConnectionEvent::Established(key));
+					} else {
+						result = Poll::Ready(ConnectionEvent::None);
+					}
 				},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 				Poll::Pending => (),
 			}
 			match self.try_send_handshake(cx, handshake) {
-				Poll::Ready(Ok(())) => return Poll::Ready(ConnectionEvent::None),
+				Poll::Ready(Ok(())) => {
+					if matches!(result, Poll::Pending) {
+						result = Poll::Ready(ConnectionEvent::None);
+					}
+				},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 				Poll::Pending => (),
 			}
-			return if let Some(key) = established {
-				Poll::Ready(ConnectionEvent::Established(key))
-			} else {
-				Poll::Pending
-			}
+			return result;
 		} else {
 			match self.try_recv_packet(cx, self.current_window) {
 				Poll::Ready(Ok(Some(packet))) =>
