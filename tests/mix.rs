@@ -114,21 +114,21 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 
 		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);
 		let (from_worker_sink, from_worker_stream) = mpsc::channel(1000);
-		let mixnet = mixnet::MixnetBehaviour::new(
-			cfg.clone(),
-			Box::pin(to_worker_sink),
-			Box::pin(from_worker_stream),
-		);
+		let mixnet =
+			mixnet::MixnetBehaviour::new(Box::new(to_worker_sink), Box::new(from_worker_stream));
 		let mut worker = mixnet::MixnetWorker::new(
 			cfg,
 			topology.clone(),
-			(Box::pin(from_worker_sink), Box::pin(to_worker_stream)),
+			(Box::new(from_worker_sink), Box::new(to_worker_stream)),
 		);
-		let worker = future::poll_fn(move |cx| {
-			if worker.poll(cx) == Poll::Ready(false) {
-				Poll::Ready(())
-			} else {
-				Poll::Pending
+		let worker = future::poll_fn(move |cx| loop {
+			match worker.poll(cx) {
+				Poll::Ready(false) => {
+					log::error!(target: "mixnet", "Shutting worker");
+					return Poll::Ready(())
+				},
+				Poll::Pending => return Poll::Pending,
+				Poll::Ready(true) => (),
 			}
 		});
 		executor.spawn(worker).unwrap();
@@ -167,7 +167,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 							tx.send(address.clone()).await.unwrap()
 						}
 						for mut rx in to_wait.drain(..) {
-							swarm.dial_addr(rx.next().await.unwrap()).unwrap();
+							swarm.dial(rx.next().await.unwrap()).unwrap();
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Connected(_, _)) => {

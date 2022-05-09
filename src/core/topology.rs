@@ -34,12 +34,6 @@ pub trait Topology: Sized + Send + 'static {
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
 	/// Return `None` if peer is not routing.
-	/// TODO when `None` allow sending even if not part of topology but in the mixnet:
-	/// external hop for latest (see gen_path function). Then last hop will expose
-	/// a new connection, so it need to be an additional hop (if possible).
-	///
-	/// TODO change to return a iter (avoid costy implementation by api design).
-	///
 	/// TODO if removing random_path default implementation, this can be removed too.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
@@ -75,10 +69,8 @@ pub trait Topology: Sized + Send + 'static {
 		let mut rng = rand::thread_rng();
 		let mut result = Vec::new();
 		while result.len() < count {
-			// TODO this path pool looks fishy: should persist or it is very costy for nothing
-			// actually would make sense to put in topology: in a star where neighbor fn return
-			// same thing for every one it is full useless. In layer, maybe we want
-			// to favor some nodes in first hop due to later possibles.
+			// TODO path pool could be persisted, but at this point this implementation
+			// is not really targetted.
 			let n: usize = rng.gen_range(0..paths.len());
 			result.push(paths[n].clone());
 		}

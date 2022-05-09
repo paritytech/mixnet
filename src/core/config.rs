@@ -24,6 +24,8 @@ use libp2p_core::identity::ed25519::Keypair;
 
 use crate::{public_from_ed25519, secret_from_ed25519, MixPeerId, MixPublicKey, MixSecretKey};
 
+const WINDOW_BACKPRESSURE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Configuration data for the mixnet protocol.
 #[derive(Clone)]
 pub struct Config {
@@ -68,9 +70,7 @@ impl Config {
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
-			limit_per_window: Some(
-				(crate::network::WINDOW_BACKPRESSURE.as_millis() as u32 / 500) * 2,
-			),
+			limit_per_window: Some((WINDOW_BACKPRESSURE.as_millis() as u32 / 250) * 2),
 			surbs_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 			persist_surbs_query: true,
