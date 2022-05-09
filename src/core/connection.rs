@@ -18,31 +18,18 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#[macro_use]
-extern crate arrayref;
+//! Mixnet connection interface.
 
-mod core;
-mod network;
+use crate::{MixPublicKey, Packet};
+use std::task::{Context, Poll};
 
-pub use crate::core::{
-	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey,
-	NoTopology, Packet, SurbsPayload, Topology, PACKET_SIZE,
-};
-pub use network::{
-	DecodedMessage, MessageType, MixnetBehaviour, MixnetWorker, NetworkEvent, WorkerChannels,
-	WorkerOut, WorkerSink, WorkerSink2, WorkerStream,
-};
+pub(crate) enum ConnectionEvent {
+	Established(MixPublicKey),
+	Received(Packet),
+	Broken,
+	None,
+}
 
-/// Mixnet peer identity.
-pub type MixPeerId = libp2p_core::PeerId;
-
-/// Options for sending a message in the mixnet.
-pub struct SendOptions {
-	/// Number of hop for the message.
-	/// If undefined, mixnet defined number of hop will be used.
-	/// For its surbs the same number will be use.
-	pub num_hop: Option<usize>,
-
-	/// Do we attach a surbs with the message.
-	pub with_surbs: bool,
+pub(crate) trait Connection {
+	fn poll(&mut self, cx: &mut Context, handshake: &MixPublicKey) -> Poll<ConnectionEvent>;
 }

@@ -21,13 +21,15 @@
 //! The [`Mixnet`] struct implements the [`NetworkBehaviour`] trait. When used with a
 //! [`libp2p_swarm::Swarm`], it will handle the mixnet protocol.
 
+mod connection;
 mod handler;
 mod protocol;
 mod worker;
 
+pub use crate::network::worker::{WorkerOut, WorkerSink as WorkerSink2};
 use crate::{
 	core::{self, SurbsPayload},
-	network::worker::{WorkerIn, WorkerOut},
+	network::worker::WorkerIn,
 	MixPublicKey, SendOptions,
 };
 use dyn_clone::DynClone;
@@ -35,8 +37,8 @@ use futures::{channel::mpsc::SendError, Sink, SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
+	dial_opts::{DialOpts, PeerCondition},
 	IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
-dial_opts::{DialOpts, PeerCondition},
 };
 use std::{
 	collections::{HashMap, VecDeque},
@@ -219,18 +221,18 @@ impl NetworkBehaviour for MixnetBehaviour {
 		match self.mixnet_worker_stream.poll_next_unpin(cx) {
 			Poll::Ready(Some(out)) => match out {
 				WorkerOut::Connected(peer, public_key) =>
-					Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-						NetworkEvent::Connected(peer, public_key),
-					)),
+					Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Connected(
+						peer, public_key,
+					))),
 				WorkerOut::ReceivedMessage(peer, message, kind) =>
-					Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-						NetworkEvent::Message(DecodedMessage { peer, message, kind }),
-					)),
-				WorkerOut::Dial(peer, addresses) => {
+					Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Message(
+						DecodedMessage { peer, message, kind },
+					))),
+				WorkerOut::Dial(peer, addresses) =>
 					if !self.connected.contains_key(&peer) {
 						let mut handler = self.new_handler();
 						handler.set_peer_id(peer.clone());
-						Poll::Ready(NetworkBehaviourAction::Dial{
+						Poll::Ready(NetworkBehaviourAction::Dial {
 							opts: DialOpts::peer_id(peer)
 								.condition(PeerCondition::Disconnected)
 								.addresses(addresses)
@@ -239,8 +241,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 						})
 					} else {
 						self.poll(cx, params)
-					}
-				},
+					},
 			},
 			Poll::Ready(None) =>
 				return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::CloseStream)),
