@@ -43,26 +43,24 @@ impl crate::core::connection::Connection for Connection {
 		if !self.is_ready() {
 			let mut result = Poll::Pending;
 			match self.try_recv_handshake(cx) {
-				Poll::Ready(Ok(key)) => {
+				Poll::Ready(Ok(key)) =>
 					if let Some(key) = key {
 						result = Poll::Ready(ConnectionEvent::Established(key));
 					} else {
 						result = Poll::Ready(ConnectionEvent::None);
-					}
-				},
+					},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 				Poll::Pending => (),
 			}
 			match self.try_send_handshake(cx, handshake) {
-				Poll::Ready(Ok(())) => {
+				Poll::Ready(Ok(())) =>
 					if matches!(result, Poll::Pending) {
 						result = Poll::Ready(ConnectionEvent::None);
-					}
-				},
+					},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 				Poll::Pending => (),
 			}
-			return result;
+			return result
 		} else {
 			match self.try_packet_flushing(cx) {
 				Poll::Ready(Ok(())) => {}, // recv will choose if pending
