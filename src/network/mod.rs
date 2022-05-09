@@ -36,6 +36,7 @@ use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
 	IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
+dial_opts::{DialOpts, PeerCondition},
 };
 use std::{
 	collections::{HashMap, VecDeque},
@@ -205,7 +206,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 	fn poll(
 		&mut self,
 		cx: &mut Context<'_>,
-		_: &mut impl PollParameters,
+		params: &mut impl PollParameters,
 	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
 		if let Some((id, connection)) = self.notify_queue.pop_front() {
 			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
@@ -218,13 +219,28 @@ impl NetworkBehaviour for MixnetBehaviour {
 		match self.mixnet_worker_stream.poll_next_unpin(cx) {
 			Poll::Ready(Some(out)) => match out {
 				WorkerOut::Connected(peer, public_key) =>
-					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+					Poll::Ready(NetworkBehaviourAction::GenerateEvent(
 						NetworkEvent::Connected(peer, public_key),
 					)),
 				WorkerOut::ReceivedMessage(peer, message, kind) =>
-					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+					Poll::Ready(NetworkBehaviourAction::GenerateEvent(
 						NetworkEvent::Message(DecodedMessage { peer, message, kind }),
 					)),
+				WorkerOut::Dial(peer, addresses) => {
+					if !self.connected.contains_key(&peer) {
+						let mut handler = self.new_handler();
+						handler.set_peer_id(peer.clone());
+						Poll::Ready(NetworkBehaviourAction::Dial{
+							opts: DialOpts::peer_id(peer)
+								.condition(PeerCondition::Disconnected)
+								.addresses(addresses)
+								.build(),
+							handler,
+						})
+					} else {
+						self.poll(cx, params)
+					}
+				},
 			},
 			Poll::Ready(None) =>
 				return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::CloseStream)),

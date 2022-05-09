@@ -61,8 +61,12 @@ pub enum WorkerIn {
 }
 
 pub enum WorkerOut {
+	/// Message received from mixnet.
 	ReceivedMessage(MixPeerId, Vec<u8>, MessageType),
+	/// Handshake success in mixnet.
 	Connected(PeerId, MixPublicKey),
+	/// Dial a given PeerId.
+	Dial(PeerId, Vec<libp2p_core::Multiaddr>),
 }
 
 /// Internal information tracked for an established connection.

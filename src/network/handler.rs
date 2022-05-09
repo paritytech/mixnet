@@ -141,6 +141,10 @@ impl Handler {
 			connection_closed: None,
 		}
 	}
+
+	pub(crate) fn set_peer_id(&mut self, peer_id: MixPeerId) {
+		self.peer_id = Some(peer_id);
+	}
 }
 
 impl Handler {
@@ -214,8 +218,10 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_event(&mut self, peer: MixPeerId) {
-		self.peer_id = Some(peer);
-		self.try_send_connected();
+		if self.peer_id.is_none() {
+			self.peer_id = Some(peer);
+			self.try_send_connected();
+		}
 	}
 
 	fn inject_dial_upgrade_error(&mut self, _info: (), error: ConnectionHandlerUpgrErr<Void>) {
