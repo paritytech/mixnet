@@ -64,15 +64,15 @@ impl crate::core::connection::Connection for Connection {
 			}
 			return result;
 		} else {
+			match self.try_packet_flushing(cx) {
+				Poll::Ready(Ok(())) => {}, // recv will choose if pending
+				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
+				Poll::Pending => (),
+			}
 			match self.try_recv_packet(cx, self.current_window) {
 				Poll::Ready(Ok(Some(packet))) =>
 					return Poll::Ready(ConnectionEvent::Received(packet)),
 				Poll::Ready(Ok(None)) => return Poll::Ready(ConnectionEvent::None),
-				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
-				Poll::Pending => (),
-			}
-			match self.try_packet_flushing(cx) {
-				Poll::Ready(Ok(())) => {}, // recv is pending, can return pending.
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 				Poll::Pending => (),
 			}

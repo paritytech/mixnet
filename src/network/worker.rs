@@ -38,7 +38,7 @@ use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
 
-pub const WINDOW_LIMIT: Duration = Duration::from_secs(5);
+pub const WINDOW_LIMIT: Duration = Duration::from_secs(50); // TODO currently it tics connect
 pub type WorkerStream = Box<dyn Stream<Item = WorkerIn> + Unpin + Send>;
 pub type WorkerSink = Box<dyn Sink<WorkerOut, Error = SendError> + Unpin + Send>;
 
@@ -179,14 +179,13 @@ impl<T: Topology> MixnetWorker<T> {
 		}
 
 		if let Poll::Ready(e) = self.mixnet.poll(cx, &mut self.worker_out) {
+			result = Poll::Ready(true);
 			match e {
 				MixEvent::SendMessage((peer_id, packet)) => {
 					debug_assert!(packet.len() == PACKET_SIZE);
 					self.queue_packets.push_front((peer_id, packet));
 				},
-				MixEvent::None => {
-					result = Poll::Ready(true);
-				},
+				MixEvent::None => (),
 			}
 		}
 
