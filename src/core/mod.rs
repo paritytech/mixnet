@@ -96,8 +96,6 @@ type SphinxPeerId = [u8; 32];
 
 pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
-	Disconnect(MixPeerId),
-	ChangeLimit(MixPeerId, Option<u32>),
 }
 
 fn to_sphinx_id(id: &MixPeerId) -> Result<SphinxPeerId, Error> {
@@ -174,6 +172,7 @@ impl std::cmp::Ord for QueuedPacket {
 pub struct Mixnet<T> {
 	pub topology: T,
 	num_hops: usize,
+	pub public: MixPublicKey,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
 	// Incomplete incoming message fragments.
@@ -204,6 +203,7 @@ impl<T: Topology> Mixnet<T> {
 			replay_filter: ReplayFilter::new(&config),
 			persist_surbs_query: config.persist_surbs_query,
 			num_hops: config.num_hops as usize,
+			public: config.public_key,
 			secret: config.secret_key,
 			local_id: config.local_id,
 			fragments: MessageCollection::new(),
@@ -468,7 +468,6 @@ impl<T: Topology> Mixnet<T> {
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixEvent> {
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
-			cx.waker().wake_by_ref();
 			self.cleanup();
 			let mut rng = rand::thread_rng();
 			let next_delay = exp_delay(&mut rng, self.average_traffic_delay);

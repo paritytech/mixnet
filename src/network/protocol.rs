@@ -21,7 +21,7 @@
 use futures::prelude::*;
 use libp2p_core::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use libp2p_swarm::NegotiatedSubstream;
-use std::{io, iter};
+use std::iter;
 use void::Void;
 
 /// The Mixnet protocol upgrade.
@@ -56,31 +56,6 @@ impl OutboundUpgrade<NegotiatedSubstream> for Mixnet {
 	}
 }
 
-/// Sends a payload.
-pub async fn send_message<S>(mut stream: S, message: Vec<u8>) -> io::Result<S>
-where
-	S: AsyncRead + AsyncWrite + Unpin,
-{
-	let size: [u8; 4] = (message.len() as u32).to_le_bytes();
-	stream.write_all(&size).await?;
-	stream.write_all(&message).await?;
-	stream.flush().await?;
-	Ok(stream)
-}
-
-/// Waits for an incoming message
-pub async fn recv_message<S>(mut stream: S) -> io::Result<(S, Vec<u8>)>
-where
-	S: AsyncRead + AsyncWrite + Unpin,
-{
-	let mut size: [u8; 4] = Default::default();
-	stream.read_exact(&mut size).await?;
-	let mut message = Vec::new();
-	message.resize(u32::from_le_bytes(size) as usize, 0u8);
-	stream.read_exact(&mut message).await?;
-	Ok((stream, message))
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -105,13 +80,15 @@ mod tests {
 		async_std::task::spawn(async move {
 			let listener_event = listener.next().await.unwrap();
 			let (listener_upgrade, _) = listener_event.unwrap().into_upgrade().unwrap();
-			let conn = listener_upgrade.await.unwrap();
-			recv_message(conn).await.unwrap();
+			let mut conn = listener_upgrade.await.unwrap();
+			let mut message = vec![0];
+			conn.read_exact(&mut message[..]).await.unwrap();
 		});
 
 		async_std::task::block_on(async move {
-			let c = MemoryTransport.dial(listener_addr).unwrap().await.unwrap();
-			let _s = send_message(c, vec![42]).await.unwrap();
+			let mut c = MemoryTransport.dial(listener_addr).unwrap().await.unwrap();
+			c.write_all(&[42]).await.unwrap();
+			c.flush().await.unwrap();
 		});
 	}
 }
