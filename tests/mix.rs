@@ -297,12 +297,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 }
 
 #[test]
-fn message_exchange() {
+fn message_exchange_no_surbs() {
 	test_messages(5, 10, 1, false);
 }
 
 #[test]
-fn fragmented_messages() {
+fn fragmented_messages_no_surbs() {
 	test_messages(2, 1, 8 * 1024, false);
 }
 

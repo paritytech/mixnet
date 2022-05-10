@@ -159,10 +159,9 @@ pub fn public_from_ed25519(ed25519_pk: &ed25519::PublicKey) -> MixPublicKey {
 
 #[derive(PartialEq, Eq)]
 /// A real traffic message that we need to forward.
-struct QueuedPacket {
-	deadline: Option<Instant>,
-	recipient: MixPeerId,
-	data: Packet,
+pub(crate) struct QueuedPacket {
+	deadline: Option<Instant>, // TODO could replace by sent in window and window index
+	pub data: Packet,
 }
 
 impl std::cmp::PartialOrd for QueuedPacket {
@@ -212,6 +211,7 @@ pub(crate) struct Mixnet<T, C> {
 	current_window_start: Instant,
 	current_window: Wrapping<usize>,
 	current_packet_in_window: usize,
+	last_now: Instant,
 
 	window_delay: Delay,
 }
@@ -226,6 +226,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let packet_per_window = (WINDOW_DELAY.as_nanos() / packet_duration_nanos as u128) as usize;
 		debug_assert!(packet_per_window > 0);
 
+		let now = Instant::now();
 		Mixnet {
 			topology,
 			surbs: SurbsCollection::new(&config),
@@ -242,7 +243,8 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
 			average_traffic_delay,
 			default_limit_msg: config.limit_per_window,
-			current_window_start: Instant::now(),
+			current_window_start: now,
+			last_now: now,
 			current_window: Wrapping(0),
 			current_packet_in_window: 0,
 			window_delay,
@@ -281,22 +283,36 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		data: Packet,
 		delay: Duration,
 	) -> Result<(), Error> {
-		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
-			return Err(Error::QueueFull)
+		if let Some(connection) = self.connected_peers.get_mut(&recipient) {
+			let deadline = Some(self.last_now + delay); // TODO could get now from param
+			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window)?;
+		} else {
+			// TODO if in topology, try dial and add to local size restricted heap
+			/*		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
+						return Err(Error::QueueFull)
+					}
+					let deadline = Some(Instant::now() + delay);
+					self.packet_queue.push(QueuedPacket { deadline, data, recipient });
+			*/
 		}
-		let deadline = Some(Instant::now() + delay);
-		self.packet_queue.push(QueuedPacket { deadline, data, recipient });
 		Ok(())
 	}
 
 	// When node are not routing, the packet is not delayed
 	// and sent immediatly.
 	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Packet) -> Result<(), Error> {
-		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
-			return Err(Error::QueueFull)
+		if let Some(connection) = self.connected_peers.get_mut(&recipient) {
+			let deadline = Some(self.last_now); // TODO remove option for deadline (we don't want to skip other packets
+			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window)?;
+		} else {
+			// TODO if in topology, try dial and add to local size restricted heap
+			/*		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
+						return Err(Error::QueueFull)
+					}
+					let deadline = Some(Instant::now() + delay);
+					self.packet_queue.push(QueuedPacket { deadline, data, recipient });
+			*/
 		}
-		let deadline = None;
-		self.packet_queue.push(QueuedPacket { deadline, data, recipient });
 		Ok(())
 	}
 
@@ -356,7 +372,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 					.map_err(|e| Error::SphinxError(e))?;
 			if let Some((keys, surbs_id)) = surbs_keys {
 				let persistance = SurbsPersistance { keys, query: surbs_query.take() };
-				self.surbs.insert(surbs_id, persistance, Instant::now());
+				self.surbs.insert(surbs_id, persistance, self.last_now);
 			}
 			packets.push((first_id, packet));
 		}
@@ -509,8 +525,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		self.topology.random_cover_path(&self.local_id)
 	}
 
-	fn cleanup(&mut self) {
-		let now = Instant::now();
+	fn cleanup(&mut self, now: Instant) {
 		self.fragments.cleanup(now);
 		self.surbs.cleanup(now);
 		self.replay_filter.cleanup(now);
@@ -520,13 +535,18 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			let now = Instant::now();
+			self.last_now = now;
 			if let Poll::Ready(_) = self.window_delay.poll_unpin(cx) {
 				let duration = now - self.current_window_start;
 				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
+
+				log::error!(target: "mixnet", "New window {:?}", self.current_window);
 				self.current_window += Wrapping(nb_spent);
-				log::trace!(target: "mixnet", "New window {:?}", self.current_window);
+				for _ in 0..nb_spent {
+					self.current_window_start += WINDOW_DELAY;  
+				}
 				self.window_delay.reset(WINDOW_DELAY);
-				while !matches!(self.next_message.poll_unpin(cx), Poll::Pending) {
+				while !matches!(self.window_delay.poll_unpin(cx), Poll::Pending) {
 					self.window_delay.reset(WINDOW_DELAY);
 				}
 			}
@@ -536,47 +556,30 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				self.packet_per_window as u64) /
 				WINDOW_DELAY.as_millis() as u64) as usize;
 
-			self.cleanup();
+			self.cleanup(now);
 			let next_delay = self.average_traffic_delay;
 			while !matches!(self.next_message.poll_unpin(cx), Poll::Pending) {
 				self.next_message.reset(next_delay);
 			}
-
-			let deadline = self
-				.packet_queue
-				.peek()
-				.map_or(false, |p| p.deadline.map(|d| d <= now).unwrap_or(true));
-			if deadline {
-				if let Some(packet) = self.packet_queue.pop() {
-					log::trace!(target: "mixnet", "Outbound message for {:?}", packet.recipient);
-					return Poll::Ready(MixEvent::SendMessage((
-						packet.recipient,
-						packet.data.into_vec(),
-					)))
-				}
-			}
-			if self.topology.routing() {
-				// TODO restore
-				// No packet to forward, generate cover traffic
-				// TODO generate cover per peer? not random global
-				if let Some((recipient, data)) = self.cover_message() {
-					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
-					return Poll::Ready(MixEvent::SendMessage((recipient, data.into_vec())))
-				}
-			}
 		}
 
+		let mut all_pending = true;
 		let mut disconnected = Vec::new();
 		let mut recv_packets = Vec::new();
-		let mut all_pending = true;
 		// TODO futures unordered
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
+
+				// TODO loop on ready
+				// and import inside (requires to split connected from other mixnet
+				// fields: would remove need for connection event received.
 			match connection.poll(
 				cx,
 				&self.public,
 				self.current_window,
 				self.current_packet_in_window,
 				self.packet_per_window,
+				self.last_now,
+				&mut self.topology,
 			) {
 				Poll::Ready(ConnectionEvent::Established(key)) => {
 					all_pending = false;
@@ -643,7 +646,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			Err(e) => {
 				log::warn!(target: "mixnet", "Error importing message: {:?}", e);
 			},
-		}
+		 }
 		true
 	}
 }
@@ -806,6 +809,15 @@ where
 		}
 		count - self.messages.len()
 	}
+}
+
+pub(crate) fn cover_message_to(peer_id: &MixPeerId, peer_key: MixPublicKey) -> Option<Packet> {
+	let mut rng = rand::thread_rng();
+	let message = fragment::Fragment::create_cover_fragment(&mut rng);
+	let hops =
+		vec![sphinx::PathHop { id: to_sphinx_id(peer_id).unwrap(), public_key: peer_key.into() }];
+	let (packet, _no_surbs) = sphinx::new_packet(&mut rng, hops, message.into_vec(), None).ok()?;
+	Some(packet)
 }
 
 #[test]

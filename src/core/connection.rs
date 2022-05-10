@@ -21,15 +21,16 @@
 //! Mixnet connection interface.
 
 use crate::{
-	core::{PUBLIC_KEY_LEN, WINDOW_MARGIN_PERCENT},
-	MixPeerId, MixPublicKey, Packet, PACKET_SIZE,
+	core::{QueuedPacket, PUBLIC_KEY_LEN, WINDOW_MARGIN_PERCENT},
+	MixPeerId, MixPublicKey, Packet, Topology, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
 use std::{
+	collections::BinaryHeap,
 	num::Wrapping,
 	task::{Context, Poll},
-	time::Duration,
+	time::{Duration, Instant},
 };
 
 pub const READ_TIMEOUT: Duration = Duration::from_secs(120); // TODO a bit less, but currently not that many cover sent
@@ -58,6 +59,9 @@ pub(crate) struct ManagedConnection<C> {
 	peer_id: MixPeerId,
 	handshake_sent: bool,
 	public_key: Option<MixPublicKey>,
+	// Real messages queue, sorted by deadline.
+	packet_queue: BinaryHeap<QueuedPacket>,
+	next_packet: Option<Vec<u8>>,
 	read_timeout: Delay, // TODO use handler TTL instead? yes or just if too late in receiving.
 	// number of allowed message
 	// in a window of time (can be modified
@@ -80,6 +84,7 @@ impl<C: Connection> ManagedConnection<C> {
 			connection,
 			peer_id,
 			read_timeout: Delay::new(READ_TIMEOUT),
+			next_packet: None,
 			limit_msg,
 			window_count: 0,
 			current_window,
@@ -87,6 +92,7 @@ impl<C: Connection> ManagedConnection<C> {
 			handshake_sent: false,
 			sent_in_window: 0,
 			recv_in_window: 0,
+			packet_queue: Default::default(), // TODO can have init from pending (if dialing).
 		}
 	}
 
@@ -216,14 +222,30 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
+	pub(crate) fn queue_packet(
+		&mut self,
+		packet: QueuedPacket,
+		packet_per_window: usize,
+	) -> Result<(), crate::Error> {
+		if self.packet_queue.len() > packet_per_window {
+			// TODO apply a margin ??
+			log::error!(target: "mixnet", "Dropping packet, queue full: {:?}", self.peer_id);
+			return Err(crate::Error::QueueFull)
+		}
+		self.packet_queue.push(packet);
+		Ok(())
+	}
+
 	// TODO struct window progress!!
-	pub(crate) fn poll(
+	pub(crate) fn poll<T: Topology>(
 		&mut self,
 		cx: &mut Context,
 		handshake: &MixPublicKey,
 		current_window: Wrapping<usize>,
 		current_packet_in_window: usize,
 		packet_per_window: usize,
+		now: Instant,
+		topology: &mut T,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
@@ -248,17 +270,51 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			return result
 		} else {
-			if self.sent_in_window < current_packet_in_window {
+			while self.sent_in_window < current_packet_in_window {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
-						result = Poll::Ready(ConnectionEvent::None);
+		//				result = Poll::Ready(ConnectionEvent::None);
 						self.sent_in_window += 1;
+						break;
 					},
 					Poll::Ready(Ok(false)) => {
-						// TODO  try_send_packet
+//						result = Poll::Ready(ConnectionEvent::None);
+						if let Some(packet) = self.next_packet.take() {
+							if let Some(packet) = self.try_send_packet(packet) {
+								log::error!(target: "mixnet", "try send fail when should be ready.");
+								self.next_packet = Some(packet);
+
+								// TODO this should be unreachable, error after a few loop ?
+							}
+							continue
+						}
+						let deadline = self
+							.packet_queue
+							.peek()
+							.map_or(false, |p| p.deadline.map(|d| d <= now).unwrap_or(true));
+						if deadline {
+							if let Some(packet) = self.packet_queue.pop() {
+								self.next_packet = Some(packet.data.0);
+							}
+						} else {
+		//					break;
+							if let Some(key) = self.public_key.clone() {
+								if topology.routing() {
+									self.next_packet =
+										crate::core::cover_message_to(&self.peer_id, key).map(|p| p.0);
+									log::error!(target: "mixnet", "Send cover {:?} / {:?}", self.sent_in_window, current_packet_in_window);
+								} else {
+									break;
+								}
+								if self.next_packet.is_none() {
+									log::error!(target: "mixnet", "Could not create cover for {:?}", self.peer_id);
+									break
+								}
+							}
+						}
 					},
 					Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
-					Poll::Pending => (),
+					Poll::Pending => break,
 				}
 			}
 			if self.recv_in_window < current_packet_in_window {
