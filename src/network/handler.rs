@@ -90,7 +90,7 @@ impl Error for Failure {
 /// connection.
 pub struct Handler {
 	/// Configuration options.
-	config: Config,
+	config: Config, // TODO just connection timeout
 	/// Outbound failures that are pending to be processed by `poll()`.
 	pending_errors: VecDeque<Failure>,
 	/// The outbound state.

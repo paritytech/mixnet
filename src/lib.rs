@@ -25,12 +25,12 @@ mod core;
 mod network;
 
 pub use crate::core::{
-	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey,
-	NoTopology, Packet, SurbsPayload, Topology, PACKET_SIZE,
+	public_from_ed25519, secret_from_ed25519, Config, Connection, Error, MixPublicKey,
+	MixSecretKey, NoTopology, Packet, SurbsPayload, Topology, PACKET_SIZE,
 };
 pub use network::{
 	DecodedMessage, MessageType, MixnetBehaviour, MixnetWorker, NetworkEvent, WorkerChannels,
-	WorkerOut, WorkerSink, WorkerSink2, WorkerStream, Connection2,
+	WorkerOut, WorkerSink, WorkerSink2, WorkerStream,
 };
 
 /// Mixnet peer identity.

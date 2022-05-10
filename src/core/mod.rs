@@ -30,11 +30,11 @@ mod topology;
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
 use crate::{
-	core::connection::{ManagedConnection, ConnectionEvent},
+	core::connection::{ConnectionEvent, ManagedConnection},
 	MessageType, MixPeerId, SendOptions, WorkerOut, WorkerSink2,
 };
-use crate::Connection2;
 pub use config::Config;
+pub use connection::Connection;
 pub use error::Error;
 use futures::{FutureExt, SinkExt};
 use futures_timer::Delay;
@@ -198,11 +198,11 @@ pub(crate) struct Mixnet<T, C> {
 	// If true keep original message with surbs
 	// and return it with surbs reply.
 	persist_surbs_query: bool,
-	
+
 	default_limit_msg: Option<u32>,
 }
 
-impl<T: Topology, C: Connection2> Mixnet<T, C> {
+impl<T: Topology, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
 		Mixnet {
@@ -227,11 +227,8 @@ impl<T: Topology, C: Connection2> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: MixPeerId, connection: C) {
-		let connection = ManagedConnection::new(
-			peer.clone(),
-			self.default_limit_msg.clone(),
-			connection,
-		);
+		let connection =
+			ManagedConnection::new(peer.clone(), self.default_limit_msg.clone(), connection);
 		self.connected_peers.insert(peer, connection);
 	}
 
@@ -495,7 +492,10 @@ impl<T: Topology, C: Connection2> Mixnet<T, C> {
 			self.cleanup();
 			let mut rng = rand::thread_rng();
 			let next_delay = exp_delay(&mut rng, self.average_traffic_delay);
-			self.next_message.reset(next_delay);
+			while !matches!(self.next_message.poll_unpin(cx), Poll::Pending) {
+				self.next_message.reset(next_delay);
+			}
+
 			let now = Instant::now();
 			let deadline = self
 				.packet_queue
@@ -514,10 +514,10 @@ impl<T: Topology, C: Connection2> Mixnet<T, C> {
 				// TODO restore
 				// No packet to forward, generate cover traffic
 				// TODO generate cover per peer? not random global
-/*				if let Some((recipient, data)) = self.cover_message() {
+				if let Some((recipient, data)) = self.cover_message() {
 					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
 					return Poll::Ready(MixEvent::SendMessage((recipient, data.into_vec())))
-				}*/
+				}
 			}
 		}
 
@@ -556,7 +556,6 @@ impl<T: Topology, C: Connection2> Mixnet<T, C> {
 
 		for peer in disconnected {
 			log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
-			log::error!(target: "mixnet", "Disconnecting peer {:?}", peer);
 			self.remove_connected_peer(&peer);
 		}
 

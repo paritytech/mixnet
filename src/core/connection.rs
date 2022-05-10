@@ -21,30 +21,33 @@
 //! Mixnet connection interface.
 
 use crate::{core::PUBLIC_KEY_LEN, MixPeerId, MixPublicKey, Packet, PACKET_SIZE};
-use futures::{channel::oneshot::Sender as OneShotSender, AsyncRead, AsyncWrite, FutureExt};
+use futures::FutureExt;
+use futures_timer::Delay;
 use std::{
 	num::Wrapping,
-	pin::Pin,
 	task::{Context, Poll},
 	time::Duration,
 };
 
-use crate::network::Connection2;
-use futures_timer::Delay;
-use libp2p_swarm::NegotiatedSubstream;
-
 pub const READ_TIMEOUT: Duration = Duration::from_secs(120); // TODO a bit less, but currently not that many cover sent
+
+pub trait Connection {
+	/// Start send a message. This trait expect single message queue
+	/// and return the message back if another message is currently being send.
+	fn try_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>>;
+	/// Send and flush, return when all message is written and flushed.
+	/// Return false if ignored.
+	/// Return Error if connection broke.
+	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>>;
+	/// Try receive a packet of a given size.
+	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>>;
+}
 
 pub(crate) enum ConnectionEvent {
 	Established(MixPublicKey),
 	Received(Packet),
 	Broken,
 	None,
-}
-
-// Note that connection expect flushing to happen between each packet.
-pub(crate) trait Connection {
-	fn poll(&mut self, cx: &mut Context, handshake: &MixPublicKey) -> Poll<ConnectionEvent>;
 }
 
 pub(crate) struct ManagedConnection<C> {
@@ -61,7 +64,7 @@ pub(crate) struct ManagedConnection<C> {
 	pub current_window: Wrapping<usize>, // TODO non public
 }
 
-impl<C: Connection2> ManagedConnection<C> {
+impl<C: Connection> ManagedConnection<C> {
 	pub fn new(peer_id: MixPeerId, limit_msg: Option<u32>, connection: C) -> Self {
 		Self {
 			connection,
@@ -112,9 +115,7 @@ impl<C: Connection2> ManagedConnection<C> {
 
 	fn try_send_flushed(&mut self, cx: &mut Context) -> Poll<Result<(), ()>> {
 		match self.connection.send_flushed(cx) {
-			Poll::Ready(Ok(true)) => {
-				Poll::Ready(Ok(()))
-			},
+			Poll::Ready(Ok(true)) => Poll::Ready(Ok(())),
 			Poll::Ready(Ok(false)) => {
 				// wait on next tick
 				Poll::Pending
@@ -134,6 +135,7 @@ impl<C: Connection2> ManagedConnection<C> {
 			// Drop: TODO only drop after some
 			return None
 		}
+		log::trace!(target: "mixnet", "sp {:?}", self.peer_id);
 		self.connection.try_send(packet)
 	}
 
@@ -201,7 +203,11 @@ impl<C: Connection2> ManagedConnection<C> {
 		}
 	}
 
-	pub(crate) fn poll(&mut self, cx: &mut Context, handshake: &MixPublicKey) -> Poll<ConnectionEvent> {
+	pub(crate) fn poll(
+		&mut self,
+		cx: &mut Context,
+		handshake: &MixPublicKey,
+	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
 			let mut result = Poll::Pending;
@@ -213,9 +219,10 @@ impl<C: Connection2> ManagedConnection<C> {
 				Poll::Pending => (),
 			}
 			match self.try_send_handshake(cx, handshake) {
-				Poll::Ready(Ok(())) => {
-					result = Poll::Ready(ConnectionEvent::None);
-				},
+				Poll::Ready(Ok(())) =>
+					if matches!(result, Poll::Pending) {
+						result = Poll::Ready(ConnectionEvent::None);
+					},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 				Poll::Pending => (),
 			}

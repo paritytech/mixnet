@@ -65,8 +65,6 @@ pub struct MixnetWorker<T> {
 	mixnet: Mixnet<T, Connection>,
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
-
-	default_limit_msg: Option<u32>, // TODO rem
 	current_window: Wrapping<usize>,
 	window_delay: Delay,
 
@@ -77,7 +75,6 @@ pub struct MixnetWorker<T> {
 
 impl<T: Topology> MixnetWorker<T> {
 	pub fn new(config: Config, topology: T, inner_channels: (WorkerSink, WorkerStream)) -> Self {
-		let default_limit_msg = config.limit_per_window;
 		let (worker_out, worker_in) = inner_channels;
 		let mixnet = crate::core::Mixnet::new(config, topology);
 		let window_delay = Delay::new(WINDOW_LIMIT);
@@ -86,7 +83,6 @@ impl<T: Topology> MixnetWorker<T> {
 			worker_in,
 			worker_out,
 			current_window: Wrapping(0),
-			default_limit_msg,
 			window_delay,
 			queue_packets: Default::default(),
 		}
@@ -97,14 +93,13 @@ impl<T: Topology> MixnetWorker<T> {
 	}
 
 	pub fn change_peer_limit_window(&mut self, peer: &MixPeerId, new_limit: Option<u32>) {
-		if let Some(con) = self.mixnet.connected_mut(peer) {
+		if let Some(con) = self.mixnet.connected_mut2(peer) {
 			con.limit_msg = new_limit;
 		}
 	}
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
-
 		if let Some((peer_id, packet)) = self.queue_packets.pop_back() {
 			match self.mixnet.connected_mut2(&peer_id).map(|c| c.try_send_packet(packet)) {
 				Some(Some(packet)) => {
@@ -152,26 +147,20 @@ impl<T: Topology> MixnetWorker<T> {
 				WorkerIn::AddPeer(peer, inbound, outbound, handler) => {
 					if let Some(_con) = self.mixnet.connected_mut(&peer) {
 						log::error!("Trying to replace an existing connection for {:?}", peer);
-						/*
-						// TODO updating sound like a bad option.
-						if let Some(i) = inbound {
-							con.set_inbound(i);
-						}
-						con.inbound_waiting.1 = 0;
-						con.outbound = Box::pin(outbound);
-						con.outbound_waiting = None;
-						// TODO Warning this will disconect a connection: rather spawn an error and
-						// drop the query
-						con.oneshot_handler = handler;
-						*/
+					/*
+					// TODO updating sound like a bad option.
+					if let Some(i) = inbound {
+						con.set_inbound(i);
+					}
+					con.inbound_waiting.1 = 0;
+					con.outbound = Box::pin(outbound);
+					con.outbound_waiting = None;
+					// TODO Warning this will disconect a connection: rather spawn an error and
+					// drop the query
+					con.oneshot_handler = handler;
+					*/
 					} else {
-						let con = Connection::new(
-							peer.clone(),
-							self.default_limit_msg.clone(),
-							handler,
-							inbound,
-							outbound,
-						);
+						let con = Connection::new(handler, inbound, outbound);
 						self.mixnet.insert_connection(peer, con);
 					}
 					log::trace!(target: "mixnet", "added peer out: {:?}", peer);
