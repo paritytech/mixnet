@@ -21,7 +21,7 @@
 //! `NetworkBehaviour` can be to heavy (especially when shared with others), using
 //! a worker allows sending the process to a queue instead of runing it directly.
 
-use std::{collections::VecDeque, num::Wrapping, time::Duration};
+use std::collections::VecDeque;
 
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload, Topology},
@@ -30,15 +30,12 @@ use crate::{
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
-	future::FutureExt,
 	Sink, SinkExt, Stream, StreamExt,
 };
-use futures_timer::Delay;
 use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
 
-pub const WINDOW_LIMIT: Duration = Duration::from_secs(50); // TODO currently it tics connect
 pub type WorkerStream = Box<dyn Stream<Item = WorkerIn> + Unpin + Send>;
 pub type WorkerSink = Box<dyn Sink<WorkerOut, Error = SendError> + Unpin + Send>;
 
@@ -65,8 +62,6 @@ pub struct MixnetWorker<T> {
 	mixnet: Mixnet<T, Connection>,
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
-	current_window: Wrapping<usize>,
-	window_delay: Delay,
 
 	// TODO move to Connection or at least add a delay here and drop if no connection
 	// after deley.
@@ -77,15 +72,7 @@ impl<T: Topology> MixnetWorker<T> {
 	pub fn new(config: Config, topology: T, inner_channels: (WorkerSink, WorkerStream)) -> Self {
 		let (worker_out, worker_in) = inner_channels;
 		let mixnet = crate::core::Mixnet::new(config, topology);
-		let window_delay = Delay::new(WINDOW_LIMIT);
-		MixnetWorker {
-			mixnet,
-			worker_in,
-			worker_out,
-			current_window: Wrapping(0),
-			window_delay,
-			queue_packets: Default::default(),
-		}
+		MixnetWorker { mixnet, worker_in, worker_out, queue_packets: Default::default() }
 	}
 
 	pub fn local_id(&self) -> &MixPeerId {
@@ -93,15 +80,15 @@ impl<T: Topology> MixnetWorker<T> {
 	}
 
 	pub fn change_peer_limit_window(&mut self, peer: &MixPeerId, new_limit: Option<u32>) {
-		if let Some(con) = self.mixnet.connected_mut2(peer) {
-			con.limit_msg = new_limit;
+		if let Some(con) = self.mixnet.managed_connection_mut(peer) {
+			con.change_limit_msg(new_limit);
 		}
 	}
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		if let Some((peer_id, packet)) = self.queue_packets.pop_back() {
-			match self.mixnet.connected_mut2(&peer_id).map(|c| c.try_send_packet(packet)) {
+			match self.mixnet.managed_connection_mut(&peer_id).map(|c| c.try_send_packet(packet)) {
 				Some(Some(packet)) => {
 					self.queue_packets.push_front((peer_id, packet));
 				},
@@ -117,13 +104,6 @@ impl<T: Topology> MixnetWorker<T> {
 		}
 
 		let mut result = Poll::Pending;
-		if let Poll::Ready(_) = self.window_delay.poll_unpin(cx) {
-			log::trace!(target: "mixnet", "New window");
-			self.current_window += Wrapping(1);
-			self.window_delay.reset(WINDOW_LIMIT);
-			result = Poll::Ready(true); // wait on next delay TODO could also retrun:
-		}
-
 		match self.worker_in.poll_next_unpin(cx) {
 			Poll::Ready(Some(message)) => match message {
 				WorkerIn::RegisterMessage(peer_id, message, send_options) => {

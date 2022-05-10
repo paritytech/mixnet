@@ -64,6 +64,10 @@ const MAX_QUEUED_PACKETS: usize = 8192;
 /// Size of a mixnet packent.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
+pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
+// TODO in config
+pub const WINDOW_MARGIN_PERCENT: usize = 10;
+
 /// Sphinx packet struct ensuring fix len of inner array.
 #[derive(PartialEq, Eq)]
 pub struct Packet(Vec<u8>);
@@ -199,12 +203,29 @@ pub(crate) struct Mixnet<T, C> {
 	// and return it with surbs reply.
 	persist_surbs_query: bool,
 
+	// TODO replace by a rec limit over a window
+	// with a given number of received message = to the number
+	// of send, just add some leniency so in case late try to query more.
 	default_limit_msg: Option<u32>,
+
+	packet_per_window: usize,
+	current_window_start: Instant,
+	current_window: Wrapping<usize>,
+	current_packet_in_window: usize,
+
+	window_delay: Delay,
 }
 
 impl<T: Topology, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
+		let window_delay = Delay::new(WINDOW_DELAY);
+		let packet_duration_nanos =
+			(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64;
+		let average_traffic_delay = Duration::from_nanos(packet_duration_nanos);
+		let packet_per_window = (WINDOW_DELAY.as_nanos() / packet_duration_nanos as u128) as usize;
+		debug_assert!(packet_per_window > 0);
+
 		Mixnet {
 			topology,
 			surbs: SurbsCollection::new(&config),
@@ -219,16 +240,23 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			connected_peers: Default::default(),
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
-			average_traffic_delay: Duration::from_nanos(
-				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
-			),
+			average_traffic_delay,
 			default_limit_msg: config.limit_per_window,
+			current_window_start: Instant::now(),
+			current_window: Wrapping(0),
+			current_packet_in_window: 0,
+			window_delay,
+			packet_per_window,
 		}
 	}
 
 	pub fn insert_connection(&mut self, peer: MixPeerId, connection: C) {
-		let connection =
-			ManagedConnection::new(peer.clone(), self.default_limit_msg.clone(), connection);
+		let connection = ManagedConnection::new(
+			peer.clone(),
+			self.default_limit_msg.clone(),
+			connection,
+			self.current_window,
+		);
 		self.connected_peers.insert(peer, connection);
 	}
 
@@ -236,8 +264,10 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		self.connected_peers.get_mut(peer).map(|c| &mut c.connection)
 	}
 
-	// TODO rem: sending from poll.
-	pub fn connected_mut2(&mut self, peer: &MixPeerId) -> Option<&mut ManagedConnection<C>> {
+	pub fn managed_connection_mut(
+		&mut self,
+		peer: &MixPeerId,
+	) -> Option<&mut ManagedConnection<C>> {
 		self.connected_peers.get_mut(peer)
 	}
 
@@ -489,14 +519,29 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
+			let now = Instant::now();
+			if let Poll::Ready(_) = self.window_delay.poll_unpin(cx) {
+				let duration = now - self.current_window_start;
+				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
+				self.current_window += Wrapping(nb_spent);
+				log::trace!(target: "mixnet", "New window {:?}", self.current_window);
+				self.window_delay.reset(WINDOW_DELAY);
+				while !matches!(self.next_message.poll_unpin(cx), Poll::Pending) {
+					self.window_delay.reset(WINDOW_DELAY);
+				}
+			}
+
+			let duration = now - self.current_window_start;
+			self.current_packet_in_window = ((duration.as_millis() as u64 *
+				self.packet_per_window as u64) /
+				WINDOW_DELAY.as_millis() as u64) as usize;
+
 			self.cleanup();
-			let mut rng = rand::thread_rng();
-			let next_delay = exp_delay(&mut rng, self.average_traffic_delay);
+			let next_delay = self.average_traffic_delay;
 			while !matches!(self.next_message.poll_unpin(cx), Poll::Pending) {
 				self.next_message.reset(next_delay);
 			}
 
-			let now = Instant::now();
 			let deadline = self
 				.packet_queue
 				.peek()
@@ -523,10 +568,18 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 
 		let mut disconnected = Vec::new();
 		let mut recv_packets = Vec::new();
-		let mut at_least_one_pending = false;
+		let mut all_pending = true;
+		// TODO futures unordered
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
-			match connection.poll(cx, &self.public) {
+			match connection.poll(
+				cx,
+				&self.public,
+				self.current_window,
+				self.current_packet_in_window,
+				self.packet_per_window,
+			) {
 				Poll::Ready(ConnectionEvent::Established(key)) => {
+					all_pending = false;
 					if let Err(e) =
 						results.start_send_unpin(WorkerOut::Connected(peer_id.clone(), key.clone()))
 					{
@@ -536,21 +589,24 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 					self.topology.connected(peer_id.clone(), key);
 				},
 				Poll::Ready(ConnectionEvent::Received(packet)) => {
+					all_pending = false;
 					recv_packets.push((peer_id.clone(), packet));
 				},
 				Poll::Ready(ConnectionEvent::Broken) => {
+					// same as pending
 					disconnected.push(peer_id.clone());
 				},
-				Poll::Ready(ConnectionEvent::None) => (),
-				Poll::Pending => {
-					at_least_one_pending = true;
+				Poll::Ready(ConnectionEvent::None) => {
+					all_pending = false;
 				},
+				Poll::Pending => (),
 			}
 		}
 
 		for (peer, packet) in recv_packets {
 			if !self.import_packet(peer, packet, results) {
-				disconnected.push(peer);
+				// TODO what kind of log: cannot really make anything of error
+				// since one can send use dummy packet.
 			}
 		}
 
@@ -559,7 +615,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			self.remove_connected_peer(&peer);
 		}
 
-		if at_least_one_pending {
+		if all_pending {
 			Poll::Pending
 		} else {
 			Poll::Ready(MixEvent::None)
