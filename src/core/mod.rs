@@ -540,7 +540,6 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				let duration = now - self.current_window_start;
 				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
 
-				log::error!(target: "mixnet", "New window {:?}", self.current_window);
 				self.current_window += Wrapping(nb_spent);
 				for _ in 0..nb_spent {
 					self.current_window_start += WINDOW_DELAY;  

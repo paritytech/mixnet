@@ -250,8 +250,6 @@ impl MessageCollection {
 			fragment
 		} else {
 			// Discard cover message
-
-			log::error!(target: "mixnet", "Cover rec");
 			return Ok(None)
 		};
 

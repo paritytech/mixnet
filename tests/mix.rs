@@ -1,4 +1,4 @@
-// Copyright 2022 Parity Technologies (UK) Ltd.
+// Copyright 2022 Parity Technologia (UK) Ltd.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -102,7 +102,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			secret_key: secrets[i].clone(),
 			public_key: pub_key.clone(),
 			local_id: id.clone(),
-			target_bits_per_second: 1024 * 1024,
+			target_bits_per_second: 512 * 1024,
 			timeout_ms: 10000,
 			num_hops: 3,
 			average_message_delay_ms: 50,

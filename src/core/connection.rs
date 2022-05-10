@@ -273,12 +273,10 @@ impl<C: Connection> ManagedConnection<C> {
 			while self.sent_in_window < current_packet_in_window {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
-		//				result = Poll::Ready(ConnectionEvent::None);
 						self.sent_in_window += 1;
 						break;
 					},
 					Poll::Ready(Ok(false)) => {
-//						result = Poll::Ready(ConnectionEvent::None);
 						if let Some(packet) = self.next_packet.take() {
 							if let Some(packet) = self.try_send_packet(packet) {
 								log::error!(target: "mixnet", "try send fail when should be ready.");
@@ -297,12 +295,11 @@ impl<C: Connection> ManagedConnection<C> {
 								self.next_packet = Some(packet.data.0);
 							}
 						} else {
-		//					break;
+							//break;
 							if let Some(key) = self.public_key.clone() {
 								if topology.routing() {
 									self.next_packet =
 										crate::core::cover_message_to(&self.peer_id, key).map(|p| p.0);
-									log::error!(target: "mixnet", "Send cover {:?} / {:?}", self.sent_in_window, current_packet_in_window);
 								} else {
 									break;
 								}
