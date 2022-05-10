@@ -107,7 +107,6 @@ impl Packet {
 type SphinxPeerId = [u8; 32];
 
 pub enum MixEvent {
-	SendMessage((MixPeerId, Vec<u8>)),
 	None,
 }
 
@@ -195,7 +194,7 @@ pub(crate) struct Mixnet<T, C> {
 	// Received message filter.
 	replay_filter: ReplayFilter,
 	// Real messages queue, sorted by deadline.
-	packet_queue: BinaryHeap<QueuedPacket>,
+	packet_queue: BinaryHeap<QueuedPacket>, // TODO queue for non connected??
 	// Timer for the next poll for messages.
 	next_message: Delay,
 	// Average delay at which we poll for real or cover messages.
@@ -485,27 +484,6 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		self.topology.disconnect(id);
 	}
 
-	fn cover_message(&mut self) -> Option<(MixPeerId, Packet)> {
-		let mut rng = rand::thread_rng();
-		let message = fragment::Fragment::create_cover_fragment(&mut rng);
-		let path = self.random_cover_paths();
-
-		if let Some(id) = path.get(0).map(|p| p.0.clone()) {
-			let hops = path
-				.into_iter()
-				.map(|(id, key)| sphinx::PathHop {
-					id: to_sphinx_id(&id).unwrap(),
-					public_key: key.into(),
-				})
-				.collect();
-			let (packet, _no_surbs) =
-				sphinx::new_packet(&mut rng, hops, message.into_vec(), None).ok()?;
-			Some((id, packet))
-		} else {
-			None
-		}
-	}
-
 	fn random_paths(
 		&self,
 		recipient: &MixPeerId,
@@ -523,10 +501,6 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
 		self.topology.random_path(start, recipient, count, num_hops, sphinx::MAX_HOPS)
-	}
-
-	fn random_cover_paths(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.topology.random_cover_path(&self.local_id)
 	}
 
 	fn cleanup(&mut self, now: Instant) {

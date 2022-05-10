@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload, Topology},
 	network::connection::Connection,
-	MessageType, MixPeerId, SendOptions, PACKET_SIZE,
+	MessageType, MixPeerId, SendOptions,
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
@@ -173,10 +173,6 @@ impl<T: Topology> MixnetWorker<T> {
 		if let Poll::Ready(e) = self.mixnet.poll(cx, &mut self.worker_out) {
 			result = Poll::Ready(true);
 			match e {
-				MixEvent::SendMessage((peer_id, packet)) => {
-					debug_assert!(packet.len() == PACKET_SIZE);
-					self.queue_packets.push_front((peer_id, packet));
-				},
 				MixEvent::None => (),
 			}
 		}
