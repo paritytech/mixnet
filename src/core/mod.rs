@@ -64,7 +64,11 @@ const MAX_QUEUED_PACKETS: usize = 8192;
 /// Size of a mixnet packent.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
+// TODO should be in conf (having too big window with a big bandwidth
+// can stuck node, small window will make evident issue faster).
+// TODO adapt packet per window from this.
 pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
+
 // TODO in config
 pub const WINDOW_MARGIN_PERCENT: usize = 10;
 
