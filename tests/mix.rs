@@ -172,6 +172,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 					},
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Connected(_, _)) => {
 						num_connected += 1;
+			log::error!(target: "mixnet", "SYNCH1");
 						log::trace!(target: "mixnet", "{} Connected  {}/{}", p, num_connected, num_peers - 1);
 						if num_connected == num_peers - 1 {
 							return (swarm, p)
@@ -193,6 +194,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		swarms.push((p, swarm));
 	}
 
+			log::error!(target: "mixnet", "SYNCH");
 	let index = swarms.iter().position(|(p, _)| *p == 0).unwrap();
 	let (_, mut peer0_swarm) = swarms.remove(index);
 	for np in 1..num_peers {

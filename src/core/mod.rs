@@ -30,9 +30,10 @@ mod topology;
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
 use crate::{
-	core::connection::{Connection, ConnectionEvent},
+	core::connection::{ManagedConnection, ConnectionEvent},
 	MessageType, MixPeerId, SendOptions, WorkerOut, WorkerSink2,
 };
+use crate::Connection2;
 pub use config::Config;
 pub use error::Error;
 use futures::{FutureExt, SinkExt};
@@ -179,7 +180,7 @@ pub(crate) struct Mixnet<T, C> {
 	pub public: MixPublicKey,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
-	connected_peers: HashMap<MixPeerId, C>,
+	connected_peers: HashMap<MixPeerId, ManagedConnection<C>>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
 	// Message waiting for surbs.
@@ -197,9 +198,11 @@ pub(crate) struct Mixnet<T, C> {
 	// If true keep original message with surbs
 	// and return it with surbs reply.
 	persist_surbs_query: bool,
+	
+	default_limit_msg: Option<u32>,
 }
 
-impl<T: Topology, C: Connection> Mixnet<T, C> {
+impl<T: Topology, C: Connection2> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
 		Mixnet {
@@ -219,14 +222,25 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			average_traffic_delay: Duration::from_nanos(
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
+			default_limit_msg: config.limit_per_window,
 		}
 	}
 
 	pub fn insert_connection(&mut self, peer: MixPeerId, connection: C) {
+		let connection = ManagedConnection::new(
+			peer.clone(),
+			self.default_limit_msg.clone(),
+			connection,
+		);
 		self.connected_peers.insert(peer, connection);
 	}
 
 	pub fn connected_mut(&mut self, peer: &MixPeerId) -> Option<&mut C> {
+		self.connected_peers.get_mut(peer).map(|c| &mut c.connection)
+	}
+
+	// TODO rem: sending from poll.
+	pub fn connected_mut2(&mut self, peer: &MixPeerId) -> Option<&mut ManagedConnection<C>> {
 		self.connected_peers.get_mut(peer)
 	}
 
@@ -497,12 +511,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				}
 			}
 			if self.topology.routing() {
+				// TODO restore
 				// No packet to forward, generate cover traffic
 				// TODO generate cover per peer? not random global
-				if let Some((recipient, data)) = self.cover_message() {
+/*				if let Some((recipient, data)) = self.cover_message() {
 					log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
 					return Poll::Ready(MixEvent::SendMessage((recipient, data.into_vec())))
-				}
+				}*/
 			}
 		}
 

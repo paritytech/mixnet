@@ -32,6 +32,7 @@ use crate::{
 	network::worker::WorkerIn,
 	MixPublicKey, SendOptions,
 };
+pub use connection::Connection2;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink, SinkExt, Stream, StreamExt};
 use handler::Handler;

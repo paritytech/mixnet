@@ -66,7 +66,7 @@ pub struct MixnetWorker<T> {
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
 
-	default_limit_msg: Option<u32>,
+	default_limit_msg: Option<u32>, // TODO rem
 	current_window: Wrapping<usize>,
 	window_delay: Delay,
 
@@ -104,6 +104,23 @@ impl<T: Topology> MixnetWorker<T> {
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
+
+		if let Some((peer_id, packet)) = self.queue_packets.pop_back() {
+			match self.mixnet.connected_mut2(&peer_id).map(|c| c.try_send_packet(packet)) {
+				Some(Some(packet)) => {
+					self.queue_packets.push_front((peer_id, packet));
+				},
+				Some(None) => (),
+				None => {
+					// TODO could add delay and keep for a while in case connection happen later.
+					// TODO in principle should be checked in topology. Actually if forwarding to an
+					// external peer (eg surbs rep), this will need to dial (put rules behind a
+					// topology check).
+					log::error!(target: "mixnet", "Dropping packet, peer {:?} not connected in worker.", peer_id);
+				},
+			}
+		}
+
 		let mut result = Poll::Pending;
 		if let Poll::Ready(_) = self.window_delay.poll_unpin(cx) {
 			log::trace!(target: "mixnet", "New window");
@@ -133,14 +150,20 @@ impl<T: Topology> MixnetWorker<T> {
 					return Poll::Ready(true)
 				},
 				WorkerIn::AddPeer(peer, inbound, outbound, handler) => {
-					if let Some(con) = self.mixnet.connected_mut(&peer) {
-						con.inbound = inbound.map(|i| Box::pin(i));
+					if let Some(_con) = self.mixnet.connected_mut(&peer) {
+						log::error!("Trying to replace an existing connection for {:?}", peer);
+						/*
+						// TODO updating sound like a bad option.
+						if let Some(i) = inbound {
+							con.set_inbound(i);
+						}
 						con.inbound_waiting.1 = 0;
 						con.outbound = Box::pin(outbound);
 						con.outbound_waiting = None;
 						// TODO Warning this will disconect a connection: rather spawn an error and
 						// drop the query
 						con.oneshot_handler = handler;
+						*/
 					} else {
 						let con = Connection::new(
 							peer.clone(),
@@ -156,7 +179,7 @@ impl<T: Topology> MixnetWorker<T> {
 				WorkerIn::AddPeerInbound(peer, inbound) => {
 					if let Some(con) = self.mixnet.connected_mut(&peer) {
 						log::trace!(target: "mixnet", "Added inbound to peer: {:?}", peer);
-						con.inbound = Some(Box::pin(inbound));
+						con.set_inbound(inbound);
 					} else {
 						log::warn!(target: "mixnet", "Received inbound for dropped peer: {:?}", peer);
 					}
@@ -189,30 +212,6 @@ impl<T: Topology> MixnetWorker<T> {
 			}
 		}
 
-		if let Some((peer_id, packet)) = self.queue_packets.pop_back() {
-			match self.mixnet.connected_mut(&peer_id).map(|c| c.try_send_packet(cx, packet)) {
-				Some((Poll::Ready(Ok(())), packet)) => {
-					if let Some(packet) = packet {
-						self.queue_packets.push_front((peer_id, packet));
-					}
-					return Poll::Ready(true)
-				},
-				Some((Poll::Ready(Err(())), _)) => {
-					self.disconnect_peer(&peer_id);
-				},
-				Some((Poll::Pending, packet)) =>
-					if let Some(packet) = packet {
-						self.queue_packets.push_front((peer_id, packet));
-					},
-				None => {
-					// TODO could add delay and keep for a while in case connection happen later.
-					// TODO in principle should be checked in topology. Actually if forwarding to an
-					// external peer (eg surbs rep), this will need to dial (put rules behind a
-					// topology check).
-					log::error!(target: "mixnet", "Dropping packet, peer {:?} not connected in worker.", peer_id);
-				},
-			}
-		}
 		result
 	}
 

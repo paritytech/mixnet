@@ -38,6 +38,18 @@ use libp2p_swarm::NegotiatedSubstream;
 
 pub const READ_TIMEOUT: Duration = Duration::from_secs(120); // TODO a bit less, but currently not that many cover sent
 
+pub trait Connection2 {
+	/// Start send a message. This trait expect single message queue
+	/// and return the message back if another message is currently being send.
+	fn try_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>>;
+	/// Send and flush, return when all message is written and flushed.
+	/// Return false if ignored.
+	/// Return Error if connection broke.
+	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>>;
+	/// Try receive a packet of a given size.
+	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>>;
+}
+
 impl crate::core::connection::Connection for Connection {
 	fn poll(&mut self, cx: &mut Context, handshake: &MixPublicKey) -> Poll<ConnectionEvent> {
 		if !self.is_ready() {
@@ -92,7 +104,7 @@ pub(crate) struct Connection {
 	pub peer_id: MixPeerId,
 	pub public_key: Option<MixPublicKey>,
 	pub read_timeout: Delay, // TODO use handler TTL instead?
-	pub inbound: Option<Pin<Box<NegotiatedSubstream>>>, // TODO remove some pin with Ext traits
+	inbound: Option<Pin<Box<NegotiatedSubstream>>>, // TODO remove some pin with Ext traits
 	pub outbound: Pin<Box<NegotiatedSubstream>>, /* TODO just use a single stream for in and
 	                          * out? */
 	pub outbound_waiting: Option<(Vec<u8>, usize)>,
@@ -109,6 +121,91 @@ pub(crate) struct Connection {
 	// inform connection handler when closing.
 	// TODO just used by recv fail on dropping: use another type
 	pub oneshot_handler: OneShotSender<()>,
+	pub waker: Option<std::task::Waker>,
+}
+
+impl Connection2 for Connection {
+	fn try_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>> {
+		if self.outbound_waiting.is_some() || self.packet_flushing {
+			Some(message)
+		} else {
+			log::error!(target: "mixnet", "sending {:?}, {:?}", message.len(), self.peer_id);
+			self.outbound_waiting = Some((message, 0));
+			None
+		}
+	}
+	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
+		if let Some((waiting, mut ix)) = self.outbound_waiting.as_mut() {
+			match self.outbound.as_mut().poll_write(cx, &waiting[ix..]) {
+				Poll::Ready(Ok(nb)) => {
+			log::error!(target: "mixnet", "sent {:?} {:?}", nb, self.peer_id);
+					ix += nb;
+					if ix != waiting.len() {
+						return Poll::Ready(Ok(true))
+					}
+					self.packet_flushing = true;
+					self.outbound_waiting = None;
+				},
+				Poll::Ready(Err(e)) => {
+					log::error!(target: "mixnet", "Error sending: {:?}", e);
+					return Poll::Ready(Err(()))
+				},
+				Poll::Pending => return Poll::Pending,
+			}
+		}
+
+		if self.packet_flushing {
+			match self.outbound.as_mut().poll_flush(cx) {
+				Poll::Ready(Ok(())) => {
+			log::error!(target: "mixnet", "flushed {:?}", self.peer_id);
+					self.packet_flushing = false;
+					Poll::Ready(Ok(true))
+				},
+				Poll::Ready(Err(e)) => {
+					log::trace!(target: "mixnet", "Error flushing: {:?}", e);
+					Poll::Ready(Err(()))
+				},
+				Poll::Pending => Poll::Pending,
+			}
+		} else {
+			Poll::Ready(Ok(false))
+		}
+	}
+
+	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>> {
+			log::error!(target: "mixnet", "rec {:?} {:?}", size, self.peer_id);
+		match self.inbound.as_mut().map(|inbound| {
+			inbound
+				.as_mut()
+				.poll_read(cx, &mut self.inbound_waiting.0[self.inbound_waiting.1..])
+		}) {
+			Some(Poll::Ready(Ok(nb))) => {
+				self.inbound_waiting.1 += nb;
+				let message = if self.inbound_waiting.1 == size {
+					self.inbound_waiting.1 = 0;
+					if size == self.inbound_waiting.0.len() {
+						Some(self.inbound_waiting.0.clone())
+					} else {
+						Some(self.inbound_waiting.0[..size].to_vec())
+					}
+				} else {
+					None
+				};
+				Poll::Ready(Ok(message))
+			},
+			Some(Poll::Ready(Err(e))) => {
+				log::trace!(target: "mixnet", "Error receiving from peer, closing: {:?}", e);
+				Poll::Ready(Err(()))
+			},
+			Some(Poll::Pending) => Poll::Pending,
+			None => {
+				if self.waker.is_none() {
+					self.waker = Some(cx.waker().clone());
+				}
+				Poll::Pending
+			},
+		}
+	}
 }
 
 impl Connection {
@@ -134,7 +231,13 @@ impl Connection {
 			handshake_flushing: false,
 			handshake_sent: false,
 			oneshot_handler,
+			waker: None,
 		}
+	}
+
+	pub fn set_inbound(&mut self, inbound: NegotiatedSubstream) {
+		self.inbound = Some(Box::pin(inbound));
+		self.waker.as_ref().map(|w| w.wake_by_ref());
 	}
 
 	fn handshake_received(&self) -> bool {

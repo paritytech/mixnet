@@ -30,7 +30,7 @@ pub use crate::core::{
 };
 pub use network::{
 	DecodedMessage, MessageType, MixnetBehaviour, MixnetWorker, NetworkEvent, WorkerChannels,
-	WorkerOut, WorkerSink, WorkerSink2, WorkerStream,
+	WorkerOut, WorkerSink, WorkerSink2, WorkerStream, Connection2,
 };
 
 /// Mixnet peer identity.
