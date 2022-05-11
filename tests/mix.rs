@@ -82,6 +82,7 @@ impl mixnet::Topology for TopologyGraph {
 			.flatten()
 			.is_some()
 	}
+
 	fn connected(&mut self, _: PeerId, _: MixPublicKey) {}
 
 	fn disconnect(&mut self, _: &PeerId) {}

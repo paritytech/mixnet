@@ -29,6 +29,7 @@ mod topology;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
+use futures::channel::oneshot::Sender as OneShotSender;
 use crate::{
 	core::connection::{ConnectionEvent, ManagedConnection},
 	MessageType, MixPeerId, SendOptions, WorkerOut, WorkerSink2,
@@ -71,7 +72,7 @@ pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
 pub const WINDOW_MARGIN_PERCENT: usize = 10;
 
 /// Sphinx packet struct ensuring fix len of inner array.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct Packet(Vec<u8>);
 
 impl Packet {
@@ -250,12 +251,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		}
 	}
 
-	pub fn insert_connection(&mut self, peer: MixPeerId, connection: C) {
+	pub fn insert_connection(&mut self, peer: MixPeerId, connection: C, established: Option<OneShotSender<()>>) {
 		let connection = ManagedConnection::new(
 			peer.clone(),
 			self.default_limit_msg.clone(),
 			connection,
 			self.current_window,
+			established,
 		);
 		self.connected_peers.insert(peer, connection);
 	}
@@ -285,7 +287,8 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			let deadline = Some(self.last_now + delay); // TODO could get now from param
 			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window)?;
 		} else {
-			// TODO if in topology, try dial and add to local size restricted heap
+			return Err(Error::Unreachable(data))
+			// TODO maybe if in topology, try dial and add to local size restricted heap
 			/*		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
 						return Err(Error::QueueFull)
 					}
@@ -303,6 +306,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			let deadline = Some(self.last_now); // TODO remove option for deadline (we don't want to skip other packets
 			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window)?;
 		} else {
+			return Err(Error::Unreachable(data))
 			// TODO if in topology, try dial and add to local size restricted heap
 			/*		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
 						return Err(Error::QueueFull)

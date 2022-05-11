@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, SphinxPeerId};
+use crate::core::{sphinx::Error as SphinxError, Packet, SphinxPeerId};
 use crate::MixPeerId;
 use std::fmt;
 
@@ -48,6 +48,9 @@ pub enum Error {
 	BadSurbsLength,
 	/// Worker channel is full.
 	WorkerChannelFull,
+	/// Destination peer not connected.
+	/// Depending on use case, dial could be attempted here.
+	Unreachable(Packet),
 }
 
 impl fmt::Display for Error {
@@ -69,6 +72,7 @@ impl fmt::Display for Error {
 			Error::QueueFull => write!(f, "Packet queue is full."),
 			Error::WorkerChannelFull => write!(f, "Worker channel is full."),
 			Error::TooManyHops => write!(f, "Too many hops for mixnet."),
+			Error::Unreachable(_) => write!(f, "Destination peer not connected."),
 		}
 	}
 }

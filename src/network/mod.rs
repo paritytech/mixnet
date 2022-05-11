@@ -233,10 +233,13 @@ impl NetworkBehaviour for MixnetBehaviour {
 					Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Message(
 						DecodedMessage { peer, message, kind },
 					))),
-				WorkerOut::Dial(peer, addresses) =>
+				WorkerOut::Dial(peer, addresses, reply) =>
 					if !self.connected.contains_key(&peer) {
 						let mut handler = self.new_handler();
 						handler.set_peer_id(peer.clone());
+						if let Some(reply) = reply {
+							handler.set_established(reply);
+						}
 						Poll::Ready(NetworkBehaviourAction::Dial {
 							opts: DialOpts::peer_id(peer)
 								.condition(PeerCondition::Disconnected)

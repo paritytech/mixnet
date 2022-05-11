@@ -107,6 +107,7 @@ pub struct Handler {
 	/// Send connection to worker.
 	mixnet_worker_sink: WorkerSink,
 	connection_closed: Option<futures::channel::oneshot::Receiver<()>>,
+	established: Option<futures::channel::oneshot::Sender<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +140,12 @@ impl Handler {
 			state: State::ActiveNotSent,
 			mixnet_worker_sink,
 			connection_closed: None,
+			established: None,
 		}
+	}
+
+	pub(crate) fn set_established(&mut self, established: futures::channel::oneshot::Sender<()>) {
+		self.established = Some(established);
 	}
 
 	pub(crate) fn set_peer_id(&mut self, peer_id: MixPeerId) {
@@ -157,7 +163,7 @@ impl Handler {
 					self.connection_closed = Some(r);
 					log::trace!(target: "mixnet", "Sending peer to worker {:?}", peer);
 					if let Err(e) = self.mixnet_worker_sink.as_mut().start_send_unpin(
-						WorkerIn::AddPeer(peer.clone(), inbound, outbound, sender),
+						WorkerIn::AddPeer(peer.clone(), inbound, outbound, sender, self.established.take()),
 					) {
 						log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 					}

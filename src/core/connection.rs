@@ -25,6 +25,7 @@ use crate::{
 	MixPeerId, MixPublicKey, Packet, Topology, PACKET_SIZE,
 };
 use futures::FutureExt;
+	use futures::channel::oneshot::Sender as OneShotSender;
 use futures_timer::Delay;
 use std::{
 	collections::BinaryHeap,
@@ -71,6 +72,7 @@ pub(crate) struct ManagedConnection<C> {
 	current_window: Wrapping<usize>,
 	sent_in_window: usize,
 	recv_in_window: usize,
+	established: Option<OneShotSender<()>>,
 }
 
 impl<C: Connection> ManagedConnection<C> {
@@ -79,6 +81,7 @@ impl<C: Connection> ManagedConnection<C> {
 		limit_msg: Option<u32>,
 		connection: C,
 		current_window: Wrapping<usize>,
+		established: Option<OneShotSender<()>>,
 	) -> Self {
 		Self {
 			connection,
@@ -92,6 +95,7 @@ impl<C: Connection> ManagedConnection<C> {
 			handshake_sent: false,
 			sent_in_window: 0,
 			recv_in_window: 0,
+			established,
 			packet_queue: Default::default(), // TODO can have init from pending (if dialing).
 		}
 	}
@@ -256,6 +260,7 @@ impl<C: Connection> ManagedConnection<C> {
 					self.current_window = current_window;
 					self.sent_in_window = current_packet_in_window;
 					self.recv_in_window = current_packet_in_window;
+					self.established.take().map(|e| e.send(()));
 					result = Poll::Ready(ConnectionEvent::Established(key));
 				},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),

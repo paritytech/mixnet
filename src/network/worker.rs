@@ -38,11 +38,12 @@ use std::task::{Context, Poll};
 
 pub type WorkerStream = Box<dyn Stream<Item = WorkerIn> + Unpin + Send>;
 pub type WorkerSink = Box<dyn Sink<WorkerOut, Error = SendError> + Unpin + Send>;
+pub type ConnectionEstablished = Option<OneShotSender<()>>;
 
 pub enum WorkerIn {
 	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, SurbsPayload),
-	AddPeer(MixPeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
+	AddPeer(MixPeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>, ConnectionEstablished),
 	AddPeerInbound(MixPeerId, NegotiatedSubstream),
 	RemoveConnectedPeer(MixPeerId),
 	ImportExternalMessage(MixPeerId, Packet),
@@ -54,7 +55,7 @@ pub enum WorkerOut {
 	/// Handshake success in mixnet.
 	Connected(PeerId, MixPublicKey),
 	/// Dial a given PeerId.
-	Dial(PeerId, Vec<libp2p_core::Multiaddr>),
+	Dial(PeerId, Vec<libp2p_core::Multiaddr>, Option<OneShotSender<()>>),
 }
 
 /// Embed mixnet and process queue of instruction.
@@ -124,7 +125,7 @@ impl<T: Topology> MixnetWorker<T> {
 					}
 					return Poll::Ready(true)
 				},
-				WorkerIn::AddPeer(peer, inbound, outbound, handler) => {
+				WorkerIn::AddPeer(peer, inbound, outbound, handler, established) => {
 					if let Some(_con) = self.mixnet.connected_mut(&peer) {
 						log::error!("Trying to replace an existing connection for {:?}", peer);
 					/*
@@ -141,7 +142,7 @@ impl<T: Topology> MixnetWorker<T> {
 					*/
 					} else {
 						let con = Connection::new(handler, inbound, outbound);
-						self.mixnet.insert_connection(peer, con);
+						self.mixnet.insert_connection(peer, con, established);
 					}
 					log::trace!(target: "mixnet", "added peer out: {:?}", peer);
 				},
@@ -204,6 +205,18 @@ impl<T: Topology> MixnetWorker<T> {
 			Err(e) => {
 				log::warn!(target: "mixnet", "Error importing message: {:?}", e);
 			},
+		}
+		true
+	}
+
+	/// Try to connect to a given peer.
+	/// If sender for reply, get message on connection established.
+	pub fn dial(&mut self, peer: PeerId, addresses: Vec<libp2p_core::Multiaddr>, reply: ConnectionEstablished) -> bool {
+		if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Dial(peer, addresses, reply)) {
+			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+			if e.is_disconnected() {
+				return false
+			}
 		}
 		true
 	}
