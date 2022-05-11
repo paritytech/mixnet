@@ -37,6 +37,7 @@ use mixnet::{MixPublicKey, SendOptions};
 #[derive(Clone)]
 struct TopologyGraph {
 	connections: HashMap<PeerId, Vec<(PeerId, MixPublicKey)>>,
+	first_hop: Vec<(PeerId, MixPublicKey)>,
 }
 
 impl TopologyGraph {
@@ -53,7 +54,7 @@ impl TopologyGraph {
 			connections.insert(node.clone(), neighbors);
 		}
 
-		Self { connections }
+		Self { connections, first_hop: nodes.iter().map(Clone::clone).collect() }
 	}
 }
 
@@ -62,12 +63,24 @@ impl mixnet::Topology for TopologyGraph {
 		self.connections.get(id).cloned()
 	}
 
+	fn first_hop_nodes(&self, _id: &PeerId) -> Vec<(PeerId, MixPublicKey)> {
+		self.first_hop.clone()
+	}
+
+	fn is_first_node(&self, id: &PeerId) -> bool {
+		self.first_hop.iter().find(|(p, _)| p == id).is_some()
+	}
+
 	fn random_recipient(&self) -> Option<PeerId> {
 		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
 	}
 
-	fn routing(&self) -> bool {
-		true
+	fn routing_to(&self, from: &PeerId, to: &PeerId) -> bool {
+		self.connections
+			.get(from)
+			.map(|n| n.iter().find(|(p, _)| p == to))
+			.flatten()
+			.is_some()
 	}
 	fn connected(&mut self, _: PeerId, _: MixPublicKey) {}
 

@@ -205,7 +205,6 @@ impl NetworkBehaviour for MixnetBehaviour {
 		}
 	}
 
-
 	fn addresses_of_peer(&mut self, _peer: &PeerId) -> Vec<Multiaddr> {
 		// TODO cache addresses for extend_addresses_through_behaviour
 		vec![]

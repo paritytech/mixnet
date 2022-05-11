@@ -375,7 +375,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			packets.push((first_id, packet));
 		}
 
-		if self.topology.routing() {
+		if self.topology.is_first_node(&self.local_id) {
 			for (peer_id, packet) in packets {
 				let delay = exp_delay(&mut rng, self.average_hop_delay);
 				self.queue_packet(peer_id, packet, delay)?;
@@ -402,7 +402,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(|e| Error::SphinxError(e))?;
 		let dest = to_libp2p_id(first_node)?;
-		if self.topology.routing() {
+		if self.topology.is_first_node(&self.local_id) {
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(dest, packet, delay)?;
 		} else {
@@ -515,7 +515,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 
 				self.current_window += Wrapping(nb_spent);
 				for _ in 0..nb_spent {
-					self.current_window_start += WINDOW_DELAY;  
+					self.current_window_start += WINDOW_DELAY;
 				}
 				self.window_delay.reset(WINDOW_DELAY);
 				while !matches!(self.window_delay.poll_unpin(cx), Poll::Pending) {
@@ -540,12 +540,12 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let mut recv_packets = Vec::new();
 		// TODO futures unordered
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
-
-				// TODO loop on ready
-				// and import inside (requires to split connected from other mixnet
-				// fields: would remove need for connection event received.
+			// TODO loop on ready
+			// and import inside (requires to split connected from other mixnet
+			// fields: would remove need for connection event received.
 			match connection.poll(
 				cx,
+				&self.local_id,
 				&self.public,
 				self.current_window,
 				self.current_packet_in_window,
@@ -618,7 +618,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			Err(e) => {
 				log::warn!(target: "mixnet", "Error importing message: {:?}", e);
 			},
-		 }
+		}
 		true
 	}
 }

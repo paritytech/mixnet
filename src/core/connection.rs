@@ -240,6 +240,7 @@ impl<C: Connection> ManagedConnection<C> {
 	pub(crate) fn poll<T: Topology>(
 		&mut self,
 		cx: &mut Context,
+		local_id: &MixPeerId,
 		handshake: &MixPublicKey,
 		current_window: Wrapping<usize>,
 		current_packet_in_window: usize,
@@ -274,7 +275,7 @@ impl<C: Connection> ManagedConnection<C> {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
 						self.sent_in_window += 1;
-						break;
+						break
 					},
 					Poll::Ready(Ok(false)) => {
 						if let Some(packet) = self.next_packet.take() {
@@ -297,11 +298,12 @@ impl<C: Connection> ManagedConnection<C> {
 						} else {
 							//break;
 							if let Some(key) = self.public_key.clone() {
-								if topology.routing() {
+								if topology.routing_to(local_id, &self.peer_id) {
 									self.next_packet =
-										crate::core::cover_message_to(&self.peer_id, key).map(|p| p.into_vec());
+										crate::core::cover_message_to(&self.peer_id, key)
+											.map(|p| p.into_vec());
 								} else {
-									break;
+									break
 								}
 								if self.next_packet.is_none() {
 									log::error!(target: "mixnet", "Could not create cover for {:?}", self.peer_id);

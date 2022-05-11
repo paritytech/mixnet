@@ -35,10 +35,39 @@ pub trait Topology: Sized + Send + 'static {
 	/// For a given peer return a list of peers it is supposed to be connected to.
 	/// Return `None` if peer is not routing.
 	/// TODO if removing random_path default implementation, this can be removed too.
+	/// These are live neighbors.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
-	/// Indicate if we are currently a node that is routing message.
-	fn routing(&self) -> bool;
+	/// Allowed neighbors that are not live.
+	/// This method is used to try connection periodically.
+	fn try_connect_neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+		None
+	}
+
+	/// Nodes that can be first hop.
+	fn first_hop_nodes(&self, _id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+
+	fn is_first_node(&self, _id: &MixPeerId) -> bool;
+
+	/// If node is possibly a first hop, it can allow
+	/// external request.
+	fn allow_external(&self, _id: &MixPeerId) -> bool {
+		false
+	}
+
+	fn publish_known_routes(&self) -> Vec<u8> {
+		unimplemented!("TODO should only be use for putting route in handshake");
+		// use external management otherwhise.
+		// TODO would be custom handshake and limited in size? (or number of packet??)
+	}
+
+	fn import_known_routes(&mut self, _encoded_routes: Vec<u8>) {
+		unimplemented!("TODO should only be use for putting route in handshake");
+		// use external management otherwhise.
+	}
+
+	/// Check node links.
+	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool;
 
 	/// Random message path.
 	/// Warning number of hops is indicative and for some topology
@@ -178,7 +207,16 @@ impl Topology for NoTopology {
 	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		None
 	}
-	fn routing(&self) -> bool {
+
+	fn first_hop_nodes(&self, _id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
+		Vec::new()
+	}
+
+	fn is_first_node(&self, _id: &MixPeerId) -> bool {
+		true
+	}
+
+	fn routing_to(&self, _from: &MixPeerId, _to: &MixPeerId) -> bool {
 		true
 	}
 	fn connected(&mut self, id: MixPeerId, key: MixPublicKey) {
