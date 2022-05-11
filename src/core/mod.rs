@@ -285,7 +285,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	) -> Result<(), Error> {
 		if let Some(connection) = self.connected_peers.get_mut(&recipient) {
 			let deadline = Some(self.last_now + delay); // TODO could get now from param
-			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window)?;
+			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window, &self.local_id, &self.topology, false)?;
 		} else {
 			return Err(Error::Unreachable(data))
 			// TODO maybe if in topology, try dial and add to local size restricted heap
@@ -304,7 +304,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Packet) -> Result<(), Error> {
 		if let Some(connection) = self.connected_peers.get_mut(&recipient) {
 			let deadline = Some(self.last_now); // TODO remove option for deadline (we don't want to skip other packets
-			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window)?;
+			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window, &self.local_id, &self.topology, true)?;
 		} else {
 			return Err(Error::Unreachable(data))
 			// TODO if in topology, try dial and add to local size restricted heap
@@ -406,10 +406,14 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(|e| Error::SphinxError(e))?;
 		let dest = to_libp2p_id(first_node)?;
-		if self.topology.is_first_node(&self.local_id) {
+		if self.topology.neighbors(&self.local_id).is_some() { // TODO is routing function
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(dest, packet, delay)?;
 		} else {
+			// TODO this would need to attempt dial (or just
+			// generate surbs passing by same peer as the one we
+			// just received: means surbs reply should be done
+			// quickly).
 			self.queue_external_packet(dest, packet)?;
 		}
 		Ok(())

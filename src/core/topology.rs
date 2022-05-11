@@ -49,10 +49,10 @@ pub trait Topology: Sized + Send + 'static {
 
 	fn is_first_node(&self, _id: &MixPeerId) -> bool;
 
-	/// If node is possibly a first hop, it can allow
-	/// external request.
-	fn allow_external(&self, _id: &MixPeerId) -> bool {
-		false
+	/// If node is possibly a first hop, it can allow a ratio of
+	/// routing node bandwidth.
+	fn allow_external(&self, _id: &MixPeerId) -> (usize, usize) {
+		(0, 1)
 	}
 
 	fn publish_known_routes(&self) -> Vec<u8> {

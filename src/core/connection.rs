@@ -230,18 +230,24 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		packet: QueuedPacket,
 		packet_per_window: usize,
+		local_id: &MixPeerId,
+		topology: &impl Topology,
+		external: bool,
 	) -> Result<(), crate::Error> {
 		if self.packet_queue.len() > packet_per_window {
 			// TODO apply a margin ??
 			log::error!(target: "mixnet", "Dropping packet, queue full: {:?}", self.peer_id);
 			return Err(crate::Error::QueueFull)
 		}
+		if !external && !topology.routing_to(local_id, &self.peer_id) {
+			return Err(crate::Error::NoPath(Some(self.peer_id.clone())))
+		}
 		self.packet_queue.push(packet);
 		Ok(())
 	}
 
 	// TODO struct window progress!!
-	pub(crate) fn poll<T: Topology>(
+	pub(crate) fn poll(
 		&mut self,
 		cx: &mut Context,
 		local_id: &MixPeerId,
@@ -250,7 +256,7 @@ impl<C: Connection> ManagedConnection<C> {
 		current_packet_in_window: usize,
 		packet_per_window: usize,
 		now: Instant,
-		topology: &mut T,
+		topology: &impl Topology,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
@@ -321,7 +327,13 @@ impl<C: Connection> ManagedConnection<C> {
 					Poll::Pending => break,
 				}
 			}
-			if self.recv_in_window < current_packet_in_window {
+			let current = if topology.routing_to(&self.peer_id, local_id) {
+				current_packet_in_window
+			} else {
+				let (n, d) = topology.allow_external(&self.peer_id);
+				(current_packet_in_window * n) / d
+			};
+			if self.recv_in_window < current {
 				match self.try_recv_packet(cx, current_window) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
