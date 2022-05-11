@@ -43,7 +43,13 @@ pub type ConnectionEstablished = Option<OneShotSender<()>>;
 pub enum WorkerIn {
 	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, SurbsPayload),
-	AddPeer(MixPeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>, ConnectionEstablished),
+	AddPeer(
+		MixPeerId,
+		Option<NegotiatedSubstream>,
+		NegotiatedSubstream,
+		OneShotSender<()>,
+		ConnectionEstablished,
+	),
 	AddPeerInbound(MixPeerId, NegotiatedSubstream),
 	RemoveConnectedPeer(MixPeerId),
 	ImportExternalMessage(MixPeerId, Packet),
@@ -112,7 +118,7 @@ impl<T: Topology> MixnetWorker<T> {
 		match self.worker_in.poll_next_unpin(cx) {
 			Poll::Ready(Some(message)) => match message {
 				WorkerIn::RegisterMessage(peer_id, message, send_options) => {
-					match self.mixnet.register_message(peer_id, message, send_options) {
+					match self.mixnet.register_message(peer_id, None, message, send_options) {
 						Ok(()) => (),
 						Err(e) => {
 							log::error!(target: "mixnet", "Error registering message: {:?}", e);
@@ -132,7 +138,9 @@ impl<T: Topology> MixnetWorker<T> {
 				WorkerIn::AddPeer(peer, inbound, outbound, handler, established) => {
 					if !self.mixnet.accept_peer(&peer) {
 						log::trace!("Rejected peer {:?}", peer);
-						if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Disconnected(peer)) {
+						if let Err(e) =
+							self.worker_out.start_send_unpin(WorkerOut::Disconnected(peer))
+						{
 							log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 						}
 					} else if let Some(_con) = self.mixnet.connected_mut(&peer) {
@@ -184,13 +192,14 @@ impl<T: Topology> MixnetWorker<T> {
 			result = Poll::Ready(true);
 			match e {
 				MixEvent::None => (),
-				MixEvent::Disconnected(peers) => {
+				MixEvent::Disconnected(peers) =>
 					for peer in peers.into_iter() {
-						if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Disconnected(peer)) {
+						if let Err(e) =
+							self.worker_out.start_send_unpin(WorkerOut::Disconnected(peer))
+						{
 							log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 						}
-					}
-				},
+					},
 			}
 		}
 
@@ -230,7 +239,12 @@ impl<T: Topology> MixnetWorker<T> {
 
 	/// Try to connect to a given peer.
 	/// If sender for reply, get message on connection established.
-	pub fn dial(&mut self, peer: PeerId, addresses: Vec<libp2p_core::Multiaddr>, reply: ConnectionEstablished) -> bool {
+	pub fn dial(
+		&mut self,
+		peer: PeerId,
+		addresses: Vec<libp2p_core::Multiaddr>,
+		reply: ConnectionEstablished,
+	) -> bool {
 		if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Dial(peer, addresses, reply)) {
 			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 			if e.is_disconnected() {
@@ -238,5 +252,13 @@ impl<T: Topology> MixnetWorker<T> {
 			}
 		}
 		true
+	}
+
+	pub fn mixnet_mut(&mut self) -> &mut Mixnet<T, Connection> {
+		&mut self.mixnet
+	}
+
+	pub fn mixnet(&mut self) -> &mut Mixnet<T, Connection> {
+		&mut self.mixnet
 	}
 }

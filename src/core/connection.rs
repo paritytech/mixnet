@@ -24,8 +24,7 @@ use crate::{
 	core::{QueuedPacket, PUBLIC_KEY_LEN, WINDOW_MARGIN_PERCENT},
 	MixPeerId, MixPublicKey, Packet, Topology, PACKET_SIZE,
 };
-use futures::FutureExt;
-	use futures::channel::oneshot::Sender as OneShotSender;
+use futures::{channel::oneshot::Sender as OneShotSender, FutureExt};
 use futures_timer::Delay;
 use std::{
 	collections::BinaryHeap,

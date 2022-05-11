@@ -31,7 +31,7 @@ use crate::core::connection::Connection as ConnectionT;
 use libp2p_swarm::NegotiatedSubstream;
 
 /// Internal information tracked for an established connection.
-pub(crate) struct Connection {
+pub struct Connection {
 	inbound: Option<Pin<Box<NegotiatedSubstream>>>, // TODO remove some pin with Ext traits
 	outbound: Pin<Box<NegotiatedSubstream>>,        /* TODO just use a single stream for in and
 	                                                 * out? */

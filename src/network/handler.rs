@@ -162,9 +162,14 @@ impl Handler {
 					let (sender, r) = futures::channel::oneshot::channel();
 					self.connection_closed = Some(r);
 					log::trace!(target: "mixnet", "Sending peer to worker {:?}", peer);
-					if let Err(e) = self.mixnet_worker_sink.as_mut().start_send_unpin(
-						WorkerIn::AddPeer(peer.clone(), inbound, outbound, sender, self.established.take()),
-					) {
+					if let Err(e) =
+						self.mixnet_worker_sink.as_mut().start_send_unpin(WorkerIn::AddPeer(
+							peer.clone(),
+							inbound,
+							outbound,
+							sender,
+							self.established.take(),
+						)) {
 						log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 					}
 					if with_inbound {

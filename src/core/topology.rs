@@ -30,7 +30,7 @@ pub trait Topology: Sized + Send + 'static {
 	/// E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
 	/// Return `None` if no such selection is possible.
-	fn random_recipient(&self) -> Option<MixPeerId>;
+	fn random_recipient(&self, local_id: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)>;
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
 	/// Return `None` if peer is not routing.
@@ -38,14 +38,27 @@ pub trait Topology: Sized + Send + 'static {
 	/// These are live neighbors.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
-	/// Allowed neighbors that are not live.
-	/// This method is used to try connection periodically.
-	fn try_connect_neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-		None
+	fn is_routing(&self, id: &MixPeerId) -> bool {
+		self.neighbors(id).is_some()
 	}
 
+	/*	/// Allowed neighbors that are not live.
+		/// This method is used to try connection periodically.
+		fn try_connect_neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+			None
+		} -> can be done externally with dial on topo init or change
+	*/
 	/// Nodes that can be first hop.
-	fn first_hop_nodes(&self, _id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)>;
+
+	/// first hop nodes that may allow external node connection.
+	fn first_hop_nodes_external(&self, _from: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+
+	/// Exit nodes, attempt connection to dest node
+	fn last_hop_nodes_external(&self) -> Vec<(MixPeerId, MixPublicKey)> {
+		// TODO implement or consider removal
+		vec![]
+	}
 
 	fn is_first_node(&self, _id: &MixPeerId) -> bool;
 
@@ -77,8 +90,8 @@ pub trait Topology: Sized + Send + 'static {
 	/// Default implementation is taking random of all possible path.
 	fn random_path(
 		&self,
-		start: &MixPeerId,
-		recipient: &MixPeerId,
+		start_node: (&MixPeerId, Option<&MixPublicKey>),
+		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
 		count: usize,
 		num_hops: usize,
 		max_hops: usize,
@@ -86,22 +99,61 @@ pub trait Topology: Sized + Send + 'static {
 		if num_hops > max_hops {
 			return Err(Error::TooManyHops)
 		}
+		let mut rng = rand::thread_rng();
+		let mut add_start = None;
+		let mut add_end = None;
+		let start = if self.is_first_node(start_node.0) {
+			start_node.0.clone()
+		} else {
+			let firsts = self.first_hop_nodes_external(start_node.0);
+			if firsts.len() == 0 {
+				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+			}
+			let n: usize = rng.gen_range(0..firsts.len());
+			add_start = Some(start_node);
+			firsts[n].0.clone()
+		};
+		let recipient = if self.is_routing(recipient_node.0) {
+			recipient_node.0.clone()
+		} else {
+			let lasts = self.last_hop_nodes_external();
+			if lasts.len() == 0 {
+				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+			}
+			let n: usize = rng.gen_range(0..lasts.len());
+			add_end = Some(recipient_node);
+			lasts[n].0.clone()
+		};
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();
-		gen_paths(self, &mut partial, &mut paths, start, recipient, num_hops);
+		gen_paths(self, &mut partial, &mut paths, &start, &recipient, num_hops);
 
 		if paths.is_empty() {
-			return Err(Error::NoPath(Some(*recipient)))
+			return Err(Error::NoPath(Some(recipient)))
 		}
 
-		let mut rng = rand::thread_rng();
 		let mut result = Vec::new();
 		while result.len() < count {
 			// TODO path pool could be persisted, but at this point this implementation
 			// is not really targetted.
 			let n: usize = rng.gen_range(0..paths.len());
-			result.push(paths[n].clone());
+			let mut path = paths[n].clone();
+			if let Some((peer, key)) = add_start {
+				if let Some(key) = key {
+					path.insert(0, (peer.clone(), key.clone()));
+				} else {
+					return Err(Error::NoPath(Some(recipient_node.0.clone())))
+				}
+			}
+			if let Some((peer, key)) = add_end {
+				if let Some(key) = key {
+					path.push((peer.clone(), key.clone()));
+				} else {
+					return Err(Error::NoPath(Some(recipient_node.0.clone())))
+				}
+			}
+			result.push(path);
 		}
 		log::trace!(target: "mixnet", "Random path {:?}", result);
 		Ok(result)
@@ -166,30 +218,34 @@ pub struct NoTopology {
 }
 
 impl Topology for NoTopology {
-	fn random_recipient(&self) -> Option<MixPeerId> {
+	fn random_recipient(&self, local_id: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)> {
 		use rand::prelude::IteratorRandom;
 		let mut rng = rand::thread_rng();
 		// Select a random connected peer
-		self.connected_peers.keys().choose(&mut rng).cloned()
+		self.connected_peers
+			.iter()
+			.filter(|(k, _v)| k != &local_id)
+			.choose(&mut rng)
+			.map(|(k, v)| (k.clone(), v.clone()))
 	}
 
 	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
-		Some((1, 1))	
+		Some((1, 1))
 	}
 
 	fn random_path(
 		&self,
-		_start: &MixPeerId,
-		recipient: &MixPeerId,
+		_start: (&MixPeerId, Option<&MixPublicKey>),
+		recipient: (&MixPeerId, Option<&MixPublicKey>),
 		count: usize,
 		_num_hops: usize,
 		_max_hops: usize,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		log::warn!(target: "mixnet", "No topology, direct transmission");
 		// No topology is defined. Check if direct connection is possible.
-		match self.connected_peers.get(&recipient) {
-			Some(key) => return Ok(vec![vec![(*recipient, key.clone())]; count]),
-			_ => return Err(Error::NoPath(Some(*recipient))),
+		match self.connected_peers.get(recipient.0) {
+			Some(key) => return Ok(vec![vec![(*recipient.0, key.clone())]; count]),
+			_ => return Err(Error::NoPath(Some(*recipient.0))),
 		}
 	}
 
@@ -212,7 +268,12 @@ impl Topology for NoTopology {
 		None
 	}
 
-	fn first_hop_nodes(&self, _id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
+	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)> {
+		Vec::new()
+	}
+
+	// first hop that allow external node connection.
+	fn first_hop_nodes_external(&self, _from: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
 		Vec::new()
 	}
 

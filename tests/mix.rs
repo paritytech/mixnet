@@ -30,17 +30,25 @@ use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::TcpConfig;
 use rand::{prelude::IteratorRandom, RngCore};
-use std::{collections::HashMap, task::Poll};
+use std::{
+	collections::HashMap,
+	sync::{
+		atomic::{AtomicUsize, Ordering},
+		Arc, Mutex,
+	},
+	task::Poll,
+};
 
 use mixnet::{MixPublicKey, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
-	connections: HashMap<PeerId, Vec<(PeerId, MixPublicKey)>>,
-	first_hop: Vec<(PeerId, MixPublicKey)>,
+	connections: HashMap<PeerId, Vec<(PeerId, MixPublicKey)>>, /* TODO remove field, peers is
+	                                                            * enough? */
+	peers: Vec<(PeerId, MixPublicKey)>,
 	// allow single external
 	external: Option<PeerId>,
-	nb_connected: usize,
+	nb_connected: Arc<AtomicUsize>,
 }
 
 impl TopologyGraph {
@@ -57,7 +65,12 @@ impl TopologyGraph {
 			connections.insert(node.clone(), neighbors);
 		}
 
-		Self { connections, first_hop: nodes.iter().map(Clone::clone).collect(), external: Default::default(), nb_connected: 0 }
+		Self {
+			connections,
+			peers: nodes.iter().map(Clone::clone).collect(),
+			external: Default::default(),
+			nb_connected: Arc::new(0.into()),
+		}
 	}
 }
 
@@ -66,16 +79,24 @@ impl mixnet::Topology for TopologyGraph {
 		self.connections.get(id).cloned()
 	}
 
-	fn first_hop_nodes(&self, _id: &PeerId) -> Vec<(PeerId, MixPublicKey)> {
-		self.first_hop.clone()
+	fn first_hop_nodes(&self) -> Vec<(PeerId, MixPublicKey)> {
+		self.peers.clone()
+	}
+
+	fn first_hop_nodes_external(&self, _from: &PeerId) -> Vec<(PeerId, MixPublicKey)> {
+		self.peers.clone()
 	}
 
 	fn is_first_node(&self, id: &PeerId) -> bool {
-		self.first_hop.iter().find(|(p, _)| p == id).is_some()
+		self.peers.iter().find(|(p, _)| p == id).is_some()
 	}
 
-	fn random_recipient(&self) -> Option<PeerId> {
-		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
+	fn random_recipient(&self, local_id: &PeerId) -> Option<(PeerId, MixPublicKey)> {
+		self.peers
+			.iter()
+			.filter(|(k, _v)| k != local_id)
+			.choose(&mut rand::thread_rng())
+			.map(|(k, v)| (k.clone(), v.clone()))
 	}
 
 	fn routing_to(&self, from: &PeerId, to: &PeerId) -> bool {
@@ -87,11 +108,15 @@ impl mixnet::Topology for TopologyGraph {
 	}
 
 	fn connected(&mut self, _: PeerId, _: MixPublicKey) {
-		self.nb_connected += 1;
+		self.nb_connected.fetch_add(1, Ordering::Relaxed);
+
+		if self.nb_connected.load(Ordering::Relaxed) == self.connections.len() - 1 {
+			log::info!("All connected");
+		}
 	}
 
 	fn disconnect(&mut self, id: &PeerId) {
-		self.nb_connected -= 1;
+		self.nb_connected.fetch_sub(1, Ordering::Relaxed);
 		if self.external.as_ref() == Some(id) {
 			self.external = None;
 		}
@@ -99,27 +124,38 @@ impl mixnet::Topology for TopologyGraph {
 
 	fn allow_external(&mut self, id: &PeerId) -> Option<(usize, usize)> {
 		if self.external.as_ref() == Some(id) {
-			return Some((1, 1));
+			return Some((1, 1))
 		}
 		if self.external.is_some() {
-			return None;
+			return None
 		}
 		self.external = Some(id.clone());
-		Some((1, 1))	
+		Some((1, 1))
 	}
 }
 
-fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surbs: bool) {
+fn test_messages(
+	num_peers: usize,
+	message_count: usize,
+	message_size: usize,
+	with_surbs: bool,
+	from_external: bool,
+) {
 	let _ = env_logger::try_init();
 	let mut source_message = Vec::new();
 	source_message.resize(message_size, 0);
 	rand::thread_rng().fill_bytes(&mut source_message);
 
 	let executor = futures::executor::ThreadPool::new().unwrap();
+	let extra_external = if from_external {
+		2 // 2 external node at ix num_peers and num_peers + 1
+	} else {
+		0
+	};
 	let mut nodes = Vec::new();
 	let mut secrets = Vec::new();
 	let mut transports = Vec::new();
-	for _ in 0..num_peers {
+	for _ in 0..num_peers + extra_external {
 		let (peer_id, peer_key, trans) = mk_transport();
 		let peer_key_montgomery = mixnet::public_from_ed25519(&peer_key.public());
 		let peer_secret_key = mixnet::secret_from_ed25519(&peer_key.secret());
@@ -128,9 +164,15 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		transports.push(trans);
 	}
 
-	let topology = TopologyGraph::new_star(&nodes);
+	let topology = TopologyGraph::new_star(&nodes[..num_peers]);
 
+	let mut to_behavior_external_1 = None;
+	let mut to_behavior_external_2 = None;
+	let mut to_worker_external_1 = None;
+	let mut to_worker_external_2 = None;
 	let mut swarms = Vec::new();
+	let mut count_connection = Vec::new();
+	let mut workers = Vec::new();
 	for (i, trans) in transports.into_iter().enumerate() {
 		let (id, pub_key) = nodes[i];
 		let cfg = mixnet::Config {
@@ -148,16 +190,35 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		};
 
 		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);
+		if i == num_peers {
+			to_worker_external_1 = Some(to_worker_sink.clone());
+		}
+		if i == num_peers + 1 {
+			to_worker_external_2 = Some(to_worker_sink.clone());
+		}
+
 		let (from_worker_sink, from_worker_stream) = mpsc::channel(1000);
+		if i == num_peers {
+			to_behavior_external_1 = Some(from_worker_sink.clone());
+		}
+		if i == num_peers + 1 {
+			to_behavior_external_2 = Some(from_worker_sink.clone());
+		}
+
 		let mixnet =
 			mixnet::MixnetBehaviour::new(Box::new(to_worker_sink), Box::new(from_worker_stream));
-		let mut worker = mixnet::MixnetWorker::new(
+		let mut topo = topology.clone();
+		let mut counter = Arc::new(AtomicUsize::new(0));
+		topo.nb_connected = counter.clone();
+		count_connection.push(counter);
+		let mut worker = Arc::new(Mutex::new(mixnet::MixnetWorker::new(
 			cfg,
-			topology.clone(),
+			topo,
 			(Box::new(from_worker_sink), Box::new(to_worker_stream)),
-		);
+		)));
+		workers.push(worker.clone());
 		let worker = future::poll_fn(move |cx| loop {
-			match worker.poll(cx) {
+			match worker.lock().unwrap().poll(cx) {
 				Poll::Ready(false) => {
 					log::error!(target: "mixnet", "Shutting worker");
 					return Poll::Ready(())
@@ -174,11 +235,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		swarms.push(swarm);
 	}
 
-	let mut to_notify = (0..num_peers).map(|_| Vec::new()).collect::<Vec<_>>();
-	let mut to_wait = (0..num_peers).map(|_| Vec::new()).collect::<Vec<_>>();
+	let mut to_notify = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
+	let mut to_wait = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
 
-	for p1 in 0..num_peers {
-		for p2 in p1 + 1..num_peers {
+	for p1 in 0..num_peers + extra_external {
+		for p2 in p1 + 1..num_peers + extra_external {
 			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
 			to_notify[p1].push(tx);
 			to_wait[p2].push(rx);
@@ -195,6 +256,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		let peer_future = async move {
 			let mut num_connected = 0;
 
+			if p >= num_peers {
+				// Do not attempt connection.
+				return (swarm, p)
+			}
+			// connect as topology
 			loop {
 				match swarm.select_next_some().await {
 					SwarmEvent::NewListenAddr { address, .. } => {
@@ -226,6 +292,29 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		log::trace!(target: "mixnet", "Connecting {} completed", p);
 		connect_futures = rest;
 		swarms.push((p, swarm));
+	}
+
+	for i in 0..num_peers {
+		assert_eq!(count_connection[i].load(Ordering::Relaxed), num_peers - 1);
+	}
+
+	if from_external {
+		let index_external_1 = swarms.iter().position(|(p, _)| *p == num_peers).unwrap();
+		let index_external_2 = swarms.iter().position(|(p, _)| *p == num_peers + 1).unwrap();
+		assert_eq!(count_connection[num_peers].load(Ordering::Relaxed), 0);
+		assert_eq!(count_connection[num_peers + 1].load(Ordering::Relaxed), 0);
+		workers[num_peers]
+			.lock()
+			.unwrap()
+			.mixnet_mut()
+			.register_message(
+				Some(nodes[1].0.clone()),
+				None,
+				source_message.to_vec(),
+				SendOptions { num_hop: None, with_surbs },
+			)
+			.unwrap();
+		return
 	}
 
 	let index = swarms.iter().position(|(p, _)| *p == 0).unwrap();
@@ -333,22 +422,32 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 
 #[test]
 fn message_exchange_no_surbs() {
-	test_messages(5, 10, 1, false);
+	test_messages(5, 10, 1, false, false);
 }
 
 #[test]
 fn fragmented_messages_no_surbs() {
-	test_messages(2, 1, 8 * 1024, false);
+	test_messages(2, 1, 8 * 1024, false, false);
 }
 
 #[test]
 fn message_exchange_with_surbs() {
-	test_messages(5, 10, 1, true);
+	test_messages(5, 10, 1, true, false);
 }
 
 #[test]
 fn fragmented_messages_with_surbs() {
-	test_messages(2, 1, 8 * 1024, true);
+	test_messages(2, 1, 8 * 1024, true, false);
+}
+
+#[test]
+fn from_external_with_surbs() {
+	test_messages(5, 1, 4 * 1024, true, true);
+}
+
+#[test]
+fn from_external_no_surbs() {
+	test_messages(5, 1, 4 * 1024, false, true);
 }
 
 fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)

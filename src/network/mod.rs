@@ -37,8 +37,9 @@ use futures::{channel::mpsc::SendError, Sink, SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
-	dial_opts::{DialOpts, PeerCondition}, CloseConnection,
-	IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
+	dial_opts::{DialOpts, PeerCondition},
+	CloseConnection, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction,
+	NotifyHandler, PollParameters,
 };
 use std::{
 	collections::{HashMap, VecDeque},
@@ -227,40 +228,40 @@ impl NetworkBehaviour for MixnetBehaviour {
 			Poll::Ready(Some(out)) => match out {
 				WorkerOut::Disconnected(peer_id) => {
 					if let Some(con_id) = self.connected.remove(&peer_id) {
-					Poll::Ready(NetworkBehaviourAction::CloseConnection {
-						peer_id,
-						connection: CloseConnection::One(con_id),
-					})
+						Poll::Ready(NetworkBehaviourAction::CloseConnection {
+							peer_id,
+							connection: CloseConnection::One(con_id),
+						})
 					} else {
 						self.poll(cx, params)
 					}
 				},
 				WorkerOut::Connected(peer, public_key) =>
 					Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Connected(
-								peer, public_key,
+						peer, public_key,
 					))),
-					WorkerOut::ReceivedMessage(peer, message, kind) =>
-						Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Message(
-									DecodedMessage { peer, message, kind },
-						))),
-						WorkerOut::Dial(peer, addresses, reply) =>
-							if !self.connected.contains_key(&peer) {
-								let mut handler = self.new_handler();
-								handler.set_peer_id(peer.clone());
-								if let Some(reply) = reply {
-									handler.set_established(reply);
-								}
-								Poll::Ready(NetworkBehaviourAction::Dial {
-									opts: DialOpts::peer_id(peer)
-										.condition(PeerCondition::Disconnected)
-										.addresses(addresses)
-										.extend_addresses_through_behaviour()
-										.build(),
-										handler,
-								})
-							} else {
-								self.poll(cx, params)
-							},
+				WorkerOut::ReceivedMessage(peer, message, kind) =>
+					Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Message(
+						DecodedMessage { peer, message, kind },
+					))),
+				WorkerOut::Dial(peer, addresses, reply) =>
+					if !self.connected.contains_key(&peer) {
+						let mut handler = self.new_handler();
+						handler.set_peer_id(peer.clone());
+						if let Some(reply) = reply {
+							handler.set_established(reply);
+						}
+						Poll::Ready(NetworkBehaviourAction::Dial {
+							opts: DialOpts::peer_id(peer)
+								.condition(PeerCondition::Disconnected)
+								.addresses(addresses)
+								.extend_addresses_through_behaviour()
+								.build(),
+							handler,
+						})
+					} else {
+						self.poll(cx, params)
+					},
 			},
 			Poll::Ready(None) =>
 				return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::CloseStream)),

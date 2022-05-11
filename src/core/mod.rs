@@ -29,7 +29,6 @@ mod topology;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
-use futures::channel::oneshot::Sender as OneShotSender;
 use crate::{
 	core::connection::{ConnectionEvent, ManagedConnection},
 	MessageType, MixPeerId, SendOptions, WorkerOut, WorkerSink2,
@@ -37,7 +36,7 @@ use crate::{
 pub use config::Config;
 pub use connection::Connection;
 pub use error::Error;
-use futures::{FutureExt, SinkExt};
+use futures::{channel::oneshot::Sender as OneShotSender, FutureExt, SinkExt};
 use futures_timer::Delay;
 use libp2p_core::{identity::ed25519, PeerId};
 use rand::{CryptoRng, Rng};
@@ -180,7 +179,7 @@ impl std::cmp::Ord for QueuedPacket {
 }
 
 /// Mixnet core. Mixes messages, tracks fragments and delays.
-pub(crate) struct Mixnet<T, C> {
+pub struct Mixnet<T, C> {
 	pub topology: T,
 	num_hops: usize,
 	pub public: MixPublicKey,
@@ -252,7 +251,12 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		}
 	}
 
-	pub fn insert_connection(&mut self, peer: MixPeerId, connection: C, established: Option<OneShotSender<()>>) {
+	pub fn insert_connection(
+		&mut self,
+		peer: MixPeerId,
+		connection: C,
+		established: Option<OneShotSender<()>>,
+	) {
 		let connection = ManagedConnection::new(
 			peer.clone(),
 			self.default_limit_msg.clone(),
@@ -267,7 +271,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		self.connected_peers.get_mut(peer).map(|c| &mut c.connection)
 	}
 
-	pub fn managed_connection_mut(
+	pub(crate) fn managed_connection_mut(
 		&mut self,
 		peer: &MixPeerId,
 	) -> Option<&mut ManagedConnection<C>> {
@@ -286,7 +290,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	) -> Result<(), Error> {
 		if let Some(connection) = self.connected_peers.get_mut(&recipient) {
 			let deadline = Some(self.last_now + delay); // TODO could get now from param
-			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window, &self.local_id, &self.topology, false)?;
+			connection.queue_packet(
+				QueuedPacket { deadline, data },
+				self.packet_per_window,
+				&self.local_id,
+				&self.topology,
+				false,
+			)?;
 		} else {
 			return Err(Error::Unreachable(data))
 			// TODO maybe if in topology, try dial and add to local size restricted heap
@@ -305,7 +315,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Packet) -> Result<(), Error> {
 		if let Some(connection) = self.connected_peers.get_mut(&recipient) {
 			let deadline = Some(self.last_now); // TODO remove option for deadline (we don't want to skip other packets
-			connection.queue_packet(QueuedPacket { deadline, data }, self.packet_per_window, &self.local_id, &self.topology, true)?;
+			connection.queue_packet(
+				QueuedPacket { deadline, data },
+				self.packet_per_window,
+				&self.local_id,
+				&self.topology,
+				true,
+			)?;
 		} else {
 			return Err(Error::Unreachable(data))
 			// TODO if in topology, try dial and add to local size restricted heap
@@ -325,13 +341,21 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	pub fn register_message(
 		&mut self,
 		peer_id: Option<MixPeerId>,
+		peer_pub_key: Option<MixPublicKey>,
 		message: Vec<u8>,
 		send_options: SendOptions,
 	) -> Result<(), Error> {
 		let mut rng = rand::thread_rng();
 
-		let maybe_peer_id =
-			if let Some(id) = peer_id { Some(id) } else { self.topology.random_recipient() };
+		let (maybe_peer_id, peer_pub_key) = if let Some(id) = peer_id {
+			(Some(id), peer_pub_key)
+		} else {
+			if let Some((id, key)) = self.topology.random_recipient(&self.local_id) {
+				(Some(id), Some(key))
+			} else {
+				(None, None)
+			}
+		};
 
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
@@ -340,11 +364,19 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			(self.persist_surbs_query && send_options.with_surbs).then(|| message.clone());
 
 		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surbs)?;
-		let paths = self.random_paths(&peer_id, &send_options.num_hop, chunks.len(), false)?;
+		let paths = self.random_paths(
+			&peer_id,
+			peer_pub_key.as_ref(),
+			&send_options.num_hop,
+			chunks.len(),
+			false,
+		)?;
 
 		let mut surbs = if send_options.with_surbs {
 			//let ours = (MixPeerId, MixPublicKey);
-			let paths = self.random_paths(&peer_id, &send_options.num_hop, 1, true)?.remove(0);
+			let paths = self
+				.random_paths(&peer_id, peer_pub_key.as_ref(), &send_options.num_hop, 1, true)?
+				.remove(0);
 			let first_node = to_sphinx_id(&paths[0].0).unwrap();
 			let paths: Vec<_> = paths
 				.into_iter()
@@ -407,7 +439,8 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(|e| Error::SphinxError(e))?;
 		let dest = to_libp2p_id(first_node)?;
-		if self.topology.neighbors(&self.local_id).is_some() { // TODO is routing function
+		if self.topology.neighbors(&self.local_id).is_some() {
+			// TODO is routing function
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(dest, packet, delay)?;
 		} else {
@@ -491,12 +524,16 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	fn random_paths(
 		&self,
 		recipient: &MixPeerId,
+		recipient_key: Option<&MixPublicKey>,
 		num_hops: &Option<usize>,
 		count: usize,
 		surbs: bool,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		let (start, recipient) =
-			if surbs { (recipient, &self.local_id) } else { (&self.local_id, recipient) };
+		let (start, recipient) = if surbs {
+			((recipient, recipient_key), (&self.local_id, Some(&self.public)))
+		} else {
+			((&self.local_id, Some(&self.public)), (recipient, recipient_key))
+		};
 
 		let num_hops = num_hops.clone().unwrap_or(self.num_hops);
 		if num_hops > sphinx::MAX_HOPS {
@@ -600,7 +637,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				self.remove_connected_peer(peer);
 			}
 
-			return Poll::Ready(MixEvent::Disconnected(disconnected));
+			return Poll::Ready(MixEvent::Disconnected(disconnected))
 		}
 
 		if all_pending {
@@ -636,11 +673,9 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn accept_peer(&mut self, peer_id: &MixPeerId) -> bool {
-		self.topology.routing_to(&self.local_id, peer_id)
-			||
-		self.topology.routing_to(peer_id, &self.local_id)
-		||
-		self.topology.allow_external(peer_id).is_some()
+		self.topology.routing_to(&self.local_id, peer_id) ||
+			self.topology.routing_to(peer_id, &self.local_id) ||
+			self.topology.allow_external(peer_id).is_some()
 	}
 }
 
