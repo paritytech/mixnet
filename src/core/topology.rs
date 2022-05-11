@@ -49,10 +49,10 @@ pub trait Topology: Sized + Send + 'static {
 
 	fn is_first_node(&self, _id: &MixPeerId) -> bool;
 
-	/// If node is possibly a first hop, it can allow a ratio of
-	/// routing node bandwidth.
-	fn allow_external(&self, _id: &MixPeerId) -> (usize, usize) {
-		(0, 1)
+	/// If external is allowed, it returns a ratio of
+	/// routing node bandwidth to use.
+	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
+		None
 	}
 
 	fn publish_known_routes(&self) -> Vec<u8> {
@@ -171,6 +171,10 @@ impl Topology for NoTopology {
 		let mut rng = rand::thread_rng();
 		// Select a random connected peer
 		self.connected_peers.keys().choose(&mut rng).cloned()
+	}
+
+	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
+		Some((1, 1))	
 	}
 
 	fn random_path(

@@ -38,6 +38,8 @@ use mixnet::{MixPublicKey, SendOptions};
 struct TopologyGraph {
 	connections: HashMap<PeerId, Vec<(PeerId, MixPublicKey)>>,
 	first_hop: Vec<(PeerId, MixPublicKey)>,
+	// allow single external
+	external: Option<PeerId>,
 }
 
 impl TopologyGraph {
@@ -54,7 +56,7 @@ impl TopologyGraph {
 			connections.insert(node.clone(), neighbors);
 		}
 
-		Self { connections, first_hop: nodes.iter().map(Clone::clone).collect() }
+		Self { connections, first_hop: nodes.iter().map(Clone::clone).collect(), external: Default::default() }
 	}
 }
 
@@ -85,7 +87,19 @@ impl mixnet::Topology for TopologyGraph {
 
 	fn connected(&mut self, _: PeerId, _: MixPublicKey) {}
 
-	fn disconnect(&mut self, _: &PeerId) {}
+	fn disconnect(&mut self, id: &PeerId) {
+		if self.external.as_ref() == Some(id) {
+			self.external = None;
+		}
+	}
+
+	fn allow_external(&mut self, id: &PeerId) -> Option<(usize, usize)> {
+		if self.external.is_some() && self.external.as_ref() != Some(id) {
+			return None;
+		}
+		self.external = Some(id.clone());
+		Some((1, 1))	
+	}
 }
 
 fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surbs: bool) {

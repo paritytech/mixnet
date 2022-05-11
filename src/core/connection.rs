@@ -256,7 +256,7 @@ impl<C: Connection> ManagedConnection<C> {
 		current_packet_in_window: usize,
 		packet_per_window: usize,
 		now: Instant,
-		topology: &impl Topology,
+		topology: &mut impl Topology,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
@@ -330,7 +330,7 @@ impl<C: Connection> ManagedConnection<C> {
 			let current = if topology.routing_to(&self.peer_id, local_id) {
 				current_packet_in_window
 			} else {
-				let (n, d) = topology.allow_external(&self.peer_id);
+				let (n, d) = topology.allow_external(&self.peer_id).unwrap_or((0, 1));
 				(current_packet_in_window * n) / d
 			};
 			if self.recv_in_window < current {
