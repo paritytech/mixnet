@@ -54,6 +54,9 @@ pub enum WorkerOut {
 	ReceivedMessage(MixPeerId, Vec<u8>, MessageType),
 	/// Handshake success in mixnet.
 	Connected(PeerId, MixPublicKey),
+	/// Peer connection dropped, sending info to behaviour for
+	/// cleanup.
+	Disconnected(Vec<PeerId>),
 	/// Dial a given PeerId.
 	Dial(PeerId, Vec<libp2p_core::Multiaddr>, Option<OneShotSender<()>>),
 }
@@ -175,6 +178,11 @@ impl<T: Topology> MixnetWorker<T> {
 			result = Poll::Ready(true);
 			match e {
 				MixEvent::None => (),
+				MixEvent::Disconnected(peer) => {
+					if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Disconnected(peer)) {
+						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+					}
+				},
 			}
 		}
 
@@ -184,6 +192,9 @@ impl<T: Topology> MixnetWorker<T> {
 	fn disconnect_peer(&mut self, peer: &MixPeerId) {
 		log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 		log::error!(target: "mixnet", "Disconnecting peer {:?}", peer);
+		if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Disconnected(vec!(peer.clone()))) {
+			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+		}
 		self.mixnet.remove_connected_peer(peer);
 	}
 

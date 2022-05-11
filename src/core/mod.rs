@@ -106,6 +106,7 @@ impl Packet {
 type SphinxPeerId = [u8; 32];
 
 pub enum MixEvent {
+	Disconnected(Vec<MixPeerId>),
 	None,
 }
 
@@ -593,9 +594,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			}
 		}
 
-		for peer in disconnected {
-			log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
-			self.remove_connected_peer(&peer);
+		if disconnected.len() > 0 {
+			for peer in disconnected.iter() {
+				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
+				self.remove_connected_peer(peer);
+			}
+
+			return Poll::Ready(MixEvent::Disconnected(disconnected));
 		}
 
 		if all_pending {

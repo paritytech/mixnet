@@ -225,6 +225,12 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 		match self.mixnet_worker_stream.poll_next_unpin(cx) {
 			Poll::Ready(Some(out)) => match out {
+				WorkerOut::Disconnected(peers) => {
+					for peer in peers.iter() { 
+						self.connected.remove(peer);
+					}
+					self.poll(cx, params)
+				},
 				WorkerOut::Connected(peer, public_key) =>
 					Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::Connected(
 						peer, public_key,

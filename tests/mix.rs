@@ -40,6 +40,7 @@ struct TopologyGraph {
 	first_hop: Vec<(PeerId, MixPublicKey)>,
 	// allow single external
 	external: Option<PeerId>,
+	nb_connected: usize,
 }
 
 impl TopologyGraph {
@@ -56,7 +57,7 @@ impl TopologyGraph {
 			connections.insert(node.clone(), neighbors);
 		}
 
-		Self { connections, first_hop: nodes.iter().map(Clone::clone).collect(), external: Default::default() }
+		Self { connections, first_hop: nodes.iter().map(Clone::clone).collect(), external: Default::default(), nb_connected: 0 }
 	}
 }
 
@@ -85,9 +86,12 @@ impl mixnet::Topology for TopologyGraph {
 			.is_some()
 	}
 
-	fn connected(&mut self, _: PeerId, _: MixPublicKey) {}
+	fn connected(&mut self, _: PeerId, _: MixPublicKey) {
+		self.nb_connected += 1;
+	}
 
 	fn disconnect(&mut self, id: &PeerId) {
+		self.nb_connected -= 1;
 		if self.external.as_ref() == Some(id) {
 			self.external = None;
 		}
