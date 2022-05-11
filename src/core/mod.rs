@@ -634,6 +634,14 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		}
 		true
 	}
+
+	pub fn accept_peer(&mut self, peer_id: &MixPeerId) -> bool {
+		self.topology.routing_to(&self.local_id, peer_id)
+			||
+		self.topology.routing_to(peer_id, &self.local_id)
+		||
+		self.topology.allow_external(peer_id).is_some()
+	}
 }
 
 /// Message id, use as surbs key and replay protection.

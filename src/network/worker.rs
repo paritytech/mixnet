@@ -130,7 +130,12 @@ impl<T: Topology> MixnetWorker<T> {
 					return Poll::Ready(true)
 				},
 				WorkerIn::AddPeer(peer, inbound, outbound, handler, established) => {
-					if let Some(_con) = self.mixnet.connected_mut(&peer) {
+					if !self.mixnet.accept_peer(&peer) {
+						log::trace!("Rejected peer {:?}", peer);
+						if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::Disconnected(peer)) {
+							log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+						}
+					} else if let Some(_con) = self.mixnet.connected_mut(&peer) {
 						log::error!("Trying to replace an existing connection for {:?}", peer);
 					/*
 					// TODO updating sound like a bad option.

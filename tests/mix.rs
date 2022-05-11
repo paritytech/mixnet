@@ -98,7 +98,10 @@ impl mixnet::Topology for TopologyGraph {
 	}
 
 	fn allow_external(&mut self, id: &PeerId) -> Option<(usize, usize)> {
-		if self.external.is_some() && self.external.as_ref() != Some(id) {
+		if self.external.as_ref() == Some(id) {
+			return Some((1, 1));
+		}
+		if self.external.is_some() {
 			return None;
 		}
 		self.external = Some(id.clone());
