@@ -205,6 +205,12 @@ impl NetworkBehaviour for MixnetBehaviour {
 		}
 	}
 
+
+	fn addresses_of_peer(&mut self, _peer: &PeerId) -> Vec<Multiaddr> {
+		// TODO cache addresses for extend_addresses_through_behaviour
+		vec![]
+	}
+
 	fn poll(
 		&mut self,
 		cx: &mut Context<'_>,
@@ -236,6 +242,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 							opts: DialOpts::peer_id(peer)
 								.condition(PeerCondition::Disconnected)
 								.addresses(addresses)
+								.extend_addresses_through_behaviour()
 								.build(),
 							handler,
 						})

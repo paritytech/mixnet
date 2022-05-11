@@ -44,7 +44,7 @@ use rand_distr::Distribution;
 pub use sphinx::Error as SphinxError;
 use std::{
 	cmp::Ordering,
-	collections::{BinaryHeap, HashMap, VecDeque},
+	collections::{HashMap, VecDeque},
 	num::Wrapping,
 	task::{Context, Poll},
 	time::{Duration, Instant},
@@ -58,8 +58,6 @@ pub type MixSecretKey = sphinx::StaticSecret;
 
 /// Length of `MixPublicKey`
 pub const PUBLIC_KEY_LEN: usize = 32;
-
-const MAX_QUEUED_PACKETS: usize = 8192;
 
 /// Size of a mixnet packent.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
@@ -193,8 +191,6 @@ pub(crate) struct Mixnet<T, C> {
 	surbs: SurbsCollection,
 	// Received message filter.
 	replay_filter: ReplayFilter,
-	// Real messages queue, sorted by deadline.
-	packet_queue: BinaryHeap<QueuedPacket>, // TODO queue for non connected??
 	// Timer for the next poll for messages.
 	next_message: Delay,
 	// Average delay at which we poll for real or cover messages.
@@ -240,7 +236,6 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			secret: config.secret_key,
 			local_id: config.local_id,
 			fragments: MessageCollection::new(),
-			packet_queue: Default::default(),
 			connected_peers: Default::default(),
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),

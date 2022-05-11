@@ -292,14 +292,14 @@ impl<C: Connection> ManagedConnection<C> {
 							.map_or(false, |p| p.deadline.map(|d| d <= now).unwrap_or(true));
 						if deadline {
 							if let Some(packet) = self.packet_queue.pop() {
-								self.next_packet = Some(packet.data.0);
+								self.next_packet = Some(packet.data.into_vec());
 							}
 						} else {
 							//break;
 							if let Some(key) = self.public_key.clone() {
 								if topology.routing() {
 									self.next_packet =
-										crate::core::cover_message_to(&self.peer_id, key).map(|p| p.0);
+										crate::core::cover_message_to(&self.peer_id, key).map(|p| p.into_vec());
 								} else {
 									break;
 								}
