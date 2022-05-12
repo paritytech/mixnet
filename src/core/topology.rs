@@ -121,7 +121,7 @@ pub trait Topology: Sized + Send + 'static {
 			if lasts.len() == 0 {
 				if let Some(query) = last_query_if_surb {
 					// reuse a node that was recently connected.
-					if let Some(rec) = query.get(1) {
+					if let Some(rec) = query.get(0) {
 						add_end = Some(recipient_node);
 						rec.0.clone()
 					} else {
