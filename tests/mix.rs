@@ -232,7 +232,19 @@ fn test_messages(
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		swarm.listen_on(addr).unwrap();
-		swarms.push(swarm);
+		if i >= num_peers {
+			// run external swarm with no stoping
+			let worker = future::poll_fn(move |cx| loop {
+				use futures::stream::StreamExt;
+				match swarm.poll_next_unpin(cx) {
+					Poll::Pending => return Poll::Pending,
+					_ => (),
+				}
+			});
+			executor.spawn(worker).unwrap();
+		} else {
+			swarms.push(swarm);
+		}
 	}
 
 	let mut to_notify = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
@@ -246,6 +258,10 @@ fn test_messages(
 		}
 	}
 
+	// keep in scope, but unused
+	let ext_notify = to_notify.split_off(num_peers);
+	let ext_wait = to_notify.split_off(num_peers);
+
 	let mut connect_futures = Vec::new();
 
 	for (p, (mut swarm, (mut to_notify, mut to_wait))) in swarms
@@ -253,6 +269,7 @@ fn test_messages(
 		.zip(to_notify.into_iter().zip(to_wait.into_iter()))
 		.enumerate()
 	{
+		let num_peers = if from_external && p == 1 { num_peers + 1 } else { num_peers };
 		let peer_future = async move {
 			let mut num_connected = 0;
 
@@ -286,7 +303,7 @@ fn test_messages(
 	}
 
 	let mut swarms = Vec::new();
-	while !connect_futures.is_empty() {
+	while !(connect_futures.is_empty() || (from_external && connect_futures.len() == 1)) {
 		let result = futures::future::select_all(connect_futures);
 		let ((swarm, p), _, rest) = async_std::task::block_on(result);
 		log::trace!(target: "mixnet", "Connecting {} completed", p);
@@ -312,7 +329,34 @@ fn test_messages(
 			),
 			Err(Error::Unreachable(_))
 		));
-		// surb is		NoPath(Some(PeerId("12D3KooWM9iUfQbeZ1vpLqwkngrGznRNkFzU9MJ97MUiNjoGQ31J")))
+		let (reply, connected) = futures::channel::oneshot::channel();
+
+		// connect
+		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
+		assert!(workers[num_peers].lock().unwrap().dial(
+			nodes[1].0.clone(),
+			vec![addr],
+			Some(reply),
+		));
+
+		// listen
+		while !connect_futures.is_empty() {
+			let result = futures::future::select_all(connect_futures);
+			let ((swarm, p), _, rest) = async_std::task::block_on(result);
+			log::trace!(target: "mixnet", "Connecting {} completed", p);
+			connect_futures = rest;
+			swarms.push((p, swarm));
+		}
+
+		let connected_future = async move {
+			let _ = connected.await;
+		};
+		let a = async_std::task::block_on(connected_future);
+
+		panic!("{:?}", a);
+		// register now work
+
+		// wait on receive
 		return
 	}
 
