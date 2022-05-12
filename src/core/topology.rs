@@ -111,7 +111,7 @@ pub trait Topology: Sized + Send + 'static {
 				return Err(Error::NoPath(Some(recipient_node.0.clone())))
 			}
 			let n: usize = rng.gen_range(0..firsts.len());
-			add_start = Some(start_node);
+			add_start = Some(firsts[n].clone());
 			firsts[n].0.clone()
 		};
 		let recipient = if self.is_routing(recipient_node.0) {
@@ -152,11 +152,7 @@ pub trait Topology: Sized + Send + 'static {
 			let n: usize = rng.gen_range(0..paths.len());
 			let mut path = paths[n].clone();
 			if let Some((peer, key)) = add_start {
-				if let Some(key) = key {
-					path.insert(0, (peer.clone(), key.clone()));
-				} else {
-					return Err(Error::NoPath(Some(recipient_node.0.clone())))
-				}
+				path.insert(0, (peer.clone(), key.clone()));
 			}
 			/*
 			if result.len() == count - 1 {

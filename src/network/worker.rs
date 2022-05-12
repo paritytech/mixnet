@@ -145,18 +145,6 @@ impl<T: Topology> MixnetWorker<T> {
 						}
 					} else if let Some(_con) = self.mixnet.connected_mut(&peer) {
 						log::error!("Trying to replace an existing connection for {:?}", peer);
-					/*
-					// TODO updating sound like a bad option.
-					if let Some(i) = inbound {
-						con.set_inbound(i);
-					}
-					con.inbound_waiting.1 = 0;
-					con.outbound = Box::pin(outbound);
-					con.outbound_waiting = None;
-					// TODO Warning this will disconect a connection: rather spawn an error and
-					// drop the query
-					con.oneshot_handler = handler;
-					*/
 					} else {
 						let con = Connection::new(handler, inbound, outbound);
 						self.mixnet.insert_connection(peer, con, established);
