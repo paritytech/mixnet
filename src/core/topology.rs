@@ -95,6 +95,7 @@ pub trait Topology: Sized + Send + 'static {
 		count: usize,
 		num_hops: usize,
 		max_hops: usize,
+		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		if num_hops > max_hops {
 			return Err(Error::TooManyHops)
@@ -118,11 +119,22 @@ pub trait Topology: Sized + Send + 'static {
 		} else {
 			let lasts = self.last_hop_nodes_external();
 			if lasts.len() == 0 {
-				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+				if let Some(query) = last_query_if_surb {
+					// reuse a node that was recently connected.
+					if let Some(rec) = query.get(1) {
+						add_end = Some(recipient_node);
+						rec.0.clone()
+					} else {
+						return Err(Error::NoPath(Some(recipient_node.0.clone())))
+					}
+				} else {
+					return Err(Error::NoPath(Some(recipient_node.0.clone())))
+				}
+			} else {
+				let n: usize = rng.gen_range(0..lasts.len());
+				add_end = Some(recipient_node);
+				lasts[n].0.clone()
 			}
-			let n: usize = rng.gen_range(0..lasts.len());
-			add_end = Some(recipient_node);
-			lasts[n].0.clone()
 		};
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
@@ -146,6 +158,16 @@ pub trait Topology: Sized + Send + 'static {
 					return Err(Error::NoPath(Some(recipient_node.0.clone())))
 				}
 			}
+			/*
+			if result.len() == count - 1 {
+				if let Some(last) = last_for_surb.as_mut() {
+					if path.len() > 1 {
+					let peer: Option<(MixPeerId, MixPublicKey)> = path.get(1).cloned();
+					**last = peer;
+					}
+				}
+			}
+			*/
 			if let Some((peer, key)) = add_end {
 				if let Some(key) = key {
 					path.push((peer.clone(), key.clone()));
@@ -240,6 +262,7 @@ impl Topology for NoTopology {
 		count: usize,
 		_num_hops: usize,
 		_max_hops: usize,
+		_last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		log::warn!(target: "mixnet", "No topology, direct transmission");
 		// No topology is defined. Check if direct connection is possible.

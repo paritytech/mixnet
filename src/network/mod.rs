@@ -101,14 +101,14 @@ impl MixnetBehaviour {
 			.map_err(|_| core::Error::WorkerChannelFull)
 	}
 
-	/// Send surbs reply.
-	pub fn send_surbs(
+	/// Send surb reply.
+	pub fn send_surb(
 		&mut self,
 		message: Vec<u8>,
-		surbs: SurbsPayload,
+		surb: SurbsPayload,
 	) -> std::result::Result<(), core::Error> {
 		self.mixnet_worker_sink
-			.start_send_unpin(WorkerIn::RegisterSurbs(message, surbs))
+			.start_send_unpin(WorkerIn::RegisterSurbs(message, surb))
 			.map_err(|_| core::Error::WorkerChannelFull)
 	}
 }
@@ -133,23 +133,23 @@ pub enum NetworkEvent {
 pub enum MessageType {
 	/// Message only.
 	StandAlone,
-	/// Message with a surbs for reply.
+	/// Message with a surb for reply.
 	WithSurbs(SurbsPayload),
-	/// Message from a surbs reply (trusted), and initial query
+	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
 	FromSurbs(Option<Vec<u8>>),
 }
 
 impl MessageType {
-	/// can the message a surbs reply.
-	pub fn with_surbs(&self) -> bool {
+	/// can the message a surb reply.
+	pub fn with_surb(&self) -> bool {
 		matches!(self, &MessageType::WithSurbs(_))
 	}
 
-	/// Extract surbs.
-	pub fn surbs(self) -> Option<SurbsPayload> {
+	/// Extract surb.
+	pub fn surb(self) -> Option<SurbsPayload> {
 		match self {
-			MessageType::WithSurbs(surbs) => Some(surbs),
+			MessageType::WithSurbs(surb) => Some(surb),
 			_ => None,
 		}
 	}

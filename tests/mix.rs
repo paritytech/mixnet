@@ -39,7 +39,7 @@ use std::{
 	task::Poll,
 };
 
-use mixnet::{MixPublicKey, SendOptions};
+use mixnet::{Error, MixPublicKey, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -138,7 +138,7 @@ fn test_messages(
 	num_peers: usize,
 	message_count: usize,
 	message_size: usize,
-	with_surbs: bool,
+	with_surb: bool,
 	from_external: bool,
 ) {
 	let _ = env_logger::try_init();
@@ -184,9 +184,9 @@ fn test_messages(
 			num_hops: 3,
 			average_message_delay_ms: 50,
 			limit_per_window: None,
-			persist_surbs_query: false,
+			persist_surb_query: false,
 			replay_ttl_ms: 100_000,
-			surbs_ttl_ms: 100_000,
+			surb_ttl_ms: 100_000,
 		};
 
 		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);
@@ -303,17 +303,16 @@ fn test_messages(
 		let index_external_2 = swarms.iter().position(|(p, _)| *p == num_peers + 1).unwrap();
 		assert_eq!(count_connection[num_peers].load(Ordering::Relaxed), 0);
 		assert_eq!(count_connection[num_peers + 1].load(Ordering::Relaxed), 0);
-		workers[num_peers]
-			.lock()
-			.unwrap()
-			.mixnet_mut()
-			.register_message(
+		assert!(matches!(
+			workers[num_peers].lock().unwrap().mixnet_mut().register_message(
 				Some(nodes[1].0.clone()),
 				None,
 				source_message.to_vec(),
-				SendOptions { num_hop: None, with_surbs },
-			)
-			.unwrap();
+				SendOptions { num_hop: None, with_surb },
+			),
+			Err(Error::Unreachable(_))
+		));
+		// surb is		NoPath(Some(PeerId("12D3KooWM9iUfQbeZ1vpLqwkngrGznRNkFzU9MJ97MUiNjoGQ31J")))
 		return
 	}
 
@@ -328,7 +327,7 @@ fn test_messages(
 				.send(
 					recipient.clone(),
 					source_message.to_vec(),
-					SendOptions { num_hop: None, with_surbs },
+					SendOptions { num_hop: None, with_surb },
 				)
 				.unwrap();
 		}
@@ -347,8 +346,8 @@ fn test_messages(
 						received += 1;
 						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
 						assert_eq!(source_message.as_slice(), message.as_slice());
-						if let Some(reply) = kind.surbs() {
-							swarm.behaviour_mut().send_surbs(b"pong".to_vec(), reply).unwrap();
+						if let Some(reply) = kind.surb() {
+							swarm.behaviour_mut().send_surb(b"pong".to_vec(), reply).unwrap();
 						}
 						if received == message_count {
 							return swarm
@@ -364,17 +363,17 @@ fn test_messages(
 	let mut done_futures = Vec::new();
 	let spin_future =
 		async move {
-			let mut expected_surbs = if with_surbs { Some(num_peers - 1) } else { None };
+			let mut expected_surb = if with_surb { Some(num_peers - 1) } else { None };
 			loop {
 				match peer0_swarm.select_next_some().await {
-					// TODO have surbs original message (can be small vec id: make it an input
+					// TODO have surb original message (can be small vec id: make it an input
 					// param) attached.
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
 						mixnet::DecodedMessage { peer: _, message, kind: _ },
 					)) => {
 						assert!(message.as_slice() == b"pong");
-						expected_surbs.as_mut().map(|nb| *nb -= 1);
-						if expected_surbs == Some(0) {
+						expected_surb.as_mut().map(|nb| *nb -= 1);
+						if expected_surb == Some(0) {
 							return peer0_swarm
 						}
 					},
@@ -400,15 +399,15 @@ fn test_messages(
 				done_futures.push(Box::pin(spin_future.boxed()));
 			},
 			Either::Right((t, _)) => {
-				// can only be with surbs of first
-				assert!(with_surbs);
+				// can only be with surb of first
+				assert!(with_surb);
 				let (_swarm, index, _rest) = t;
 				assert_eq!(index, 0);
 				return
 			},
 		}
 	}
-	while with_surbs {
+	while with_surb {
 		// TODO just if?
 		let result2 = futures::future::select_all(&mut done_futures);
 		match async_std::task::block_on(result2) {
@@ -421,32 +420,32 @@ fn test_messages(
 }
 
 #[test]
-fn message_exchange_no_surbs() {
+fn message_exchange_no_surb() {
 	test_messages(5, 10, 1, false, false);
 }
 
 #[test]
-fn fragmented_messages_no_surbs() {
+fn fragmented_messages_no_surb() {
 	test_messages(2, 1, 8 * 1024, false, false);
 }
 
 #[test]
-fn message_exchange_with_surbs() {
+fn message_exchange_with_surb() {
 	test_messages(5, 10, 1, true, false);
 }
 
 #[test]
-fn fragmented_messages_with_surbs() {
+fn fragmented_messages_with_surb() {
 	test_messages(2, 1, 8 * 1024, true, false);
 }
 
 #[test]
-fn from_external_with_surbs() {
+fn from_external_with_surb() {
 	test_messages(5, 1, 4 * 1024, true, true);
 }
 
 #[test]
-fn from_external_no_surbs() {
+fn from_external_no_surb() {
 	test_messages(5, 1, 4 * 1024, false, true);
 }
 

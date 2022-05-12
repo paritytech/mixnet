@@ -107,7 +107,7 @@ impl<T: Topology> MixnetWorker<T> {
 				None => {
 					// TODO could add delay and keep for a while in case connection happen later.
 					// TODO in principle should be checked in topology. Actually if forwarding to an
-					// external peer (eg surbs rep), this will need to dial (put rules behind a
+					// external peer (eg surb rep), this will need to dial (put rules behind a
 					// topology check).
 					log::error!(target: "mixnet", "Dropping packet, peer {:?} not connected in worker.", peer_id);
 				},
@@ -126,11 +126,11 @@ impl<T: Topology> MixnetWorker<T> {
 					}
 					return Poll::Ready(true)
 				},
-				WorkerIn::RegisterSurbs(message, surbs) => {
-					match self.mixnet.register_surbs(message, surbs) {
+				WorkerIn::RegisterSurbs(message, surb) => {
+					match self.mixnet.register_surb(message, surb) {
 						Ok(()) => (),
 						Err(e) => {
-							log::error!(target: "mixnet", "Error registering surbs: {:?}", e);
+							log::error!(target: "mixnet", "Error registering surb: {:?}", e);
 						},
 					}
 					return Poll::Ready(true)
@@ -217,11 +217,11 @@ impl<T: Topology> MixnetWorker<T> {
 
 	fn import_packet(&mut self, peer: MixPeerId, packet: Packet) -> bool {
 		match self.mixnet.import_message(peer, packet) {
-			Ok(Some((full_message, surbs))) => {
+			Ok(Some((full_message, surb))) => {
 				if let Err(e) = self.worker_out.start_send_unpin(WorkerOut::ReceivedMessage(
 					peer,
 					full_message,
-					surbs,
+					surb,
 				)) {
 					log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					if e.is_disconnected() {

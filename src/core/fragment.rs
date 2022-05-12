@@ -21,7 +21,7 @@
 //!
 //! Size is bounded to `MAX_MESSAGE_SIZE`.
 //!
-//! In case the content allow reply, the surbs must
+//! In case the content allow reply, the surb must
 //! fit in the first fragment and is presence
 //! is only announced in this fragement.
 
@@ -43,7 +43,7 @@ pub const FRAGMENT_PACKET_SIZE: usize = 2048;
 pub struct Fragment {
 	buf: Vec<u8>,
 	index: u32,
-	with_surbs: bool,
+	with_surb: bool,
 }
 
 impl Fragment {
@@ -52,7 +52,7 @@ impl Fragment {
 		let mut buf = vec![0; FRAGMENT_PACKET_SIZE];
 		buf[0..4].copy_from_slice(&COVER_TAG[..]);
 		rng.fill_bytes(&mut buf[4..]);
-		Fragment { buf, index: 0, with_surbs: false }
+		Fragment { buf, index: 0, with_surb: false }
 	}
 
 	pub fn create(
@@ -61,7 +61,7 @@ impl Fragment {
 		iv: &[u8],
 		message_len: u32,
 		chunk: &[u8],
-		with_surbs: bool,
+		with_surb: bool,
 	) -> Fragment {
 		let mut buf = Vec::with_capacity(FRAGMENT_PACKET_SIZE);
 		buf.extend_from_slice(&index.to_be_bytes());
@@ -74,13 +74,13 @@ impl Fragment {
 		// chunk size must match (need to be padded).
 		buf.extend_from_slice(chunk);
 
-		debug_assert!(if with_surbs && index == 0 {
+		debug_assert!(if with_surb && index == 0 {
 			buf.len() == FRAGMENT_PACKET_SIZE - SURBS_REPLY_SIZE
 		} else {
 			buf.len() == FRAGMENT_PACKET_SIZE
 		});
 
-		Fragment { buf, index, with_surbs }
+		Fragment { buf, index, with_surb }
 	}
 
 	fn hash(&self) -> MessageHash {
@@ -91,8 +91,8 @@ impl Fragment {
 
 	// TODO just use packet buff?: likely -> yes for building.
 	pub fn from_message(fragment: Vec<u8>, kind: &MessageType) -> Result<Option<Self>, Error> {
-		let with_surbs = kind.with_surbs();
-		if !with_surbs && fragment.len() != FRAGMENT_PACKET_SIZE {
+		let with_surb = kind.with_surb();
+		if !with_surb && fragment.len() != FRAGMENT_PACKET_SIZE {
 			return Err(Error::BadFragment)
 		}
 		if fragment[..4] == COVER_TAG {
@@ -103,7 +103,7 @@ impl Fragment {
 		index.copy_from_slice(&fragment[..4]);
 		let index = u32::from_be_bytes(index);
 
-		if with_surbs {
+		if with_surb {
 			if fragment.len() != FRAGMENT_PACKET_SIZE - SURBS_REPLY_SIZE {
 				return Err(Error::BadFragment)
 			}
@@ -112,7 +112,7 @@ impl Fragment {
 			}
 		}
 
-		Ok(Some(Fragment { buf: fragment, index, with_surbs }))
+		Ok(Some(Fragment { buf: fragment, index, with_surb }))
 	}
 
 	pub fn iv(&self) -> Option<Box<[u8; 32]>> {
@@ -175,8 +175,8 @@ struct IncompleteMessage {
 
 impl IncompleteMessage {
 	fn current_len(&self) -> usize {
-		let surbs_len = if self.kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
-		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surbs_len
+		let surb_len = if self.kind.with_surb() { SURBS_REPLY_SIZE } else { 0 };
+		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surb_len
 	}
 
 	fn is_complete(&self) -> bool {
@@ -191,8 +191,8 @@ impl IncompleteMessage {
 
 	fn total_expected_fragments(&self) -> Option<usize> {
 		self.target_len.map(|target_len| {
-			let surbs_len = if self.kind.with_surbs() { SURBS_REPLY_SIZE } else { 0 };
-			(target_len as usize + surbs_len) / FRAGMENT_PAYLOAD_SIZE + 1
+			let surb_len = if self.kind.with_surb() { SURBS_REPLY_SIZE } else { 0 };
+			(target_len as usize + surb_len) / FRAGMENT_PAYLOAD_SIZE + 1
 		})
 	}
 
@@ -256,14 +256,14 @@ impl MessageCollection {
 		let expires_ix = self.0.next_inserted_entry();
 		match self.0.entry(fragment.hash()) {
 			Entry::Occupied(mut e) => {
-				let with_surbs = fragment.with_surbs;
+				let with_surb = fragment.with_surb;
 				let index = fragment.index;
 				if index == 0 {
 					e.get_mut().0.target_len = fragment.message_len();
 					e.get_mut().0.target_iv = fragment.iv();
 				}
 				e.get_mut().0.fragments.insert(index, fragment);
-				if with_surbs {
+				if with_surb {
 					e.get_mut().0.kind = kind;
 				}
 				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().0.num_fragments(), e.get().0.total_expected_fragments());
@@ -311,15 +311,15 @@ impl MessageCollection {
 pub fn create_fragments(
 	rng: &mut impl Rng,
 	mut message: Vec<u8>,
-	with_surbs: bool,
+	with_surb: bool,
 ) -> Result<Vec<Fragment>, Error> {
 	assert!(SURBS_REPLY_SIZE < FRAGMENT_FIRST_CHUNK_PAYLOAD_SIZE); // TODO const assert?
-	let surbs_len = if with_surbs { SURBS_REPLY_SIZE } else { 0 };
+	let surb_len = if with_surb { SURBS_REPLY_SIZE } else { 0 };
 	let additional_first_header = FRAGMENT_FIRST_CHUNK_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
 	if message.len() > MAX_MESSAGE_SIZE {
 		return Err(Error::MessageTooLarge)
 	}
-	let len_no_header = message.len() + surbs_len + additional_first_header;
+	let len_no_header = message.len() + surb_len + additional_first_header;
 	let mut iv = [0u8; 32];
 	rng.fill_bytes(&mut iv);
 	let hash = hash(&iv[..], &message);
@@ -327,15 +327,15 @@ pub fn create_fragments(
 	let pad =
 		(FRAGMENT_PAYLOAD_SIZE - len_no_header % FRAGMENT_PAYLOAD_SIZE) % FRAGMENT_PAYLOAD_SIZE;
 	message.resize(message.len() + pad, 0);
-	let nb_chunks = (message.len() + surbs_len + additional_first_header) / FRAGMENT_PAYLOAD_SIZE;
+	let nb_chunks = (message.len() + surb_len + additional_first_header) / FRAGMENT_PAYLOAD_SIZE;
 	debug_assert!(
-		(message.len() + surbs_len + additional_first_header) % FRAGMENT_PAYLOAD_SIZE == 0
+		(message.len() + surb_len + additional_first_header) % FRAGMENT_PAYLOAD_SIZE == 0
 	);
 	let mut offset = 0;
 	let mut fragments = Vec::with_capacity(nb_chunks);
 	for n in 0..nb_chunks {
 		let additional_header = if n == 0 { additional_first_header } else { 0 };
-		let fragment_len = if with_surbs && n == 0 {
+		let fragment_len = if with_surb && n == 0 {
 			FRAGMENT_PAYLOAD_SIZE - SURBS_REPLY_SIZE - additional_header
 		} else {
 			FRAGMENT_PAYLOAD_SIZE - additional_header
@@ -343,7 +343,7 @@ pub fn create_fragments(
 		let chunk = &message[offset..offset + fragment_len];
 		offset += fragment_len;
 		let fragment =
-			Fragment::create(n as u32, hash, iv.as_slice(), message_len as u32, chunk, with_surbs);
+			Fragment::create(n as u32, hash, iv.as_slice(), message_len as u32, chunk, with_surb);
 		fragments.push(fragment);
 	}
 	Ok(fragments)

@@ -52,12 +52,12 @@ pub struct Config {
 	/// `None` is unlimited.
 	/// Window is `WINDOW_BACKPRESSURE` duration.
 	pub limit_per_window: Option<u32>,
-	/// Retention time until we drop surbs query.
-	pub surbs_ttl_ms: u64,
-	/// Retention time until we drop surbs replay protection.
+	/// Retention time until we drop surb query.
+	pub surb_ttl_ms: u64,
+	/// Retention time until we drop surb replay protection.
 	pub replay_ttl_ms: u64,
-	/// Do we keep trace of query with the surbs keys.
-	pub persist_surbs_query: bool,
+	/// Do we keep trace of query with the surb keys.
+	pub persist_surb_query: bool,
 }
 
 impl Config {
@@ -71,9 +71,9 @@ impl Config {
 			num_hops: 3,
 			average_message_delay_ms: 500,
 			limit_per_window: Some((WINDOW_BACKPRESSURE.as_millis() as u32 / 250) * 2),
-			surbs_ttl_ms: 100_000,
+			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
-			persist_surbs_query: true,
+			persist_surb_query: true,
 		}
 	}
 }

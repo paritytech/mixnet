@@ -188,8 +188,8 @@ pub struct Mixnet<T, C> {
 	connected_peers: HashMap<MixPeerId, ManagedConnection<C>>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
-	// Message waiting for surbs.
-	surbs: SurbsCollection,
+	// Message waiting for surb.
+	surb: SurbsCollection,
 	// Received message filter.
 	replay_filter: ReplayFilter,
 	// Timer for the next poll for messages.
@@ -198,9 +198,9 @@ pub struct Mixnet<T, C> {
 	average_traffic_delay: Duration,
 	// Average delay for each packet at each hop.
 	average_hop_delay: Duration,
-	// If true keep original message with surbs
-	// and return it with surbs reply.
-	persist_surbs_query: bool,
+	// If true keep original message with surb
+	// and return it with surb reply.
+	persist_surb_query: bool,
 
 	// TODO replace by a rec limit over a window
 	// with a given number of received message = to the number
@@ -229,9 +229,9 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let now = Instant::now();
 		Mixnet {
 			topology,
-			surbs: SurbsCollection::new(&config),
+			surb: SurbsCollection::new(&config),
 			replay_filter: ReplayFilter::new(&config),
-			persist_surbs_query: config.persist_surbs_query,
+			persist_surb_query: config.persist_surb_query,
 			num_hops: config.num_hops as usize,
 			public: config.public_key,
 			secret: config.secret_key,
@@ -360,22 +360,28 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
-		let mut surbs_query =
-			(self.persist_surbs_query && send_options.with_surbs).then(|| message.clone());
+		let mut surb_query =
+			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 
-		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surbs)?;
+		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surb)?;
 		let paths = self.random_paths(
 			&peer_id,
 			peer_pub_key.as_ref(),
 			&send_options.num_hop,
 			chunks.len(),
-			false,
+			None,
 		)?;
 
-		let mut surbs = if send_options.with_surbs {
+		let mut surb = if send_options.with_surb {
 			//let ours = (MixPeerId, MixPublicKey);
 			let paths = self
-				.random_paths(&peer_id, peer_pub_key.as_ref(), &send_options.num_hop, 1, true)?
+				.random_paths(
+					&peer_id,
+					peer_pub_key.as_ref(),
+					&send_options.num_hop,
+					1,
+					paths.last(),
+				)?
 				.remove(0);
 			let first_node = to_sphinx_id(&paths[0].0).unwrap();
 			let paths: Vec<_> = paths
@@ -401,13 +407,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 					public_key: (*key).into(),
 				})
 				.collect();
-			let chunk_surbs = if n == 0 { surbs.take() } else { None };
-			let (packet, surbs_keys) =
-				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surbs)
+			let chunk_surb = if n == 0 { surb.take() } else { None };
+			let (packet, surb_keys) =
+				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(|e| Error::SphinxError(e))?;
-			if let Some((keys, surbs_id)) = surbs_keys {
-				let persistance = SurbsPersistance { keys, query: surbs_query.take() };
-				self.surbs.insert(surbs_id, persistance, self.last_now);
+			if let Some((keys, surb_id)) = surb_keys {
+				let persistance = SurbsPersistance { keys, query: surb_query.take() };
+				self.surb.insert(surb_id, persistance, self.last_now);
 			}
 			packets.push((first_id, packet));
 		}
@@ -425,10 +431,10 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		Ok(())
 	}
 
-	/// Send a new surbs message to the network.
+	/// Send a new surb message to the network.
 	/// Message cannot be bigger than a single fragment.
-	pub fn register_surbs(&mut self, message: Vec<u8>, surbs: SurbsPayload) -> Result<(), Error> {
-		let SurbsPayload { first_node, first_key, header } = surbs;
+	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbsPayload) -> Result<(), Error> {
+		let SurbsPayload { first_node, first_key, header } = surb;
 		let mut rng = rand::thread_rng();
 
 		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
@@ -436,7 +442,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			return Err(Error::BadSurbsLength)
 		}
 
-		let packet = sphinx::new_surbs_packet(first_key, chunks.remove(0).into_vec(), header)
+		let packet = sphinx::new_surb_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(|e| Error::SphinxError(e))?;
 		let dest = to_libp2p_id(first_node)?;
 		if self.topology.neighbors(&self.local_id).is_some() {
@@ -445,8 +451,8 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			self.queue_packet(dest, packet, delay)?;
 		} else {
 			// TODO this would need to attempt dial (or just
-			// generate surbs passing by same peer as the one we
-			// just received: means surbs reply should be done
+			// generate surb passing by same peer as the one we
+			// just received: means surb reply should be done
 			// quickly).
 			self.queue_external_packet(dest, packet)?;
 		}
@@ -466,7 +472,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		let result = sphinx::unwrap_packet(
 			&self.secret,
 			message,
-			&mut self.surbs,
+			&mut self.surb,
 			&mut self.replay_filter,
 			next_delay,
 		);
@@ -487,22 +493,22 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				if let Some(m) =
 					self.fragments.insert_fragment(payload, MessageType::FromSurbs(query))?
 				{
-					log::debug!(target: "mixnet", "Imported surbs from {} ({} bytes)", peer_id, m.0.len());
+					log::debug!(target: "mixnet", "Imported surb from {} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
 					log::error!(target: "mixnet", "Surbs fragment from {}", peer_id);
 				}
 			},
-			Ok(Unwrapped::SurbsQuery(encoded_surbs, payload)) => {
-				debug_assert!(encoded_surbs.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
+			Ok(Unwrapped::SurbsQuery(encoded_surb, payload)) => {
+				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
 				if let Some(m) = self
 					.fragments
-					.insert_fragment(payload, MessageType::WithSurbs(encoded_surbs.into()))?
+					.insert_fragment(payload, MessageType::WithSurbs(encoded_surb.into()))?
 				{
 					log::debug!(target: "mixnet", "Imported message from {} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
-					log::warn!(target: "mixnet", "Inserted fragment message from {}, stored surbs enveloppe.", peer_id);
+					log::warn!(target: "mixnet", "Inserted fragment message from {}, stored surb enveloppe.", peer_id);
 				}
 			},
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
@@ -527,9 +533,9 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		recipient_key: Option<&MixPublicKey>,
 		num_hops: &Option<usize>,
 		count: usize,
-		surbs: bool,
+		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		let (start, recipient) = if surbs {
+		let (start, recipient) = if last_query_if_surb.is_some() {
 			((recipient, recipient_key), (&self.local_id, Some(&self.public)))
 		} else {
 			((&self.local_id, Some(&self.public)), (recipient, recipient_key))
@@ -541,12 +547,19 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		}
 
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
-		self.topology.random_path(start, recipient, count, num_hops, sphinx::MAX_HOPS)
+		self.topology.random_path(
+			start,
+			recipient,
+			count,
+			num_hops,
+			sphinx::MAX_HOPS,
+			last_query_if_surb,
+		)
 	}
 
 	fn cleanup(&mut self, now: Instant) {
 		self.fragments.cleanup(now);
-		self.surbs.cleanup(now);
+		self.surb.cleanup(now);
 		self.replay_filter.cleanup(now);
 	}
 
@@ -654,9 +667,9 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		results: &mut WorkerSink2,
 	) -> bool {
 		match self.import_message(peer, packet) {
-			Ok(Some((full_message, surbs))) => {
+			Ok(Some((full_message, surb))) => {
 				if let Err(e) =
-					results.start_send_unpin(WorkerOut::ReceivedMessage(peer, full_message, surbs))
+					results.start_send_unpin(WorkerOut::ReceivedMessage(peer, full_message, surb))
 				{
 					log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					if e.is_disconnected() {
@@ -679,7 +692,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	}
 }
 
-/// Message id, use as surbs key and replay protection.
+/// Message id, use as surb key and replay protection.
 /// This is the result of hashing the secret.
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 pub struct ReplayTag([u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
@@ -690,7 +703,7 @@ pub struct SurbsCollection {
 
 impl SurbsCollection {
 	pub fn new(config: &Config) -> Self {
-		SurbsCollection { pending: MixnetCollection::new(config.surbs_ttl_ms) }
+		SurbsCollection { pending: MixnetCollection::new(config.surb_ttl_ms) }
 	}
 
 	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance, now: Instant) {
@@ -844,7 +857,7 @@ pub(crate) fn cover_message_to(peer_id: &MixPeerId, peer_key: MixPublicKey) -> O
 	let message = fragment::Fragment::create_cover_fragment(&mut rng);
 	let hops =
 		vec![sphinx::PathHop { id: to_sphinx_id(peer_id).unwrap(), public_key: peer_key.into() }];
-	let (packet, _no_surbs) = sphinx::new_packet(&mut rng, hops, message.into_vec(), None).ok()?;
+	let (packet, _no_surb) = sphinx::new_packet(&mut rng, hops, message.into_vec(), None).ok()?;
 	Some(packet)
 }
 
