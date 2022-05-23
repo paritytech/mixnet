@@ -24,12 +24,8 @@
 //
 // Notable changes include:
 // * Switching to Lioness cipher for payload encryption.
-// * Rewrite support for SURBs:
-// Attachment of surb or reply of surb can be read from a specific fix node id.
-// (usefull to drop frame without payload read if no surb persistence, surb is indexed by
-// its sprpkey)
-// * Simplifying routing commands into a fixed structure (specific node id are used instead of a
-// byte variant).
+// * Simplifying routing commands into a fixed structure: a node id and some reserved node id for
+// the command variant (last nodes, last node with SURBS and last node from SURBS).
 // * Drop support for Delay command.
 
 ///! Sphinx packet format.
@@ -557,11 +553,9 @@ mod test {
     privacy, but electronic technologies do.";
 
 		let keypair = libp2p_core::identity::Keypair::generate_ed25519();
-		let config = if let libp2p_core::identity::Keypair::Ed25519(kp) = &keypair {
-			crate::Config::new_with_ed25519_keypair(&kp, keypair.public().clone().into())
-		} else {
-			unreachable!()
-		};
+		let network_id = keypair.public().clone().into();
+		let id = crate::core::to_sphinx_id(&network_id).unwrap();
+		let config = crate::Config::new(id);
 		// Generate the "nodes" and path for the forward sphinx packet.
 		let mut num_hops = 1;
 		while num_hops <= MAX_HOPS {

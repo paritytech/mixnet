@@ -20,9 +20,7 @@
 
 //! Mixnet configuration.
 
-use libp2p_core::identity::ed25519::Keypair;
-
-use crate::{public_from_ed25519, secret_from_ed25519, MixPeerId, MixPublicKey, MixSecretKey};
+use crate::{MixPeerId, MixPublicKey, MixSecretKey};
 
 const WINDOW_BACKPRESSURE: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -51,7 +49,9 @@ pub struct Config {
 	/// limit for routing peers.
 	/// `None` is unlimited.
 	/// Window is `WINDOW_BACKPRESSURE` duration.
-	pub limit_per_window: Option<u32>,
+	pub limit_per_window: Option<usize>,
+	/// Same as `limit_per_window` but for connection that are routing.
+	pub limit_per_window_routing: Option<u32>,
 	/// Retention time until we drop surb query.
 	pub surb_ttl_ms: u64,
 	/// Retention time until we drop surb replay protection.
@@ -61,16 +61,30 @@ pub struct Config {
 }
 
 impl Config {
-	pub fn new_with_ed25519_keypair(kp: &Keypair, id: MixPeerId) -> Self {
+	pub fn new(id: MixPeerId) -> Self {
+		let mut secret = [0u8; 32];
+		use rand::RngCore;
+		rand::thread_rng().fill_bytes(&mut secret);
+		let secret_key: MixSecretKey = secret.into();
+		let public_key = MixPublicKey::from(&secret_key);
+		Self::new_with_keys(id, public_key, secret_key)
+	}
+
+	pub fn new_with_keys(
+		id: MixPeerId,
+		public_key: MixPublicKey,
+		secret_key: MixSecretKey,
+	) -> Self {
 		Self {
-			secret_key: secret_from_ed25519(&kp.secret()),
-			public_key: public_from_ed25519(&kp.public()),
+			secret_key,
+			public_key,
 			local_id: id,
 			target_bits_per_second: 128 * 1024,
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
-			limit_per_window: Some((WINDOW_BACKPRESSURE.as_millis() as u32 / 250) * 2),
+			limit_per_window: Some((WINDOW_BACKPRESSURE.as_millis() as usize / 250) * 2),
+			limit_per_window_routing: None,
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 			persist_surb_query: true,

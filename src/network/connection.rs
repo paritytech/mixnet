@@ -32,38 +32,35 @@ use libp2p_swarm::NegotiatedSubstream;
 
 /// Internal information tracked for an established connection.
 pub struct Connection {
-	inbound: Option<Pin<Box<NegotiatedSubstream>>>, // TODO remove some pin with Ext traits
-	outbound: Pin<Box<NegotiatedSubstream>>,        /* TODO just use a single stream for in and
-	                                                 * out? */
-	outbound_waiting: Option<(Vec<u8>, usize)>,
-	inbound_waiting: (Vec<u8>, usize),
-	// number of allowed message
-	// in a window of time (can be modified
-	// specifically by trait).
+	inbound: Option<Pin<Box<NegotiatedSubstream>>>,
+	outbound: Pin<Box<NegotiatedSubstream>>,
+	outbound_buffer: Option<(Vec<u8>, usize)>,
 	outbound_flushing: bool,
-	// inform connection handler when closing.
-	// TODO just used by recv fail on dropping: use another type
-	oneshot_handler: Option<OneShotSender<()>>,
+	inbound_buffer: (Box<[u8; PACKET_SIZE]>, usize),
+	// put in pending state while waiting for inbound stream.
 	waker: Option<std::task::Waker>,
+	// Inform connection handler when connection is dropped.
+	close_handler: Option<OneShotSender<()>>,
 }
 
 impl Drop for Connection {
 	fn drop(&mut self) {
-		self.oneshot_handler.take().map(|s| s.send(()));
+		self.close_handler.take().map(|s| s.send(()));
 	}
 }
 
 impl ConnectionT for Connection {
-	fn try_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>> {
-		if self.outbound_waiting.is_some() || self.outbound_flushing {
+	fn try_queue_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>> {
+		if self.outbound_buffer.is_some() || self.outbound_flushing {
 			Some(message)
 		} else {
-			self.outbound_waiting = Some((message, 0));
+			self.outbound_buffer = Some((message, 0));
 			None
 		}
 	}
+
 	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
-		if let Some((waiting, mut ix)) = self.outbound_waiting.as_mut() {
+		if let Some((waiting, mut ix)) = self.outbound_buffer.as_mut() {
 			match self.outbound.as_mut().poll_write(cx, &waiting[ix..]) {
 				Poll::Ready(Ok(nb)) => {
 					ix += nb;
@@ -71,7 +68,7 @@ impl ConnectionT for Connection {
 						return Poll::Ready(Ok(true))
 					}
 					self.outbound_flushing = true;
-					self.outbound_waiting = None;
+					self.outbound_buffer = None;
 				},
 				Poll::Ready(Err(e)) => {
 					log::trace!(target: "mixnet", "Error writing: {:?}", e);
@@ -99,23 +96,29 @@ impl ConnectionT for Connection {
 	}
 
 	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>> {
+		if size > PACKET_SIZE {
+			return Poll::Ready(Err(()))
+		}
 		match self.inbound.as_mut().map(|inbound| {
 			inbound
 				.as_mut()
-				.poll_read(cx, &mut self.inbound_waiting.0[self.inbound_waiting.1..])
+				.poll_read(cx, &mut self.inbound_buffer.0[self.inbound_buffer.1..])
 		}) {
 			Some(Poll::Ready(Ok(nb))) => {
-				self.inbound_waiting.1 += nb;
-				let message = if self.inbound_waiting.1 == size {
-					self.inbound_waiting.1 = 0;
-					if size == self.inbound_waiting.0.len() {
-						Some(self.inbound_waiting.0.clone())
+				// Some implementation return 0 on disconnection.
+				if nb == 0 && size != 0 {
+					log::error!(target: "mixnet", "Transport reading 0 byte, disconnecting.");
+					return Poll::Ready(Err(()))
+				}
+				self.inbound_buffer.1 += nb;
+				let message = (self.inbound_buffer.1 == size).then(|| {
+					self.inbound_buffer.1 = 0;
+					if size == self.inbound_buffer.0.len() {
+						self.inbound_buffer.0.to_vec()
 					} else {
-						Some(self.inbound_waiting.0[..size].to_vec())
+						self.inbound_buffer.0[..size].to_vec()
 					}
-				} else {
-					None
-				};
+				});
 				Poll::Ready(Ok(message))
 			},
 			Some(Poll::Ready(Err(e))) => {
@@ -135,17 +138,17 @@ impl ConnectionT for Connection {
 
 impl Connection {
 	pub fn new(
-		oneshot_handler: OneShotSender<()>,
+		close_handler: OneShotSender<()>,
 		inbound: Option<NegotiatedSubstream>,
 		outbound: NegotiatedSubstream,
 	) -> Self {
 		Self {
 			inbound: inbound.map(|i| Box::pin(i)),
 			outbound: Box::pin(outbound),
-			outbound_waiting: None,
-			inbound_waiting: (vec![0; PACKET_SIZE], 0),
+			outbound_buffer: None,
+			inbound_buffer: (Box::new([0u8; PACKET_SIZE]), 0),
 			outbound_flushing: false,
-			oneshot_handler: Some(oneshot_handler),
+			close_handler: Some(close_handler),
 			waker: None,
 		}
 	}

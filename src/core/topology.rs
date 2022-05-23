@@ -20,7 +20,7 @@
 
 //! Mixnet topology interface.
 
-use crate::{Error, MixPeerId, MixPublicKey};
+use crate::{core::NetworkPeerId, Error, MixPeerId, MixPublicKey};
 use rand::Rng;
 
 /// Provide network topology information to the mixnet.
@@ -34,36 +34,33 @@ pub trait Topology: Sized + Send + 'static {
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
 	/// Return `None` if peer is not routing.
-	/// TODO if removing random_path default implementation, this can be removed too.
-	/// These are live neighbors.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
+	/// Check if a peer is in topology.
 	fn is_routing(&self, id: &MixPeerId) -> bool {
 		self.neighbors(id).is_some()
 	}
 
-	/*	/// Allowed neighbors that are not live.
-		/// This method is used to try connection periodically.
-		fn try_connect_neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-			None
-		} -> can be done externally with dial on topo init or change
-	*/
 	/// Nodes that can be first hop.
 	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)>;
 
 	/// first hop nodes that may allow external node connection.
 	fn first_hop_nodes_external(&self, _from: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
 
-	/// Exit nodes, attempt connection to dest node
-	fn last_hop_nodes_external(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		// TODO implement or consider removal
-		vec![]
-	}
-
 	fn is_first_node(&self, _id: &MixPeerId) -> bool;
 
 	/// If external is allowed, it returns a ratio of
 	/// routing node bandwidth to use.
+	fn allowed_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
+		None
+	}
+
+	/// If external is allowed, it returns a ratio of
+	/// routing node bandwidth to use.
+	/// This method also register the external peer.
+	/// TODO have an explicit reserve external and an allow + routing_to
+	/// would need to take external pool in consideration.
+	/// TODO remove : topology handshake should handle that
 	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
 		None
 	}
@@ -117,23 +114,16 @@ pub trait Topology: Sized + Send + 'static {
 		let recipient = if self.is_routing(recipient_node.0) {
 			recipient_node.0.clone()
 		} else {
-			let lasts = self.last_hop_nodes_external();
-			if lasts.len() == 0 {
-				if let Some(query) = last_query_if_surb {
-					// reuse a node that was recently connected.
-					if let Some(rec) = query.get(0) {
-						add_end = Some(recipient_node);
-						rec.0.clone()
-					} else {
-						return Err(Error::NoPath(Some(recipient_node.0.clone())))
-					}
+			if let Some(query) = last_query_if_surb {
+				// reuse a node that was recently connected.
+				if let Some(rec) = query.get(0) {
+					add_end = Some(recipient_node);
+					rec.0.clone()
 				} else {
 					return Err(Error::NoPath(Some(recipient_node.0.clone())))
 				}
 			} else {
-				let n: usize = rng.gen_range(0..lasts.len());
-				add_end = Some(recipient_node);
-				lasts[n].0.clone()
+				return Err(Error::NoPath(Some(recipient_node.0.clone())))
 			}
 		};
 		// Generate all possible paths and select one at random
@@ -200,6 +190,26 @@ pub trait Topology: Sized + Send + 'static {
 
 	/// On disconnect.
 	fn disconnect(&mut self, id: &MixPeerId);
+
+	fn handshake_size(&self) -> usize;
+
+	fn check_handshake(
+		&mut self,
+		payload: &[u8],
+		from: &NetworkPeerId,
+	) -> Option<(MixPeerId, MixPublicKey)>;
+
+	/// On handshake, can extract peer id and publickey.
+	///
+	/// Return None if peer is filtered by network id.
+	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>>;
+
+	/// Utils that should be call when using `check_handshake`.
+	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		self.routing_to(&local_id, peer_id) ||
+			self.routing_to(peer_id, &local_id) ||
+			self.allowed_external(peer_id).is_some()
+	}
 }
 
 fn gen_paths<T: Topology>(
@@ -236,15 +246,19 @@ pub struct NoTopology {
 }
 
 impl Topology for NoTopology {
-	fn random_recipient(&self, local_id: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)> {
+	fn random_recipient(&self, from: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)> {
 		use rand::prelude::IteratorRandom;
 		let mut rng = rand::thread_rng();
 		// Select a random connected peer
 		self.connected_peers
 			.iter()
-			.filter(|(k, _v)| k != &local_id)
+			.filter(|(k, _v)| k != &from)
 			.choose(&mut rng)
 			.map(|(k, v)| (k.clone(), v.clone()))
+	}
+
+	fn allowed_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
+		Some((1, 1))
 	}
 
 	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
@@ -308,5 +322,22 @@ impl Topology for NoTopology {
 	}
 	fn disconnect(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
+	}
+	fn handshake_size(&self) -> usize {
+		32
+	}
+	fn check_handshake(
+		&mut self,
+		payload: &[u8],
+		from: &NetworkPeerId,
+	) -> Option<(MixPeerId, MixPublicKey)> {
+		let peer_id = crate::core::to_sphinx_id(from).ok()?;
+		let mut pk = [0u8; crate::core::PUBLIC_KEY_LEN];
+		pk.copy_from_slice(&payload[..]);
+		let pk = MixPublicKey::from(pk);
+		Some((peer_id, pk))
+	}
+	fn handshake(&mut self, _with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+		Some(public_key.to_bytes().to_vec())
 	}
 }

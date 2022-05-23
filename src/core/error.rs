@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, Packet, SphinxPeerId};
+use crate::core::{sphinx::Error as SphinxError, Packet};
 use crate::MixPeerId;
 use std::fmt;
 
@@ -35,9 +35,9 @@ pub enum Error {
 	/// Not enough peers.
 	NotEnoughRoutingPeers,
 	/// Invalid network id.
-	InvalidId(MixPeerId),
+	InvalidId(libp2p_core::PeerId),
 	/// Invalid id in the Sphinx packet.
-	InvalidSphinxId(SphinxPeerId),
+	InvalidSphinxId(MixPeerId),
 	/// Invalid message fragment format.
 	BadFragment,
 	/// Packet queue is full.
@@ -51,6 +51,8 @@ pub enum Error {
 	/// Destination peer not connected.
 	/// Depending on use case, dial could be attempted here.
 	Unreachable(Packet),
+	/// No sphinx id from handshake.
+	NoSphinxId,
 }
 
 impl fmt::Display for Error {
@@ -58,11 +60,7 @@ impl fmt::Display for Error {
 		match self {
 			Error::MessageTooLarge => write!(f, "Mix message is too large."),
 			Error::SphinxError(e) => write!(f, "Sphinx packet format error: {:?}.", e),
-			Error::NoPath(p) => write!(
-				f,
-				"No path to {}.",
-				p.map(|p| p.to_string()).unwrap_or_else(|| "unknown peer".into())
-			),
+			Error::NoPath(p) => write!(f, "No path to {:?}.", p),
 			Error::NotEnoughRoutingPeers => write!(f, "Not enough routing peers."),
 			Error::InvalidId(id) => write!(f, "Invalid peer id: {}.", id),
 			Error::InvalidSphinxId(id) =>
@@ -73,6 +71,7 @@ impl fmt::Display for Error {
 			Error::WorkerChannelFull => write!(f, "Worker channel is full."),
 			Error::TooManyHops => write!(f, "Too many hops for mixnet."),
 			Error::Unreachable(_) => write!(f, "Destination peer not connected."),
+			Error::NoSphinxId => write!(f, "Sphinx Id not obtain from handshake."),
 		}
 	}
 }
