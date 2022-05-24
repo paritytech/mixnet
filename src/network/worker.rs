@@ -160,7 +160,7 @@ impl<T: Topology> MixnetWorker<T> {
 	fn disconnect_peer(&mut self, peer: &PeerId) {
 		log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 		log::error!(target: "mixnet", "Disconnecting peer {:?}", peer);
-		if let Err(e) = self.worker_out.start_send_unpin(MixnetEvent::Disconnected(peer.clone())) {
+		if let Err(e) = self.worker_out.start_send_unpin(MixnetEvent::Disconnected(*peer)) {
 			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 		}
 		self.mixnet.remove_connected_peer(peer);

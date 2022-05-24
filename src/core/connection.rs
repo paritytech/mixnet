@@ -265,7 +265,7 @@ impl<C: Connection> ManagedConnection<C> {
 				topology.allowed_external(peer_id).is_none()
 			{
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
-				return Err(crate::Error::NoPath(Some(peer_id.clone())))
+				return Err(crate::Error::NoPath(Some(*peer_id)))
 			}
 			self.packet_queue.push(packet);
 			Ok(())

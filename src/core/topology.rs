@@ -101,28 +101,28 @@ pub trait Topology: Sized + Send + 'static {
 		let mut add_start = None;
 		let mut add_end = None;
 		let start = if self.is_first_node(start_node.0) {
-			start_node.0.clone()
+			*start_node.0
 		} else {
 			let firsts = self.first_hop_nodes_external(start_node.0);
-			if firsts.len() == 0 {
-				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+			if firsts.is_empty() {
+				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
 			let n: usize = rng.gen_range(0..firsts.len());
-			add_start = Some(firsts[n].clone());
-			firsts[n].0.clone()
+			add_start = Some(firsts[n]);
+			firsts[n].0
 		};
 		let recipient = if self.is_routing(recipient_node.0) {
-			recipient_node.0.clone()
+			*recipient_node.0
 		} else if let Some(query) = last_query_if_surb {
 			// reuse a node that was recently connected.
 			if let Some(rec) = query.get(0) {
 				add_end = Some(recipient_node);
-				rec.0.clone()
+				rec.0
 			} else {
-				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
 		} else {
-			return Err(Error::NoPath(Some(recipient_node.0.clone())))
+			return Err(Error::NoPath(Some(*recipient_node.0)))
 		};
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
@@ -140,23 +140,13 @@ pub trait Topology: Sized + Send + 'static {
 			let n: usize = rng.gen_range(0..paths.len());
 			let mut path = paths[n].clone();
 			if let Some((peer, key)) = add_start {
-				path.insert(0, (peer.clone(), key.clone()));
+				path.insert(0, (peer, key));
 			}
-			/*
-			if result.len() == count - 1 {
-				if let Some(last) = last_for_surb.as_mut() {
-					if path.len() > 1 {
-					let peer: Option<(MixPeerId, MixPublicKey)> = path.get(1).cloned();
-					**last = peer;
-					}
-				}
-			}
-			*/
 			if let Some((peer, key)) = add_end {
 				if let Some(key) = key {
-					path.push((peer.clone(), key.clone()));
+					path.push((*peer, *key));
 				} else {
-					return Err(Error::NoPath(Some(recipient_node.0.clone())))
+					return Err(Error::NoPath(Some(*recipient_node.0)))
 				}
 			}
 			result.push(path);
@@ -180,7 +170,7 @@ pub trait Topology: Sized + Send + 'static {
 
 		let mut rng = rand::thread_rng();
 		let n: usize = rng.gen_range(0..neighbors.len());
-		vec![neighbors[n].clone()]
+		vec![neighbors[n]]
 	}
 
 	/// On connection successful handshake.
@@ -204,8 +194,8 @@ pub trait Topology: Sized + Send + 'static {
 
 	/// Utils that should be call when using `check_handshake`.
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
-		self.routing_to(&local_id, peer_id) ||
-			self.routing_to(peer_id, &local_id) ||
+		self.routing_to(local_id, peer_id) ||
+			self.routing_to(peer_id, local_id) ||
 			self.allowed_external(peer_id).is_some()
 	}
 }
@@ -218,10 +208,10 @@ fn gen_paths<T: Topology>(
 	target: &MixPeerId,
 	num_hops: usize,
 ) {
-	let neighbors = topology.neighbors(&last).unwrap_or_default();
+	let neighbors = topology.neighbors(last).unwrap_or_default();
 	for (id, key) in neighbors {
 		if partial.len() < num_hops - 1 {
-			partial.push((id.clone(), key));
+			partial.push((id, key));
 			gen_paths(topology, partial, paths, &id, target, num_hops);
 			partial.pop();
 		}
@@ -252,7 +242,7 @@ impl Topology for NoTopology {
 			.iter()
 			.filter(|(k, _v)| k != &from)
 			.choose(&mut rng)
-			.map(|(k, v)| (k.clone(), v.clone()))
+			.map(|(k, v)| (*k, *v))
 	}
 
 	fn allowed_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
@@ -275,24 +265,21 @@ impl Topology for NoTopology {
 		log::warn!(target: "mixnet", "No topology, direct transmission");
 		// No topology is defined. Check if direct connection is possible.
 		match self.connected_peers.get(recipient.0) {
-			Some(key) => return Ok(vec![vec![(*recipient.0, key.clone())]; count]),
-			_ => return Err(Error::NoPath(Some(*recipient.0))),
+			Some(key) => Ok(vec![vec![(*recipient.0, *key)]; count]),
+			_ => Err(Error::NoPath(Some(*recipient.0))),
 		}
 	}
 
 	fn random_cover_path(&self, _local_id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
-		let neighbors = self
-			.connected_peers
-			.iter()
-			.map(|(id, key)| (id.clone(), key.clone()))
-			.collect::<Vec<_>>();
+		let neighbors =
+			self.connected_peers.iter().map(|(id, key)| (*id, *key)).collect::<Vec<_>>();
 		if neighbors.is_empty() {
 			return Vec::new()
 		}
 
 		let mut rng = rand::thread_rng();
 		let n: usize = rng.gen_range(0..neighbors.len());
-		vec![neighbors[n].clone()]
+		vec![neighbors[n]]
 	}
 
 	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
@@ -331,7 +318,7 @@ impl Topology for NoTopology {
 	) -> Option<(MixPeerId, MixPublicKey)> {
 		let peer_id = crate::core::to_sphinx_id(from).ok()?;
 		let mut pk = [0u8; crate::core::PUBLIC_KEY_LEN];
-		pk.copy_from_slice(&payload[..]);
+		pk.copy_from_slice(payload);
 		let pk = MixPublicKey::from(pk);
 		Some((peer_id, pk))
 	}

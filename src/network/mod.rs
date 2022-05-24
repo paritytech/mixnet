@@ -117,7 +117,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 	type OutEvent = MixnetEvent;
 
 	fn new_handler(&mut self) -> Self::ConnectionHandler {
-		Handler::new(handler::Config::new(), dyn_clone::clone_box(&*self.mixnet_worker_sink))
+		Handler::new(handler::Config::default(), dyn_clone::clone_box(&*self.mixnet_worker_sink))
 	}
 
 	fn inject_event(&mut self, _: PeerId, _: ConnectionId, _: ()) {}
@@ -132,8 +132,8 @@ impl NetworkBehaviour for MixnetBehaviour {
 	) {
 		log::trace!(target: "mixnet", "Connected: {}", peer_id);
 		if !self.connected.contains_key(peer_id) {
-			self.notify_queue.push_back((peer_id.clone(), con_id.clone()));
-			self.connected.insert(peer_id.clone(), con_id.clone());
+			self.notify_queue.push_back((*peer_id, *con_id));
+			self.connected.insert(*peer_id, *con_id);
 		}
 	}
 
@@ -184,7 +184,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 				e => Poll::Ready(NetworkBehaviourAction::GenerateEvent(e)),
 			},
 			Poll::Ready(None) =>
-				return Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::CloseStream)),
+				Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::CloseStream)),
 			Poll::Pending => Poll::Pending,
 		}
 	}

@@ -143,7 +143,7 @@ impl Connection {
 		outbound: NegotiatedSubstream,
 	) -> Self {
 		Self {
-			inbound: inbound.map(|i| Box::pin(i)),
+			inbound: inbound.map(Box::pin),
 			outbound: Box::pin(outbound),
 			outbound_buffer: None,
 			inbound_buffer: (Box::new([0u8; PACKET_SIZE]), 0),
@@ -155,6 +155,8 @@ impl Connection {
 
 	pub fn set_inbound(&mut self, inbound: NegotiatedSubstream) {
 		self.inbound = Some(Box::pin(inbound));
-		self.waker.as_ref().map(|w| w.wake_by_ref());
+		if let Some(w) = self.waker.as_ref() {
+			w.wake_by_ref()
+		}
 	}
 }

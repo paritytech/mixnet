@@ -100,17 +100,17 @@ pub enum Error {
 	/// Invalid packet size or wrong authenticated data.
 	InvalidPacket,
 	/// Payload authentication mismatch.
-	PayloadError,
+	Payload,
 	/// MAC mismatch.
-	MACError,
+	MAC,
 	/// Payload decryption error.
-	PayloadDecryptError,
+	PayloadDecrypt,
 	/// Payload encryption error.
-	PayloadEncryptError,
+	PayloadEncrypt,
 	/// Surbs missing error.
 	MissingSurbs,
 	/// Message already seen.
-	ReplayError,
+	Replay,
 }
 
 /// PathHop describes a route hop that a Sphinx Packet will traverse,
@@ -223,7 +223,7 @@ fn create_header<T: Rng + CryptoRng>(
 		secret_key.diffie_hellman(&path[0].public_key).to_bytes();
 	keys.push(crypto::kdf(&shared_secret));
 	let mut group_element = PublicKey::from(&secret_key);
-	group_elements.push(group_element.clone());
+	group_elements.push(group_element);
 
 	let mut header = [0u8; HEADER_SIZE];
 	header[0..AD_SIZE].copy_from_slice(&V0_AD);
@@ -238,7 +238,7 @@ fn create_header<T: Rng + CryptoRng>(
 		}
 		keys.push(crypto::kdf(&shared_secret));
 		group_element = blind(group_element, keys[i - 1].blinding_factor);
-		group_elements.push(group_element.clone());
+		group_elements.push(group_element);
 	}
 
 	let surb_id = if surb_header { Some(ReplayTag(hash(&shared_secret))) } else { None };
@@ -281,7 +281,7 @@ fn create_header<T: Rng + CryptoRng>(
 		let hop_slice = &mut routing_info[hop_index * PER_HOP_ROUTING_INFO_SIZE..];
 		let mut hop = EncodedHop(hop_slice);
 		if hop_index != num_hops - 1 {
-			hop.set_next_hop(NextHop { id: path[hop_index + 1].id, mac: mac.clone() });
+			hop.set_next_hop(NextHop { id: path[hop_index + 1].id, mac });
 		}
 
 		lioness::xor_assign(hop_slice, ri_keystream[hop_index].as_slice());
@@ -308,7 +308,7 @@ fn create_header<T: Rng + CryptoRng>(
 		sprp_keys.push(k);
 		i += 1
 	}
-	return Ok((header, sprp_keys, surb_id))
+	Ok((header, sprp_keys, surb_id))
 }
 
 /// Create a new sphinx packet
@@ -329,7 +329,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
-		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key.clone() };
+		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key };
 		let encoded = SurbsPayload { first_node, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);
@@ -351,12 +351,12 @@ pub fn new_packet<T: Rng + CryptoRng>(
 
 	// encrypt tagged payload with SPRP
 	for key in sprp_keys.into_iter().rev() {
-		tagged_payload = crypto::sprp_encrypt(&key.key, tagged_payload)
-			.map_err(|_| Error::PayloadEncryptError)?;
+		tagged_payload =
+			crypto::sprp_encrypt(&key.key, tagged_payload).map_err(|_| Error::PayloadEncrypt)?;
 	}
 
 	let packet = Packet::new(&header[..], &tagged_payload[..])?;
-	return Ok((packet, surb_key))
+	Ok((packet, surb_key))
 }
 
 /// Create a new sphinx packet from a surb header.
@@ -368,8 +368,8 @@ pub fn new_surb_packet(
 	let mut tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + message.len());
 	tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 	tagged_payload.extend_from_slice(&message[..]);
-	tagged_payload = crypto::sprp_encrypt(&first_key.key, tagged_payload)
-		.map_err(|_| Error::PayloadEncryptError)?;
+	tagged_payload =
+		crypto::sprp_encrypt(&first_key.key, tagged_payload).map_err(|_| Error::PayloadEncrypt)?;
 
 	let packet = Packet::new(&surb_header[..], &tagged_payload[..])?;
 	Ok(packet)
@@ -402,7 +402,7 @@ pub fn unwrap_packet(
 	let replay_tag = ReplayTag(hash(shared_secret.as_bytes()));
 	if filter.contains(&replay_tag) {
 		log::trace!(target: "mixnet", "Seen replay {:?}", &replay_tag);
-		return Err(Error::ReplayError)
+		return Err(Error::Replay)
 	}
 
 	// Derive the various keys required for packet processing.
@@ -415,7 +415,7 @@ pub fn unwrap_packet(
 
 	// compare MAC in constant time
 	if calculated_mac.ct_eq(header_mac).unwrap_u8() == 0 {
-		return Err(Error::MACError)
+		return Err(Error::MAC)
 	}
 
 	// Append padding to preserve length invariance, decrypt the (padded)
@@ -439,7 +439,7 @@ pub fn unwrap_packet(
 		DoNextHop::Forward(next_hop) => {
 			let decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
-					.map_err(|_| Error::PayloadDecryptError)?;
+					.map_err(|_| Error::PayloadDecrypt)?;
 
 			group_element = blind(group_element, keys.blinding_factor);
 			group_element_bytes.copy_from_slice(group_element.as_bytes());
@@ -453,9 +453,9 @@ pub fn unwrap_packet(
 		DoNextHop::Payload => {
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
-					.map_err(|_| Error::PayloadDecryptError)?;
+					.map_err(|_| Error::PayloadDecrypt)?;
 			if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
-				return Err(Error::PayloadError)
+				return Err(Error::Payload)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			filter.insert(replay_tag, Instant::now());
@@ -464,9 +464,9 @@ pub fn unwrap_packet(
 		DoNextHop::SurbsQuery => {
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
-					.map_err(|_| Error::PayloadDecryptError)?;
+					.map_err(|_| Error::PayloadDecrypt)?;
 			if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
-				return Err(Error::PayloadError)
+				return Err(Error::Payload)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
@@ -481,19 +481,19 @@ pub fn unwrap_packet(
 				let nb_key = surb.keys.len();
 				for key in surb.keys[..nb_key - 1].iter().rev() {
 					decrypted_payload = crypto::sprp_encrypt(&key.key, decrypted_payload)
-						.map_err(|_| Error::PayloadDecryptError)?;
+						.map_err(|_| Error::PayloadDecrypt)?;
 				}
 				let first_key = &surb.keys[nb_key - 1].key;
 				decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
-					.map_err(|_| Error::PayloadDecryptError)?;
+					.map_err(|_| Error::PayloadDecrypt)?;
 				if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
-					return Err(Error::PayloadError)
+					return Err(Error::Payload)
 				}
 				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
 				Ok(Unwrapped::SurbsReply(decrypted_payload, surb.query))
 			} else {
 				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
-				return Err(Error::MissingSurbs)
+				Err(Error::MissingSurbs)
 			}
 		},
 	}

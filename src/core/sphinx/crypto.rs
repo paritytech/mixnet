@@ -71,7 +71,7 @@ impl StreamCipher {
 	pub fn new(raw_key: &[u8; STREAM_KEY_SIZE], raw_iv: &[u8; STREAM_IV_SIZE]) -> StreamCipher {
 		let key = GenericArray::from_slice(&raw_key[..]);
 		let iv = GenericArray::from_slice(raw_iv);
-		StreamCipher { cipher: Aes128Ctr::new(&key, &iv) }
+		StreamCipher { cipher: Aes128Ctr::new(key, iv) }
 	}
 
 	/// Given a key return a cipher stream of length n.
