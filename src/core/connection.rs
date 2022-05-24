@@ -336,7 +336,7 @@ impl<C: Connection> ManagedConnection<C> {
 								self.next_packet = crate::core::cover_message_to(&peer_id, key)
 									.map(|p| p.into_vec());
 							} else {
-								log::warn!(target: "mixnet", "Queued packent not anymore in topology.");
+								log::warn!(target: "mixnet", "Queued packet not anymore in topology.");
 								break
 							}
 							if self.next_packet.is_none() {

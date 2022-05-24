@@ -53,6 +53,10 @@ pub enum Error {
 	Unreachable(Packet),
 	/// No sphinx id from handshake.
 	NoSphinxId,
+	/// Mixnet not ready.
+	NotReady,
+	/// Other.
+	Other(String),
 }
 
 impl fmt::Display for Error {
@@ -72,6 +76,8 @@ impl fmt::Display for Error {
 			Error::TooManyHops => write!(f, "Too many hops for mixnet."),
 			Error::Unreachable(_) => write!(f, "Destination peer not connected."),
 			Error::NoSphinxId => write!(f, "Sphinx Id not obtain from handshake."),
+			Error::NotReady => write!(f, "Mixnet not ready."),
+			Error::Other(e) => write!(f, "Other: {}", e),
 		}
 	}
 }

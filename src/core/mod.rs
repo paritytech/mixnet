@@ -59,7 +59,7 @@ pub type MixSecretKey = sphinx::StaticSecret;
 /// Length of `MixPublicKey`
 pub const PUBLIC_KEY_LEN: usize = 32;
 
-/// Size of a mixnet packent.
+/// Size of a mixnet packet.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
 pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
