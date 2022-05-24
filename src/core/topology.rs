@@ -113,18 +113,16 @@ pub trait Topology: Sized + Send + 'static {
 		};
 		let recipient = if self.is_routing(recipient_node.0) {
 			recipient_node.0.clone()
-		} else {
-			if let Some(query) = last_query_if_surb {
-				// reuse a node that was recently connected.
-				if let Some(rec) = query.get(0) {
-					add_end = Some(recipient_node);
-					rec.0.clone()
-				} else {
-					return Err(Error::NoPath(Some(recipient_node.0.clone())))
-				}
+		} else if let Some(query) = last_query_if_surb {
+			// reuse a node that was recently connected.
+			if let Some(rec) = query.get(0) {
+				add_end = Some(recipient_node);
+				rec.0.clone()
 			} else {
 				return Err(Error::NoPath(Some(recipient_node.0.clone())))
 			}
+		} else {
+			return Err(Error::NoPath(Some(recipient_node.0.clone())))
 		};
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();

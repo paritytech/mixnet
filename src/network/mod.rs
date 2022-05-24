@@ -104,7 +104,7 @@ impl MixnetBehaviour {
 	pub fn send_surb(
 		&mut self,
 		message: Vec<u8>,
-		surb: SurbsPayload,
+		surb: Box<SurbsPayload>,
 	) -> std::result::Result<(), core::Error> {
 		self.mixnet_worker_sink
 			.start_send_unpin(WorkerCommand::RegisterSurbs(message, surb))

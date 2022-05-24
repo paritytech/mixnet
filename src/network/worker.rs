@@ -39,7 +39,7 @@ pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Sen
 
 pub enum WorkerCommand {
 	RegisterMessage(Option<crate::MixPeerId>, Vec<u8>, SendOptions),
-	RegisterSurbs(Vec<u8>, SurbsPayload),
+	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),
 	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
 	AddPeerInbound(PeerId, NegotiatedSubstream),
 	RemoveConnectedPeer(PeerId),
@@ -97,7 +97,7 @@ impl<T: Topology> MixnetWorker<T> {
 					return Poll::Ready(true)
 				},
 				WorkerCommand::RegisterSurbs(message, surb) => {
-					match self.mixnet.register_surb(message, surb) {
+					match self.mixnet.register_surb(message, *surb) {
 						Ok(()) => (),
 						Err(e) => {
 							log::error!(target: "mixnet", "Error registering surb: {:?}", e);

@@ -120,7 +120,7 @@ impl<C: Connection> ManagedConnection<C> {
 	}
 
 	pub fn network_id(&self) -> NetworkPeerId {
-		self.network_id.clone()
+		self.network_id
 	}
 
 	fn try_send_handshake(
@@ -154,7 +154,7 @@ impl<C: Connection> ManagedConnection<C> {
 			},
 			Poll::Ready(Err(_)) => {
 				log::trace!(target: "mixnet", "Error sending handshake to peer {:?}", self.network_id);
-				return Poll::Ready(Err(()))
+				Poll::Ready(Err(()))
 			},
 			Poll::Pending => Poll::Pending,
 		}
@@ -165,7 +165,7 @@ impl<C: Connection> ManagedConnection<C> {
 			Poll::Ready(Ok(sent)) => Poll::Ready(Ok(sent)),
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error sending to peer {:?}", self.network_id);
-				return Poll::Ready(Err(()))
+				Poll::Ready(Err(()))
 			},
 			Poll::Pending => Poll::Pending,
 		}
@@ -197,7 +197,7 @@ impl<C: Connection> ManagedConnection<C> {
 					topology.check_handshake(handshake.as_slice(), &self.network_id)
 				{
 					self.mixnet_id = Some(peer_id);
-					self.public_key = Some(pk.clone()); // TODO is public key needed: just bool?
+					self.public_key = Some(pk);
 					Poll::Ready(Ok((peer_id, pk)))
 				} else {
 					log::trace!(target: "mixnet", "Invalid handshake from peer, closing: {:?}", self.network_id);
@@ -307,7 +307,7 @@ impl<C: Connection> ManagedConnection<C> {
 				Poll::Pending => (),
 			}
 			return result
-		} else if let Some(peer_id) = self.mixnet_id.clone() {
+		} else if let Some(peer_id) = self.mixnet_id {
 			while self.sent_in_window < current_packet_in_window {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
@@ -331,19 +331,17 @@ impl<C: Connection> ManagedConnection<C> {
 							if let Some(packet) = self.packet_queue.pop() {
 								self.next_packet = Some(packet.data.into_vec());
 							}
-						} else {
-							if let Some(key) = self.public_key.clone() {
-								if topology.routing_to(local_id, &peer_id) {
-									self.next_packet = crate::core::cover_message_to(&peer_id, key)
-										.map(|p| p.into_vec());
-								} else {
-									log::warn!(target: "mixnet", "Queued packent not anymore in topology.");
-									break
-								}
-								if self.next_packet.is_none() {
-									log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
-									break
-								}
+						} else if let Some(key) = self.public_key {
+							if topology.routing_to(local_id, &peer_id) {
+								self.next_packet = crate::core::cover_message_to(&peer_id, key)
+									.map(|p| p.into_vec());
+							} else {
+								log::warn!(target: "mixnet", "Queued packent not anymore in topology.");
+								break
+							}
+							if self.next_packet.is_none() {
+								log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
+								break
 							}
 						}
 					},

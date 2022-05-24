@@ -28,6 +28,7 @@
 use super::{Error, MixnetCollection};
 use crate::{core::sphinx::SURBS_REPLY_SIZE, MessageType};
 use rand::Rng;
+use static_assertions::const_assert;
 use std::{
 	collections::{hash_map::Entry, HashMap},
 	time::Instant,
@@ -39,9 +40,8 @@ type MessageHash = [u8; 32];
 pub const FRAGMENT_PACKET_SIZE: usize = 2048;
 const FRAGMENT_HEADER_SIZE: usize = 4 + 32;
 const FRAGMENT_FIRST_CHUNK_HEADER_SIZE: usize = FRAGMENT_HEADER_SIZE + 32 + 4;
+const_assert!(SURBS_REPLY_SIZE < FRAGMENT_PACKET_SIZE - FRAGMENT_FIRST_CHUNK_HEADER_SIZE);
 const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
-const FRAGMENT_FIRST_CHUNK_PAYLOAD_SIZE: usize =
-	FRAGMENT_PACKET_SIZE - FRAGMENT_FIRST_CHUNK_HEADER_SIZE;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 
 const FRAGMENT_EXPIRATION_MS: u64 = 10000;
@@ -88,7 +88,7 @@ impl Fragment {
 		buf.extend_from_slice(&index.to_be_bytes());
 		buf.extend_from_slice(&hash);
 		if index == 0 {
-			buf.extend_from_slice(&iv);
+			buf.extend_from_slice(iv);
 			buf.extend_from_slice(&message_len.to_be_bytes());
 		}
 
@@ -314,7 +314,6 @@ pub fn create_fragments(
 	mut message: Vec<u8>,
 	with_surb: bool,
 ) -> Result<Vec<Fragment>, Error> {
-	assert!(SURBS_REPLY_SIZE < FRAGMENT_FIRST_CHUNK_PAYLOAD_SIZE); // TODO const assert?
 	let surb_len = if with_surb { SURBS_REPLY_SIZE } else { 0 };
 	let additional_first_header = FRAGMENT_FIRST_CHUNK_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
 	if message.len() > MAX_MESSAGE_SIZE {

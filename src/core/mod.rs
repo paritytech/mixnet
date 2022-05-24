@@ -356,12 +356,10 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 
 		let (maybe_peer_id, peer_pub_key) = if let Some(id) = peer_id {
 			(Some(id), peer_pub_key)
+		} else if let Some((id, key)) = self.topology.random_recipient(&self.local_id) {
+			(Some(id), Some(key))
 		} else {
-			if let Some((id, key)) = self.topology.random_recipient(&self.local_id) {
-				(Some(id), Some(key))
-			} else {
-				(None, None)
-			}
+			(None, None)
 		};
 
 		let peer_id =
@@ -502,10 +500,10 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			},
 			Ok(Unwrapped::SurbsQuery(encoded_surb, payload)) => {
 				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
-				if let Some(m) = self
-					.fragments
-					.insert_fragment(payload, MessageType::WithSurbs(encoded_surb.into()))?
-				{
+				if let Some(m) = self.fragments.insert_fragment(
+					payload,
+					MessageType::WithSurbs(Box::new(encoded_surb.into())),
+				)? {
 					log::debug!(target: "mixnet", "Imported message from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {

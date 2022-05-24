@@ -57,7 +57,7 @@ pub enum MessageType {
 	/// Message only.
 	StandAlone,
 	/// Message with a surb for reply.
-	WithSurbs(SurbsPayload),
+	WithSurbs(Box<SurbsPayload>),
 	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
 	FromSurbs(Option<Vec<u8>>),
@@ -70,7 +70,7 @@ impl MessageType {
 	}
 
 	/// Extract surb.
-	pub fn surb(self) -> Option<SurbsPayload> {
+	pub fn surb(self) -> Option<Box<SurbsPayload>> {
 		match self {
 			MessageType::WithSurbs(surb) => Some(surb),
 			_ => None,
