@@ -276,15 +276,19 @@ impl Topology for NoTopology {
 	fn routing_to(&self, _from: &MixPeerId, _to: &MixPeerId) -> bool {
 		true
 	}
+
 	fn connected(&mut self, id: MixPeerId, key: MixPublicKey) {
 		self.connected_peers.insert(id, key);
 	}
+
 	fn disconnect(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
 	}
+
 	fn handshake_size(&self) -> usize {
 		32
 	}
+
 	fn check_handshake(
 		&mut self,
 		payload: &[u8],
@@ -296,6 +300,7 @@ impl Topology for NoTopology {
 		let pk = MixPublicKey::from(pk);
 		Some((peer_id, pk))
 	}
+
 	fn handshake(&mut self, _with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		Some(public_key.to_bytes().to_vec())
 	}
