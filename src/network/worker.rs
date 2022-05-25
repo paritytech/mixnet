@@ -118,6 +118,9 @@ impl<T: Topology> MixnetWorker<T> {
 					if let Some(con) = self.mixnet.connected_mut(&peer) {
 						log::trace!(target: "mixnet", "Added inbound to peer: {:?}", peer);
 						con.set_inbound(inbound);
+						// connection may have been turn pending waiting on this stream,
+						// ensure is processed next.
+						cx.waker().wake_by_ref();
 					} else {
 						log::warn!(target: "mixnet", "Received inbound for dropped peer: {:?}", peer);
 					}

@@ -37,8 +37,6 @@ pub struct Connection {
 	outbound_buffer: Option<(Vec<u8>, usize)>,
 	outbound_flushing: bool,
 	inbound_buffer: (Box<[u8; PACKET_SIZE]>, usize),
-	// put in pending state while waiting for inbound stream.
-	waker: Option<std::task::Waker>,
 	// Inform connection handler when connection is dropped.
 	close_handler: Option<OneShotSender<()>>,
 }
@@ -127,9 +125,7 @@ impl ConnectionT for Connection {
 			},
 			Some(Poll::Pending) => Poll::Pending,
 			None => {
-				if self.waker.is_none() {
-					self.waker = Some(cx.waker().clone());
-				}
+				// pending until wake by inbound stream message.
 				Poll::Pending
 			},
 		}
@@ -149,14 +145,10 @@ impl Connection {
 			inbound_buffer: (Box::new([0u8; PACKET_SIZE]), 0),
 			outbound_flushing: false,
 			close_handler: Some(close_handler),
-			waker: None,
 		}
 	}
 
 	pub fn set_inbound(&mut self, inbound: NegotiatedSubstream) {
 		self.inbound = Some(Box::pin(inbound));
-		if let Some(w) = self.waker.as_ref() {
-			w.wake_by_ref()
-		}
 	}
 }
