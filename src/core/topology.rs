@@ -55,27 +55,6 @@ pub trait Topology: Sized + Send + 'static {
 		None
 	}
 
-	/// If external is allowed, it returns a ratio of
-	/// routing node bandwidth to use.
-	/// This method also register the external peer.
-	/// TODO have an explicit reserve external and an allow + routing_to
-	/// would need to take external pool in consideration.
-	/// TODO remove : topology handshake should handle that
-	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
-		None
-	}
-
-	fn publish_known_routes(&self) -> Vec<u8> {
-		unimplemented!("TODO should only be use for putting route in handshake");
-		// use external management otherwhise.
-		// TODO would be custom handshake and limited in size? (or number of packet??)
-	}
-
-	fn import_known_routes(&mut self, _encoded_routes: Vec<u8>) {
-		unimplemented!("TODO should only be use for putting route in handshake");
-		// use external management otherwhise.
-	}
-
 	/// Check node links.
 	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool;
 
@@ -159,7 +138,6 @@ pub trait Topology: Sized + Send + 'static {
 	///
 	/// Default implementation is a single hop that is only fine
 	/// for topology with all node with same role.
-	/// TODO remove this default.
 	fn random_cover_path(&self, local_id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
 		// Select a random connected peer
 		let neighbors = self.neighbors(local_id).unwrap_or_default();
@@ -246,10 +224,6 @@ impl Topology for NoTopology {
 	}
 
 	fn allowed_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
-		Some((1, 1))
-	}
-
-	fn allow_external(&mut self, _id: &MixPeerId) -> Option<(usize, usize)> {
 		Some((1, 1))
 	}
 
