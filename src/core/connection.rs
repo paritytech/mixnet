@@ -308,6 +308,7 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			return result
 		} else if let Some(peer_id) = self.mixnet_id {
+			let routing = topology.is_routing(local_id);
 			while self.sent_in_window < current_packet_in_window {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
@@ -332,12 +333,9 @@ impl<C: Connection> ManagedConnection<C> {
 								self.next_packet = Some(packet.data.into_vec());
 							}
 						} else if let Some(key) = self.public_key {
-							if topology.routing_to(local_id, &peer_id) {
+							if routing && topology.routing_to(local_id, &peer_id) {
 								self.next_packet = crate::core::cover_message_to(&peer_id, key)
 									.map(|p| p.into_vec());
-							} else {
-								log::warn!(target: "mixnet", "Queued packet not anymore in topology.");
-								break
 							}
 							if self.next_packet.is_none() {
 								log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
