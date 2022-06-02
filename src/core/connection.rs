@@ -336,9 +336,11 @@ impl<C: Connection> ManagedConnection<C> {
 							if routing && topology.routing_to(local_id, &peer_id) {
 								self.next_packet = crate::core::cover_message_to(&peer_id, key)
 									.map(|p| p.into_vec());
+								if self.next_packet.is_none() {
+									log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
+								}
 							}
 							if self.next_packet.is_none() {
-								log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
 								break
 							}
 						}
