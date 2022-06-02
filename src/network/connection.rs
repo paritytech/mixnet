@@ -58,22 +58,25 @@ impl ConnectionT for Connection {
 	}
 
 	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
-		if let Some((waiting, mut ix)) = self.outbound_buffer.as_mut() {
-			match self.outbound.as_mut().poll_write(cx, &waiting[ix..]) {
-				Poll::Ready(Ok(nb)) => {
-					ix += nb;
-					if ix != waiting.len() {
-						return Poll::Ready(Ok(true))
-					}
-					self.outbound_flushing = true;
-					self.outbound_buffer = None;
-				},
-				Poll::Ready(Err(e)) => {
-					log::trace!(target: "mixnet", "Error writing: {:?}", e);
-					return Poll::Ready(Err(()))
-				},
-				Poll::Pending => return Poll::Pending,
+		loop {
+			if let Some((waiting, ix)) = self.outbound_buffer.as_mut() {
+				match self.outbound.as_mut().poll_write(cx, &waiting[*ix..]) {
+					Poll::Ready(Ok(nb)) => {
+						*ix += nb;
+						if *ix != waiting.len() {
+							continue
+						}
+						self.outbound_flushing = true;
+						self.outbound_buffer = None;
+					},
+					Poll::Ready(Err(e)) => {
+						log::error!(target: "mixnet", "Error writing: {:?}", e);
+						return Poll::Ready(Err(()))
+					},
+					Poll::Pending => return Poll::Pending,
+				}
 			}
+			break
 		}
 
 		if self.outbound_flushing {
