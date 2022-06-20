@@ -45,7 +45,11 @@ pub trait Topology: Sized + Send + 'static {
 	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)>;
 
 	/// first hop nodes that may allow external node connection.
-	fn first_hop_nodes_external(&self, _from: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+	fn first_hop_nodes_external(
+		&self,
+		_from: &MixPeerId,
+		_to: &MixPeerId,
+	) -> Vec<(MixPeerId, MixPublicKey)>;
 
 	fn is_first_node(&self, _id: &MixPeerId) -> bool;
 
@@ -82,7 +86,7 @@ pub trait Topology: Sized + Send + 'static {
 		let start = if self.is_first_node(start_node.0) {
 			*start_node.0
 		} else {
-			let firsts = self.first_hop_nodes_external(start_node.0);
+			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0);
 			if firsts.is_empty() {
 				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
@@ -265,7 +269,11 @@ impl Topology for NoTopology {
 	}
 
 	// first hop that allow external node connection.
-	fn first_hop_nodes_external(&self, _from: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
+	fn first_hop_nodes_external(
+		&self,
+		_from: &MixPeerId,
+		_to: &MixPeerId,
+	) -> Vec<(MixPeerId, MixPublicKey)> {
 		Vec::new()
 	}
 

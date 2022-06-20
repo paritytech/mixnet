@@ -92,7 +92,11 @@ impl mixnet::Topology for TopologyGraph {
 		self.peers.clone()
 	}
 
-	fn first_hop_nodes_external(&self, _from: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
+	fn first_hop_nodes_external(
+		&self,
+		_from: &MixPeerId,
+		_to: &MixPeerId,
+	) -> Vec<(MixPeerId, MixPublicKey)> {
 		// allow only with peer 0
 		vec![self.peers[0].clone()]
 	}
