@@ -409,7 +409,11 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(Error::SphinxError)?;
 			if let Some((keys, surb_id)) = surb_keys {
-				let persistance = SurbsPersistance { keys, query: surb_query.take() };
+				let persistance = SurbsPersistance {
+					keys,
+					query: surb_query.take(),
+					recipient: paths[n].last().unwrap().clone(),
+				};
 				self.surb.insert(surb_id, persistance, self.last_now);
 			}
 			packets.push((first_id, packet));
@@ -486,9 +490,10 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 					log::trace!(target: "mixnet", "Inserted fragment message from {:?}", peer_id);
 				}
 			},
-			Ok(Unwrapped::SurbsReply(payload, query)) => {
-				if let Some(m) =
-					self.fragments.insert_fragment(payload, MessageType::FromSurbs(query))?
+			Ok(Unwrapped::SurbsReply(payload, query, recipient)) => {
+				if let Some(m) = self
+					.fragments
+					.insert_fragment(payload, MessageType::FromSurbs(query, recipient))?
 				{
 					log::debug!(target: "mixnet", "Imported surb from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))

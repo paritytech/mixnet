@@ -142,7 +142,7 @@ pub enum Unwrapped {
 	Forward((NodeId, Delay, Packet)),
 	Payload(Vec<u8>),
 	SurbsQuery(Vec<u8>, Vec<u8>),
-	SurbsReply(Vec<u8>, Option<Vec<u8>>),
+	SurbsReply(Vec<u8>, Option<Vec<u8>>, Box<(crate::MixPeerId, crate::MixPublicKey)>),
 }
 
 enum DoNextHop {
@@ -155,6 +155,7 @@ enum DoNextHop {
 pub struct SurbsPersistance {
 	pub keys: Vec<SprpKey>,
 	pub query: Option<Vec<u8>>,
+	pub recipient: (crate::MixPeerId, crate::MixPublicKey),
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -490,7 +491,7 @@ pub fn unwrap_packet(
 					return Err(Error::Payload)
 				}
 				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				Ok(Unwrapped::SurbsReply(decrypted_payload, surb.query))
+				Ok(Unwrapped::SurbsReply(decrypted_payload, surb.query, Box::new(surb.recipient)))
 			} else {
 				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
 				Err(Error::MissingSurbs)
@@ -564,6 +565,10 @@ mod test {
 			let path = _tuple.1;
 			let delays = _tuple.2;
 			let path_c = path.clone();
+			let recipient = (
+				path.last().as_ref().unwrap().id.clone(),
+				path.last().as_ref().unwrap().public_key.clone(),
+			);
 			let mut surb_collection = super::SurbsCollection::new(&config);
 			let mut replay_filter = super::ReplayFilter::new(&config);
 
@@ -576,7 +581,8 @@ mod test {
 			let (mut packet, surb_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
 			if let Some((keys, surb_id)) = surb_keys {
-				let persistance = crate::core::sphinx::SurbsPersistance { keys, query: None };
+				let persistance =
+					crate::core::sphinx::SurbsPersistance { keys, query: None, recipient };
 				surb_collection.insert(surb_id, persistance, std::time::Instant::now());
 			}
 

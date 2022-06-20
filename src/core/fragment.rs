@@ -356,6 +356,10 @@ mod test {
 
 	#[test]
 	fn create_and_insert_small() {
+		let peer_public_key =
+			x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from([0u8; 32]));
+		let recipient = Box::new(([0u8; 32], peer_public_key)); // unused in test
+
 		let mut rng = rand::thread_rng();
 		let mut fragments = MessageCollection::new();
 
@@ -366,9 +370,12 @@ mod test {
 
 		assert_eq!(
 			fragments
-				.insert_fragment(small_fragment, MessageType::FromSurbs(Some(vec![1])))
+				.insert_fragment(
+					small_fragment,
+					MessageType::FromSurbs(Some(vec![1]), recipient.clone())
+				)
 				.unwrap(),
-			Some((vec![42], MessageType::FromSurbs(Some(vec![1]))))
+			Some((vec![42], MessageType::FromSurbs(Some(vec![1]), recipient.clone())))
 		);
 
 		let mut large = Vec::new();

@@ -60,7 +60,7 @@ pub enum MessageType {
 	WithSurbs(Box<SurbsPayload>),
 	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
-	FromSurbs(Option<Vec<u8>>),
+	FromSurbs(Option<Vec<u8>>, Box<(MixPeerId, MixPublicKey)>),
 }
 
 impl MessageType {
