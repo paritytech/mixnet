@@ -28,7 +28,7 @@ use libp2p_core::{
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
-use libp2p_tcp::TcpConfig;
+use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use rand::{prelude::IteratorRandom, RngCore};
 use std::{
 	collections::HashMap,
@@ -567,8 +567,7 @@ fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(Peer
 	(
 		peer_id,
 		key,
-		TcpConfig::new()
-			.nodelay(true)
+		TcpTransport::new(GenTcpConfig::new().nodelay(true))
 			.upgrade(upgrade::Version::V1)
 			.authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
 			.multiplex(mplex::MplexConfig::default())
