@@ -69,7 +69,7 @@ pub trait Topology: Sized + Send + 'static {
 	///
 	/// Default implementation is taking random of all possible path.
 	fn random_path(
-		&self,
+		&mut self,
 		start_node: (&MixPeerId, Option<&MixPublicKey>),
 		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
 		count: usize,
@@ -136,23 +136,6 @@ pub trait Topology: Sized + Send + 'static {
 		}
 		log::trace!(target: "mixnet", "Random path {:?}", result);
 		Ok(result)
-	}
-
-	/// Random message cover path.
-	///
-	/// Default implementation is a single hop that is only fine
-	/// for topology with all node with same role.
-	fn random_cover_path(&self, local_id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
-		// Select a random connected peer
-		let neighbors = self.neighbors(local_id).unwrap_or_default();
-
-		if neighbors.is_empty() {
-			return Vec::new()
-		}
-
-		let mut rng = rand::thread_rng();
-		let n: usize = rng.gen_range(0..neighbors.len());
-		vec![neighbors[n]]
 	}
 
 	/// On connection successful handshake.
@@ -232,7 +215,7 @@ impl Topology for NoTopology {
 	}
 
 	fn random_path(
-		&self,
+		&mut self,
 		_start: (&MixPeerId, Option<&MixPublicKey>),
 		recipient: (&MixPeerId, Option<&MixPublicKey>),
 		count: usize,
@@ -246,18 +229,6 @@ impl Topology for NoTopology {
 			Some(key) => Ok(vec![vec![(*recipient.0, *key)]; count]),
 			_ => Err(Error::NoPath(Some(*recipient.0))),
 		}
-	}
-
-	fn random_cover_path(&self, _local_id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
-		let neighbors =
-			self.connected_peers.iter().map(|(id, key)| (*id, *key)).collect::<Vec<_>>();
-		if neighbors.is_empty() {
-			return Vec::new()
-		}
-
-		let mut rng = rand::thread_rng();
-		let n: usize = rng.gen_range(0..neighbors.len());
-		vec![neighbors[n]]
 	}
 
 	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {

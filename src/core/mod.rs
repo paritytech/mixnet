@@ -531,7 +531,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	}
 
 	fn random_paths(
-		&self,
+		&mut self,
 		recipient: &MixPeerId,
 		recipient_key: Option<&MixPublicKey>,
 		num_hops: &Option<usize>,
