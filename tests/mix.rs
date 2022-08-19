@@ -102,7 +102,7 @@ impl mixnet::Topology for TopologyGraph {
 	}
 
 	fn random_recipient(
-		&self,
+		&mut self,
 		local_id: &MixPeerId,
 		_: &SendOptions,
 	) -> Option<(MixPeerId, MixPublicKey)> {

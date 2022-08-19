@@ -31,7 +31,7 @@ pub trait Topology: Sized + Send + 'static {
 	/// transaction into the block.
 	/// Return `None` if no such selection is possible.
 	fn random_recipient(
-		&self,
+		&mut self,
 		local_id: &MixPeerId,
 		send_options: &SendOptions,
 	) -> Option<(MixPeerId, MixPublicKey)>;
@@ -202,7 +202,7 @@ pub struct NoTopology {
 
 impl Topology for NoTopology {
 	fn random_recipient(
-		&self,
+		&mut self,
 		from: &MixPeerId,
 		_: &SendOptions,
 	) -> Option<(MixPeerId, MixPublicKey)> {
