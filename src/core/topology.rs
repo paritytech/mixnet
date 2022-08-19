@@ -20,7 +20,7 @@
 
 //! Mixnet topology interface.
 
-use crate::{core::NetworkPeerId, Error, MixPeerId, MixPublicKey};
+use crate::{core::NetworkPeerId, Error, MixPeerId, MixPublicKey, SendOptions};
 use rand::Rng;
 
 /// Provide network topology information to the mixnet.
@@ -30,27 +30,29 @@ pub trait Topology: Sized + Send + 'static {
 	/// E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
 	/// Return `None` if no such selection is possible.
-	fn random_recipient(&self, local_id: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)>;
+	fn random_recipient(
+		&self,
+		local_id: &MixPeerId,
+		send_options: &SendOptions,
+	) -> Option<(MixPeerId, MixPublicKey)>;
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
 	/// Return `None` if peer is not routing.
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
-	/// Check if a peer is in topology.
+	/// Check if a peer is in topology, do not need to be connected.
 	fn is_routing(&self, id: &MixPeerId) -> bool {
 		self.neighbors(id).is_some()
 	}
 
-	/// Nodes that can be first hop.
-	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)>;
-
-	/// first hop nodes that may allow external node connection.
+	/// first hop nodes that may currently allow external node connection.
 	fn first_hop_nodes_external(
 		&self,
 		_from: &MixPeerId,
 		_to: &MixPeerId,
 	) -> Vec<(MixPeerId, MixPublicKey)>;
 
+	/// Check if a peer is in topology, do not need to be connected.
 	fn is_first_node(&self, _id: &MixPeerId) -> bool;
 
 	/// If external is allowed, it returns a ratio of
@@ -199,7 +201,11 @@ pub struct NoTopology {
 }
 
 impl Topology for NoTopology {
-	fn random_recipient(&self, from: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)> {
+	fn random_recipient(
+		&self,
+		from: &MixPeerId,
+		_: &SendOptions,
+	) -> Option<(MixPeerId, MixPublicKey)> {
 		use rand::prelude::IteratorRandom;
 		let mut rng = rand::thread_rng();
 		// Select a random connected peer
@@ -233,10 +239,6 @@ impl Topology for NoTopology {
 
 	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		None
-	}
-
-	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		Vec::new()
 	}
 
 	// first hop that allow external node connection.

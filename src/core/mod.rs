@@ -354,7 +354,9 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 
 		let (maybe_peer_id, peer_pub_key) = if let Some(id) = peer_id {
 			(Some(id), peer_pub_key)
-		} else if let Some((id, key)) = self.topology.random_recipient(&self.local_id) {
+		} else if let Some((id, key)) =
+			self.topology.random_recipient(&self.local_id, &send_options)
+		{
 			(Some(id), Some(key))
 		} else {
 			(None, None)

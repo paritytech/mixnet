@@ -88,10 +88,6 @@ impl mixnet::Topology for TopologyGraph {
 		self.connections.get(id).cloned()
 	}
 
-	fn first_hop_nodes(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.peers.clone()
-	}
-
 	fn first_hop_nodes_external(
 		&self,
 		_from: &MixPeerId,
@@ -105,7 +101,11 @@ impl mixnet::Topology for TopologyGraph {
 		self.peers.iter().find(|(p, _)| p == id).is_some()
 	}
 
-	fn random_recipient(&self, local_id: &MixPeerId) -> Option<(MixPeerId, MixPublicKey)> {
+	fn random_recipient(
+		&self,
+		local_id: &MixPeerId,
+		_: &SendOptions,
+	) -> Option<(MixPeerId, MixPublicKey)> {
 		self.peers
 			.iter()
 			.filter(|(k, _v)| k != local_id)
