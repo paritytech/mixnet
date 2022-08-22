@@ -225,10 +225,7 @@ fn test_messages(
 	let mut transports = Vec::new();
 	for _ in 0..num_peers + extra_external {
 		let (peer_id, _peer_key, trans) = mk_transport();
-		let mut secret = [0u8; 32];
-		rand::thread_rng().fill_bytes(&mut secret);
-		let peer_secret_key: x25519_dalek::StaticSecret = secret.into();
-		let peer_public_key = x25519_dalek::PublicKey::from(&peer_secret_key);
+		let (peer_public_key, peer_secret_key) = mixnet::generate_new_keys();
 		let mut secret_mix = [0u8; 32];
 		rand::thread_rng().fill_bytes(&mut secret_mix);
 		let mix_secret_key = ed25519_dalek::SecretKey::from_bytes(&secret_mix[..]).unwrap();

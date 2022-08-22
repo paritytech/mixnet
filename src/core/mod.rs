@@ -865,6 +865,16 @@ pub(crate) fn cover_message_to(peer_id: &MixPeerId, peer_key: MixPublicKey) -> O
 	Some(packet)
 }
 
+/// Generate a mixnet key pair.
+pub fn generate_new_keys() -> (MixPublicKey, MixSecretKey) {
+	let mut secret = [0u8; 32];
+	use rand::RngCore;
+	rand::thread_rng().fill_bytes(&mut secret);
+	let secret_key: MixSecretKey = secret.into();
+	let public_key = MixPublicKey::from(&secret_key);
+	(public_key, secret_key)
+}
+
 #[test]
 fn test_ttl_map() {
 	type Map = MixnetCollection<Vec<u8>, Vec<u8>>;

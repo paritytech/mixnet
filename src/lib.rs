@@ -25,8 +25,8 @@ mod core;
 mod network;
 
 pub use crate::core::{
-	public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config, Error, MixPublicKey,
-	MixSecretKey, NoTopology, Packet, SurbsPayload, Topology, PACKET_SIZE,
+	generate_new_keys, public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config, Error,
+	MixPublicKey, MixSecretKey, NoTopology, Packet, SurbsPayload, Topology, PACKET_SIZE,
 };
 pub use network::{
 	MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerSink2,

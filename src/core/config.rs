@@ -62,11 +62,7 @@ pub struct Config {
 
 impl Config {
 	pub fn new(id: MixPeerId) -> Self {
-		let mut secret = [0u8; 32];
-		use rand::RngCore;
-		rand::thread_rng().fill_bytes(&mut secret);
-		let secret_key: MixSecretKey = secret.into();
-		let public_key = MixPublicKey::from(&secret_key);
+		let (public_key, secret_key) = super::generate_new_keys();
 		Self::new_with_keys(id, public_key, secret_key)
 	}
 
