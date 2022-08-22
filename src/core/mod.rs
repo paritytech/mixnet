@@ -472,7 +472,6 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
 		let next_delay =
 			|| exp_delay(&mut rand::thread_rng(), self.average_hop_delay).as_millis() as u32;
-		println!("pub {:?}", self.public);
 		let result = sphinx::unwrap_packet(
 			&self.secret,
 			message,
