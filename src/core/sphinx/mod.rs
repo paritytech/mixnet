@@ -224,6 +224,7 @@ fn create_header<T: Rng + CryptoRng>(
 		secret_key.diffie_hellman(&path[0].public_key).to_bytes();
 	keys.push(crypto::kdf(&shared_secret));
 	let mut group_element = PublicKey::from(&secret_key);
+	println!("shared_w: {:?} from {:?} and {:?}", shared_secret, group_element, &path[0].public_key);
 	group_elements.push(group_element);
 
 	let mut header = [0u8; HEADER_SIZE];
@@ -239,6 +240,7 @@ fn create_header<T: Rng + CryptoRng>(
 		}
 		keys.push(crypto::kdf(&shared_secret));
 		group_element = blind(group_element, keys[i - 1].blinding_factor);
+		println!("shared_w: {:?} from {:?} and {:?}", shared_secret, group_element, &path[i].public_key);
 		group_elements.push(group_element);
 	}
 
@@ -399,6 +401,7 @@ pub fn unwrap_packet(
 	// Calculate the hop's shared secret, and replay_tag.
 	let mut group_element = PublicKey::from(*group_element_bytes);
 	let shared_secret = private_key.diffie_hellman(&group_element);
+	println!("shared_r: {:?} from {:?}", shared_secret.as_bytes(), group_element);
 
 	let replay_tag = ReplayTag(hash(shared_secret.as_bytes()));
 	if filter.contains(&replay_tag) {
