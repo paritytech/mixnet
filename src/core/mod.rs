@@ -38,7 +38,6 @@ pub use connection::Connection;
 pub use error::Error;
 use futures::{FutureExt, SinkExt};
 use futures_timer::Delay;
-use libp2p_core::identity::ed25519;
 use rand::{CryptoRng, Rng};
 use rand_distr::Distribution;
 pub use sphinx::Error as SphinxError;
@@ -126,13 +125,13 @@ fn exp_delay<R: Rng + CryptoRng + ?Sized>(rng: &mut R, target: Duration) -> Dura
 }
 
 /// Construct a Montgomery curve25519 private key from an Ed25519 secret key.
-pub fn secret_from_ed25519(ed25519_sk: &ed25519::SecretKey) -> MixSecretKey {
+pub fn secret_from_ed25519(seed: &[u8; 32]) -> MixSecretKey {
 	// An Ed25519 public key is derived off the left half of the SHA512 of the
 	// secret scalar, hence a matching conversion of the secret key must do
 	// the same to yield a Curve25519 keypair with the same public key.
 	// let ed25519_sk = ed25519::SecretKey::from(ed);
 	let mut curve25519_sk = [0; 32];
-	let hash = <sha2::Sha512 as sha2::Digest>::digest(ed25519_sk.as_ref());
+	let hash = <sha2::Sha512 as sha2::Digest>::digest(seed);
 	curve25519_sk.copy_from_slice(&hash[..32]);
 	curve25519_sk.into()
 }
