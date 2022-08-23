@@ -54,7 +54,7 @@ struct TopologyGraph {
 	local_network_id: Option<PeerId>,
 	// key for signing handshake (assert mix_pub_key, MixPeerId is related to
 	// MixPublicKey by signing it (and also dest MixPublicKey to avoid replay).
-	mix_secret_key: Option<Arc<(ed25519_dalek::ExpandedSecretKey, ed25519_dalek::PublicKey)>>,
+	mix_secret_key: Option<Arc<(ed25519_zebra::SigningKey, ed25519_zebra::VerificationKey)>>,
 }
 
 impl TopologyGraph {
@@ -166,12 +166,11 @@ impl mixnet::Topology for TopologyGraph {
 		pk.copy_from_slice(&payload[32..64]);
 		let mut signature = [0u8; 64];
 		signature.copy_from_slice(&payload[64..]);
-		let signature = ed25519_dalek::Signature::from_bytes(&signature[..]).unwrap();
-		let pub_key = ed25519_dalek::PublicKey::from_bytes(&peer_id[..]).unwrap();
+		let signature = ed25519_zebra::Signature::try_from(&signature[..]).unwrap();
+		let pub_key = ed25519_zebra::VerificationKey::try_from(&peer_id[..]).unwrap();
 		let mut message = self.local_network_id.unwrap().to_bytes().to_vec();
 		message.extend_from_slice(&pk[..]);
-		use ed25519_dalek::Verifier;
-		if pub_key.verify(&message[..], &signature).is_ok() {
+		if pub_key.verify(&signature, &message[..]).is_ok() {
 			let pk = MixPublicKey::from(pk);
 			if !self.accept_peer(self.local_id.as_ref().unwrap(), &peer_id) {
 				return None
@@ -192,8 +191,9 @@ impl mixnet::Topology for TopologyGraph {
 		if let Some(keypair) = &self.mix_secret_key {
 			let mut message = with.to_bytes().to_vec();
 			message.extend_from_slice(&public_key.as_bytes()[..]);
-			let signature = keypair.0.sign(&message[..], &keypair.1);
-			result.extend_from_slice(&signature.to_bytes()[..]);
+			let signature = keypair.0.sign(&message[..]);
+			let signature: [u8; 64] = signature.into();
+			result.extend_from_slice(&signature[..]);
 		} else {
 			return None
 		}
@@ -228,10 +228,9 @@ fn test_messages(
 		let (peer_public_key, peer_secret_key) = mixnet::generate_new_keys();
 		let mut secret_mix = [0u8; 32];
 		rand::thread_rng().fill_bytes(&mut secret_mix);
-		let mix_secret_key = ed25519_dalek::SecretKey::from_bytes(&secret_mix[..]).unwrap();
-		let mix_public_key: ed25519_dalek::PublicKey = (&mix_secret_key).into();
-		let mix_secret_key: ed25519_dalek::ExpandedSecretKey = (&mix_secret_key).into();
-		let mix_id = mix_public_key.to_bytes();
+		let mix_secret_key: ed25519_zebra::SigningKey = secret_mix.into();
+		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
+		let mix_id: [u8; 32] = mix_public_key.into();
 		nodes.push((mix_id, peer_public_key.clone()));
 		network_ids.push((peer_id, Arc::new((mix_secret_key, mix_public_key))));
 		secrets.push(peer_secret_key);
