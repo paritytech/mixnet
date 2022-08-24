@@ -57,7 +57,7 @@ pub trait Topology: Sized + Send + 'static {
 
 	/// If external is allowed, it returns a ratio of
 	/// routing node bandwidth to use.
-	fn allowed_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
 		None
 	}
 
@@ -163,7 +163,7 @@ pub trait Topology: Sized + Send + 'static {
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
 		self.routing_to(local_id, peer_id) ||
 			self.routing_to(peer_id, local_id) ||
-			self.allowed_external(peer_id).is_some()
+			self.bandwidth_external(peer_id).is_some()
 	}
 }
 
@@ -216,7 +216,7 @@ impl Topology for NoTopology {
 			.map(|(k, v)| (*k, *v))
 	}
 
-	fn allowed_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
 		Some((1, 1))
 	}
 

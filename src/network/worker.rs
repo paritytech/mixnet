@@ -76,12 +76,6 @@ impl<T: Topology> MixnetWorker<T> {
 		self.mixnet.public_key()
 	}
 
-	pub fn change_peer_limit_window(&mut self, peer: &crate::MixPeerId, new_limit: Option<usize>) {
-		if let Some(con) = self.mixnet.managed_connection_mut(peer) {
-			con.change_limit_msg(new_limit);
-		}
-	}
-
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		let mut result = Poll::Pending;

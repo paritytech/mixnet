@@ -19,6 +19,9 @@
 // DEALINGS IN THE SOFTWARE.
 
 //! Mixnet connection interface.
+//!
+//! Connection bandwidth is limited on reception
+//! of packet.
 
 use crate::{
 	core::{NetworkPeerId, QueuedPacket, WINDOW_MARGIN_PERCENT},
@@ -62,34 +65,24 @@ pub(crate) struct ManagedConnection<C> {
 	network_id: NetworkPeerId,
 	handshake_sent: bool,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
-	// Real messages queue, sorted by deadline.
+	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
 	packet_queue: BinaryHeap<QueuedPacket>,
 	next_packet: Option<Vec<u8>>,
 	// If we did not receive for a while, close connection.
 	read_timeout: Delay,
-	// Number of allowed message
-	// in a window of time, this attempt to prevent ddos
-	// from nodes that are not part of the topology.
-	limit_msg: Option<usize>,
 	current_window: Wrapping<usize>,
 	sent_in_window: usize,
 	recv_in_window: usize,
 }
 
 impl<C: Connection> ManagedConnection<C> {
-	pub fn new(
-		network_id: NetworkPeerId,
-		limit_msg: Option<usize>,
-		connection: C,
-		current_window: Wrapping<usize>,
-	) -> Self {
+	pub fn new(network_id: NetworkPeerId, connection: C, current_window: Wrapping<usize>) -> Self {
 		Self {
 			connection,
 			mixnet_id: None,
 			network_id,
 			read_timeout: Delay::new(READ_TIMEOUT),
 			next_packet: None,
-			limit_msg,
 			current_window,
 			public_key: None,
 			handshake_sent: false,
@@ -97,10 +90,6 @@ impl<C: Connection> ManagedConnection<C> {
 			recv_in_window: 0,
 			packet_queue: Default::default(),
 		}
-	}
-
-	pub fn change_limit_msg(&mut self, limit: Option<usize>) {
-		self.limit_msg = limit;
 	}
 
 	fn handshake_received(&self) -> bool {
@@ -227,12 +216,7 @@ impl<C: Connection> ManagedConnection<C> {
 				self.read_timeout.reset(READ_TIMEOUT);
 				log::trace!(target: "mixnet", "Packet received from {:?}", self.network_id);
 				let packet = Packet::from_vec(packet).unwrap();
-				if self.current_window == current_window {
-					if self.limit_msg.as_ref().map(|l| &self.recv_in_window > l).unwrap_or(false) {
-						log::warn!(target: "mixnet", "Receiving too many messages {:?} / {:?} from {:?}, disconecting.", self.recv_in_window, self.limit_msg.as_ref().unwrap(), self.network_id);
-						return Poll::Ready(Err(()))
-					}
-				} else {
+				if self.current_window != current_window {
 					self.current_window = current_window;
 				}
 				Poll::Ready(Ok(packet))
@@ -262,7 +246,7 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			if !external &&
 				!topology.routing_to(local_id, peer_id) &&
-				topology.allowed_external(peer_id).is_none()
+				topology.bandwidth_external(peer_id).is_none()
 			{
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
 				return Err(crate::Error::NoPath(Some(*peer_id)))
@@ -280,7 +264,7 @@ impl<C: Connection> ManagedConnection<C> {
 		local_id: &MixPeerId,
 		handshake: &MixPublicKey,
 		current_window: Wrapping<usize>,
-		current_packet_in_window: usize,
+		current_packet_limit: usize,
 		packet_per_window: usize,
 		now: Instant,
 		topology: &mut impl Topology,
@@ -291,8 +275,8 @@ impl<C: Connection> ManagedConnection<C> {
 			match self.try_recv_handshake(cx, topology) {
 				Poll::Ready(Ok(key)) => {
 					self.current_window = current_window;
-					self.sent_in_window = current_packet_in_window;
-					self.recv_in_window = current_packet_in_window;
+					self.sent_in_window = current_packet_limit;
+					self.recv_in_window = current_packet_limit;
 					result = Poll::Ready(ConnectionEvent::Established(key.0, key.1));
 				},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
@@ -309,9 +293,12 @@ impl<C: Connection> ManagedConnection<C> {
 			return result
 		} else if let Some(peer_id) = self.mixnet_id {
 			let routing = topology.is_routing(local_id);
-			while self.sent_in_window < current_packet_in_window {
+
+			// Forward first.
+			while self.sent_in_window < current_packet_limit {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
+						// Did send message
 						self.sent_in_window += 1;
 						break
 					},
@@ -319,7 +306,7 @@ impl<C: Connection> ManagedConnection<C> {
 						// nothing in queue, get next.
 						if let Some(packet) = self.next_packet.take() {
 							if let Some(packet) = self.try_queue_send_packet(packet) {
-								log::error!(target: "mixnet", "try send fail with nothing in queue.");
+								log::error!(target: "mixnet", "try send should not fail on flushed queue.");
 								self.next_packet = Some(packet);
 							}
 							continue
@@ -349,11 +336,13 @@ impl<C: Connection> ManagedConnection<C> {
 					Poll::Pending => break,
 				}
 			}
+
+			// Limit reception.
 			let (current, external) = if topology.routing_to(&peer_id, local_id) {
-				(current_packet_in_window, false)
+				(current_packet_limit, false)
 			} else {
-				let (n, d) = topology.allowed_external(&peer_id).unwrap_or((0, 1));
-				((current_packet_in_window * n) / d, true)
+				let (n, d) = topology.bandwidth_external(&peer_id).unwrap_or((0, 1));
+				((current_packet_limit * n) / d, true)
 			};
 			if self.recv_in_window < current {
 				match self.try_recv_packet(cx, current_window) {

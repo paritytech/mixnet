@@ -22,7 +22,9 @@
 
 use crate::{MixPeerId, MixPublicKey, MixSecretKey};
 
-const WINDOW_BACKPRESSURE: std::time::Duration = std::time::Duration::from_secs(5);
+/// Default bandwidth to maintain for each connection.
+/// In number of bytes per seconds
+const DEFAULT_PEER_CONNECTION: u32 = 128 * 1024;
 
 /// Configuration data for the mixnet protocol.
 #[derive(Clone)]
@@ -35,23 +37,14 @@ pub struct Config {
 	pub local_id: MixPeerId,
 	/// Target traffic rate. This is combined for the stream of real and cover messages. If the
 	/// stream of real messages exceeds this rate incoming messages will be dropped.
-	pub target_bits_per_second: u32,
+	pub target_bytes_per_second: u32,
 	/// Connection read timeout in milliseconds.
 	pub timeout_ms: u32,
-	/// Number of hops for the outgoing messages to traverse. If no topology provide is specified
-	/// this setting is ignored and only one hop is used.
+	/// Default umber of hops for the outgoing messages to traverse. If no topology provide is
+	/// specified this setting is ignored and only one hop is used.
 	pub num_hops: u32,
 	/// Average number of seconds to delay each each message fragment at each hop.
 	pub average_message_delay_ms: u32,
-	/// Limit number of message in a windows of time for a peer.
-	/// Default value, this can be change from topology.
-	/// Above limit message are drop, so topology should raise the
-	/// limit for routing peers.
-	/// `None` is unlimited.
-	/// Window is `WINDOW_BACKPRESSURE` duration.
-	pub limit_per_window: Option<usize>,
-	/// Same as `limit_per_window` but for connection that are routing.
-	pub limit_per_window_routing: Option<u32>,
 	/// Retention time until we drop surb query.
 	pub surb_ttl_ms: u64,
 	/// Retention time until we drop surb replay protection.
@@ -75,12 +68,10 @@ impl Config {
 			secret_key,
 			public_key,
 			local_id: id,
-			target_bits_per_second: 128 * 1024,
+			target_bytes_per_second: DEFAULT_PEER_CONNECTION,
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
-			limit_per_window: Some((WINDOW_BACKPRESSURE.as_millis() as usize / 250) * 2),
-			limit_per_window_routing: None,
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 			persist_surb_query: true,

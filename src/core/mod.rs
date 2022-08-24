@@ -61,6 +61,7 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 /// Size of a mixnet packet.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
+/// Size of the polling window in time.
 pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
 
 pub const WINDOW_MARGIN_PERCENT: usize = 10;
@@ -189,9 +190,6 @@ pub struct Mixnet<T, C> {
 	// If true keep original message with surb
 	// and return it with surb reply.
 	persist_surb_query: bool,
-
-	default_limit_msg: Option<usize>,
-
 	packet_per_window: usize,
 	current_window_start: Instant,
 	current_window: Wrapping<usize>,
@@ -206,7 +204,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	pub fn new(config: Config, topology: T) -> Self {
 		let window_delay = Delay::new(WINDOW_DELAY);
 		let packet_duration_nanos =
-			(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64;
+			(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
 		let average_traffic_delay = Duration::from_nanos(packet_duration_nanos);
 		let packet_per_window = (WINDOW_DELAY.as_nanos() / packet_duration_nanos as u128) as usize;
 		debug_assert!(packet_per_window > 0);
@@ -227,7 +225,6 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
 			average_traffic_delay,
-			default_limit_msg: config.limit_per_window,
 			current_window_start: now,
 			last_now: now,
 			current_window: Wrapping(0),
@@ -259,22 +256,12 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
-		let connection =
-			ManagedConnection::new(peer, self.default_limit_msg, connection, self.current_window);
+		let connection = ManagedConnection::new(peer, connection, self.current_window);
 		self.connected_peers.insert(peer, connection);
 	}
 
 	pub fn connected_mut(&mut self, peer: &NetworkPeerId) -> Option<&mut C> {
 		self.connected_peers.get_mut(peer).map(|c| c.connection_mut())
-	}
-
-	pub(crate) fn managed_connection_mut(
-		&mut self,
-		peer: &MixPeerId,
-	) -> Option<&mut ManagedConnection<C>> {
-		self.handshaken_peers
-			.get(peer)
-			.and_then(|peer| self.connected_peers.get_mut(peer))
 	}
 
 	pub fn local_id(&self) -> &MixPeerId {
@@ -616,10 +603,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				self.last_now,
 				&mut self.topology,
 			) {
-				Poll::Ready(ConnectionEvent::Established(id, key)) => {
-					if self.topology.routing_to(&id, &self.local_id) {
-						connection.change_limit_msg(None);
-					}
+				Poll::Ready(ConnectionEvent::Established(_id, key)) => {
 					all_pending = false;
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());

@@ -140,7 +140,7 @@ impl mixnet::Topology for TopologyGraph {
 		}
 	}
 
-	fn allowed_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
 		if self.external.as_ref() == Some(id) {
 			return Some((1, 1))
 		}
@@ -248,12 +248,10 @@ fn test_messages(
 			secret_key: secrets[i].clone(),
 			public_key: pub_key.clone(),
 			local_id: id.clone(),
-			target_bits_per_second: 512 * 1024,
+			target_bytes_per_second: 512 * 1024,
 			timeout_ms: 10000,
 			num_hops: 3,
 			average_message_delay_ms: 50,
-			limit_per_window: None,
-			limit_per_window_routing: None,
 			persist_surb_query: false,
 			replay_ttl_ms: 100_000,
 			surb_ttl_ms: 100_000,
