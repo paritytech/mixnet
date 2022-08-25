@@ -199,6 +199,12 @@ impl mixnet::Topology for TopologyGraph {
 		}
 		Some(result)
 	}
+
+	fn collect_windows_stats(&self) -> bool {
+		true
+	}
+
+	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
 }
 
 fn test_messages(

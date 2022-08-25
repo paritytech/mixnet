@@ -147,10 +147,21 @@ pub fn public_from_ed25519(ed25519_pk: [u8; 32]) -> MixPublicKey {
 		.into()
 }
 
+// only needed for stats
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum PacketType {
+	Forward,
+	ForwardExternal,
+	SendFromSelf,
+	Surbs,
+	Cover,
+}
+
 #[derive(PartialEq, Eq)]
 /// A real traffic message that we need to forward.
 pub(crate) struct QueuedPacket {
 	deadline: Option<Instant>,
+	kind: PacketType,
 	pub data: Packet,
 }
 
@@ -197,6 +208,7 @@ pub struct Mixnet<T, C> {
 	last_now: Instant,
 
 	window_delay: Delay,
+	stats: Option<WindowStats>,
 }
 
 impl<T: Topology, C: Connection> Mixnet<T, C> {
@@ -210,6 +222,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		debug_assert!(packet_per_window > 0);
 
 		let now = Instant::now();
+		let stats = topology.collect_windows_stats().then(|| WindowStats::default());
 		Mixnet {
 			topology,
 			surb: SurbsCollection::new(&config),
@@ -231,6 +244,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			current_packet_in_window: 0,
 			window_delay,
 			packet_per_window,
+			stats,
 		}
 	}
 
@@ -256,7 +270,8 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
-		let connection = ManagedConnection::new(peer, connection, self.current_window);
+		let connection =
+			ManagedConnection::new(peer, connection, self.current_window, self.stats.is_some());
 		self.connected_peers.insert(peer, connection);
 	}
 
@@ -277,6 +292,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		recipient: MixPeerId,
 		data: Packet,
 		delay: Duration,
+		kind: PacketType,
 	) -> Result<(), Error> {
 		if let Some(connection) = self
 			.handshaken_peers
@@ -285,7 +301,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		{
 			let deadline = Some(self.last_now + delay);
 			connection.queue_packet(
-				QueuedPacket { deadline, data },
+				QueuedPacket { deadline, data, kind },
 				self.packet_per_window,
 				&self.local_id,
 				&self.topology,
@@ -299,7 +315,12 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 
 	// When node are not routing, the packet is not delayed
 	// and sent immediatly.
-	fn queue_external_packet(&mut self, recipient: MixPeerId, data: Packet) -> Result<(), Error> {
+	fn queue_external_packet(
+		&mut self,
+		recipient: MixPeerId,
+		data: Packet,
+		kind: PacketType,
+	) -> Result<(), Error> {
 		if let Some(connection) = self
 			.handshaken_peers
 			.get(&recipient)
@@ -307,7 +328,7 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		{
 			let deadline = Some(self.last_now); // TODO remove option for deadline (we don't want to skip other packets
 			connection.queue_packet(
-				QueuedPacket { deadline, data },
+				QueuedPacket { deadline, data, kind },
 				self.packet_per_window,
 				&self.local_id,
 				&self.topology,
@@ -410,11 +431,11 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		if self.topology.is_first_node(&self.local_id) {
 			for (peer_id, packet) in packets {
 				let delay = exp_delay(&mut rng, self.average_hop_delay);
-				self.queue_packet(peer_id, packet, delay)?;
+				self.queue_packet(peer_id, packet, delay, PacketType::SendFromSelf)?;
 			}
 		} else {
 			for (peer_id, packet) in packets {
-				self.queue_external_packet(peer_id, packet)?;
+				self.queue_external_packet(peer_id, packet, PacketType::SendFromSelf)?;
 			}
 		}
 		Ok(())
@@ -437,13 +458,13 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 		if self.topology.neighbors(&self.local_id).is_some() {
 			// TODO is routing function
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
-			self.queue_packet(dest, packet, delay)?;
+			self.queue_packet(dest, packet, delay, PacketType::Surbs)?;
 		} else {
 			// TODO this would need to attempt dial (or just
 			// generate surb passing by same peer as the one we
 			// just received: means surb reply should be done
 			// quickly).
-			self.queue_external_packet(dest, packet)?;
+			self.queue_external_packet(dest, packet, PacketType::Surbs)?;
 		}
 		Ok(())
 	}
@@ -504,7 +525,12 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
 				// See if we can forward the message
 				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
-				self.queue_packet(next_id, packet, Duration::from_nanos(delay as u64))?;
+				let kind = if self.stats.is_some() && !self.topology.is_routing(&peer_id) {
+					PacketType::ForwardExternal
+				} else {
+					PacketType::Forward
+				};
+				self.queue_packet(next_id, packet, Duration::from_nanos(delay as u64), kind)?;
 			},
 		}
 		Ok(None)
@@ -569,6 +595,22 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 				for _ in 0..nb_spent {
 					self.current_window_start += WINDOW_DELAY;
 				}
+
+				self.stats.as_mut().map(|stats| {
+					*stats = Default::default();
+					stats.last_window = self.current_window.0 - nb_spent;
+					stats.window = self.current_window.0;
+					stats.number_connected = self.connected_peers.len();
+					for (_, c) in self.connected_peers.iter_mut() {
+						if let Some(stat) = c.connection_stats() {
+							stats.sum_connected.add(stat);
+							*stat = Default::default();
+						}
+					}
+
+					self.topology.window_stats(stats);
+				});
+
 				self.window_delay.reset(WINDOW_DELAY);
 				while !matches!(self.window_delay.poll_unpin(cx), Poll::Pending) {
 					self.window_delay.reset(WINDOW_DELAY);
@@ -632,11 +674,18 @@ impl<T: Topology, C: Connection> Mixnet<T, C> {
 			}
 		}
 
-		for (peer, packet) in recv_packets {
+		for (peer, (packet, external)) in recv_packets {
 			if !self.import_packet(peer, packet, results) {
 				// warning this only indicate a peer send wrong packet, but cannot presume
 				// who (can be external).
 				log::trace!(target: "mixnet", "Error importing packet, wrong format.");
+				self.stats.as_mut().map(|stats| {
+					if external {
+						stats.number_from_external_received_valid += 1;
+					} else {
+						stats.number_received_valid += 1;
+					}
+				});
 			}
 		}
 
@@ -856,6 +905,112 @@ pub fn generate_new_keys() -> (MixPublicKey, MixSecretKey) {
 	let secret_key: MixSecretKey = secret.into();
 	let public_key = MixPublicKey::from(&secret_key);
 	(public_key, secret_key)
+}
+
+/// Stat collected for a window (or more if a window is skipped).
+#[derive(Default, Debug)]
+pub struct WindowStats {
+	pub window: usize,
+	pub last_window: usize,
+	pub number_connected: usize,
+	pub sum_connected: ConnectionStats,
+	// Do not include external
+	pub number_received_valid: usize,
+	pub number_received_invalid: usize,
+
+	pub number_from_external_received_valid: usize,
+	pub number_from_external_received_invalid: usize,
+}
+
+#[derive(Default, Debug)]
+pub struct ConnectionStats {
+	// Do not include external or self
+	pub number_forwarded_success: usize,
+	pub number_forwarded_failed: usize,
+
+	pub number_from_external_forwarded_success: usize,
+	pub number_from_external_forwarded_failed: usize,
+
+	pub number_from_self_send_success: usize,
+	pub number_from_self_send_failed: usize,
+
+	pub number_surbs_reply_success: usize,
+	pub number_surbs_reply_failed: usize,
+
+	pub number_cover_send_success: usize,
+	pub number_cover_send_failed: usize,
+
+	pub max_peer_paquet_queue_size: usize,
+
+	pub peer_paquet_queue_size: usize,
+}
+
+impl ConnectionStats {
+	fn add(&mut self, other: &Self) {
+		self.number_forwarded_success += other.number_forwarded_success;
+		self.number_forwarded_failed += other.number_forwarded_failed;
+
+		self.number_from_external_forwarded_success += other.number_from_external_forwarded_success;
+		self.number_from_external_forwarded_failed += other.number_from_external_forwarded_success;
+
+		self.number_from_self_send_success += other.number_from_self_send_success;
+		self.number_from_self_send_failed += other.number_from_self_send_failed;
+
+		self.number_surbs_reply_success += other.number_surbs_reply_success;
+		self.number_surbs_reply_failed += other.number_surbs_reply_failed;
+
+		self.number_cover_send_success += other.number_cover_send_success;
+		self.number_cover_send_failed += other.number_cover_send_failed;
+
+		self.max_peer_paquet_queue_size =
+			std::cmp::max(self.max_peer_paquet_queue_size, other.max_peer_paquet_queue_size);
+
+		self.peer_paquet_queue_size += other.peer_paquet_queue_size;
+	}
+
+	fn success_packet(&mut self, kind: Option<PacketType>) {
+		let kind = if let Some(kind) = kind { kind } else { return };
+
+		match kind {
+			PacketType::Forward => {
+				self.number_forwarded_success += 1;
+			},
+			PacketType::ForwardExternal => {
+				self.number_from_external_forwarded_success += 1;
+			},
+			PacketType::SendFromSelf => {
+				self.number_from_self_send_success += 1;
+			},
+			PacketType::Cover => {
+				self.number_cover_send_success += 1;
+			},
+			PacketType::Surbs => {
+				self.number_surbs_reply_success += 1;
+			},
+		}
+	}
+
+	fn failure_packet(&mut self, kind: Option<PacketType>) {
+		let kind = if let Some(kind) = kind { kind } else { return };
+
+		match kind {
+			PacketType::Forward => {
+				self.number_forwarded_failed += 1;
+			},
+			PacketType::ForwardExternal => {
+				self.number_from_external_forwarded_failed += 1;
+			},
+			PacketType::SendFromSelf => {
+				self.number_from_self_send_failed += 1;
+			},
+			PacketType::Cover => {
+				self.number_cover_send_failed += 1;
+			},
+			PacketType::Surbs => {
+				self.number_surbs_reply_failed += 1;
+			},
+		}
+	}
 }
 
 #[test]

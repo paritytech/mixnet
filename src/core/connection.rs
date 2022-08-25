@@ -24,8 +24,8 @@
 //! of packet.
 
 use crate::{
-	core::{NetworkPeerId, QueuedPacket, WINDOW_MARGIN_PERCENT},
-	MixPeerId, MixPublicKey, Packet, Topology, PACKET_SIZE,
+	core::{NetworkPeerId, PacketType, QueuedPacket, WINDOW_MARGIN_PERCENT},
+	ConnectionStats, MixPeerId, MixPublicKey, Packet, Topology, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -54,7 +54,7 @@ pub trait Connection {
 
 pub(crate) enum ConnectionEvent {
 	Established(MixPeerId, MixPublicKey),
-	Received(Packet),
+	Received((Packet, bool)),
 	Broken,
 	None,
 }
@@ -67,16 +67,22 @@ pub(crate) struct ManagedConnection<C> {
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
 	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
 	packet_queue: BinaryHeap<QueuedPacket>,
-	next_packet: Option<Vec<u8>>,
+	next_packet: Option<(Vec<u8>, PacketType)>,
 	// If we did not receive for a while, close connection.
 	read_timeout: Delay,
 	current_window: Wrapping<usize>,
 	sent_in_window: usize,
 	recv_in_window: usize,
+	stats: Option<(ConnectionStats, Option<PacketType>)>,
 }
 
 impl<C: Connection> ManagedConnection<C> {
-	pub fn new(network_id: NetworkPeerId, connection: C, current_window: Wrapping<usize>) -> Self {
+	pub fn new(
+		network_id: NetworkPeerId,
+		connection: C,
+		current_window: Wrapping<usize>,
+		with_stats: bool,
+	) -> Self {
 		Self {
 			connection,
 			mixnet_id: None,
@@ -89,6 +95,7 @@ impl<C: Connection> ManagedConnection<C> {
 			sent_in_window: 0,
 			recv_in_window: 0,
 			packet_queue: Default::default(),
+			stats: with_stats.then(|| Default::default()),
 		}
 	}
 
@@ -151,9 +158,13 @@ impl<C: Connection> ManagedConnection<C> {
 
 	fn try_send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
 		match self.connection.send_flushed(cx) {
-			Poll::Ready(Ok(sent)) => Poll::Ready(Ok(sent)),
+			Poll::Ready(Ok(sent)) => {
+				self.stats.as_mut().map(|(stats, kind)| stats.success_packet(kind.take()));
+				Poll::Ready(Ok(sent))
+			},
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error sending to peer {:?}", self.network_id);
+				self.stats.as_mut().map(|(stats, kind)| stats.failure_packet(kind.take()));
 				Poll::Ready(Err(()))
 			},
 			Poll::Pending => Poll::Pending,
@@ -252,6 +263,15 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::NoPath(Some(*peer_id)))
 			}
 			self.packet_queue.push(packet);
+			self.stats.as_mut().map(|(stats, _)| {
+				let mut len = self.packet_queue.len();
+				if self.next_packet.is_some() {
+					len += 1;
+				}
+				if len > stats.max_peer_paquet_queue_size {
+					stats.max_peer_paquet_queue_size = len;
+				}
+			});
 			Ok(())
 		} else {
 			Err(crate::Error::NoSphinxId)
@@ -305,9 +325,16 @@ impl<C: Connection> ManagedConnection<C> {
 					Poll::Ready(Ok(false)) => {
 						// nothing in queue, get next.
 						if let Some(packet) = self.next_packet.take() {
-							if let Some(packet) = self.try_queue_send_packet(packet) {
+							if let Some(unsend) = self.try_queue_send_packet(packet.0) {
 								log::error!(target: "mixnet", "try send should not fail on flushed queue.");
-								self.next_packet = Some(packet);
+								self.stats
+									.as_mut()
+									.map(|(stats, _)| stats.failure_packet(Some(packet.1)));
+								self.next_packet = Some((unsend, packet.1));
+							} else {
+								self.stats.as_mut().map(|stats| {
+									stats.1 = Some(packet.1);
+								});
 							}
 							continue
 						}
@@ -317,14 +344,17 @@ impl<C: Connection> ManagedConnection<C> {
 							.map_or(false, |p| p.deadline.map(|d| d <= now).unwrap_or(true));
 						if deadline {
 							if let Some(packet) = self.packet_queue.pop() {
-								self.next_packet = Some(packet.data.into_vec());
+								self.next_packet = Some((packet.data.into_vec(), packet.kind));
 							}
 						} else if let Some(key) = self.public_key {
 							if routing && topology.routing_to(local_id, &peer_id) {
 								self.next_packet = crate::core::cover_message_to(&peer_id, key)
-									.map(|p| p.into_vec());
+									.map(|p| (p.into_vec(), PacketType::Cover));
 								if self.next_packet.is_none() {
 									log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
+									self.stats
+										.as_mut()
+										.map(|stats| stats.0.number_cover_send_failed += 1);
 								}
 							}
 							if self.next_packet.is_none() {
@@ -348,7 +378,7 @@ impl<C: Connection> ManagedConnection<C> {
 				match self.try_recv_packet(cx, current_window) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
-						result = Poll::Ready(ConnectionEvent::Received(packet));
+						result = Poll::Ready(ConnectionEvent::Received((packet, external)));
 					},
 					Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
 					Poll::Pending => (),
@@ -389,5 +419,29 @@ impl<C: Connection> ManagedConnection<C> {
 			Poll::Pending => (),
 		}
 		result
+	}
+
+	pub fn connection_stats(&mut self) -> Option<&mut ConnectionStats> {
+		self.stats.as_mut().map(|stats| {
+			// heuristic we just get the queue size when queried.
+			stats.0.peer_paquet_queue_size = self.packet_queue.len();
+			if self.next_packet.is_some() {
+				stats.0.peer_paquet_queue_size += 1;
+			}
+			&mut stats.0
+		})
+	}
+}
+
+impl<C> Drop for ManagedConnection<C> {
+	fn drop(&mut self) {
+		self.stats.as_mut().map(|(stats, _)| {
+			if let Some(packet) = self.next_packet.take() {
+				stats.failure_packet(Some(packet.1))
+			}
+			for packet in self.packet_queue.iter() {
+				stats.failure_packet(Some(packet.kind))
+			}
+		});
 	}
 }

@@ -20,7 +20,7 @@
 
 //! Mixnet topology interface.
 
-use crate::{core::NetworkPeerId, Error, MixPeerId, MixPublicKey, SendOptions};
+use crate::{core::NetworkPeerId, Error, MixPeerId, MixPublicKey, SendOptions, WindowStats};
 use rand::Rng;
 
 /// Provide network topology information to the mixnet.
@@ -165,6 +165,12 @@ pub trait Topology: Sized + Send + 'static {
 			self.routing_to(peer_id, local_id) ||
 			self.bandwidth_external(peer_id).is_some()
 	}
+
+	/// Do we need stats for each windows.
+	fn collect_windows_stats(&self) -> bool;
+
+	/// Callback on windows stats.
+	fn window_stats(&self, stats: &WindowStats);
 }
 
 fn gen_paths<T: Topology>(
@@ -285,4 +291,10 @@ impl Topology for NoTopology {
 	fn handshake(&mut self, _with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		Some(public_key.to_bytes().to_vec())
 	}
+
+	fn collect_windows_stats(&self) -> bool {
+		false
+	}
+
+	fn window_stats(&self, _: &WindowStats) {}
 }
