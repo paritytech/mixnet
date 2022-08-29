@@ -18,6 +18,11 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+//! All connected star tests.
+
+mod common;
+
+use common::mk_transport;
 use futures::{channel::mpsc, future::Either, prelude::*, task::SpawnExt};
 use libp2p_core::{
 	identity::{self},
@@ -556,21 +561,4 @@ fn from_external_with_surb() {
 #[test]
 fn from_external_no_surb() {
 	test_messages(5, 1, 4 * 1024, false, true);
-}
-
-fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)
-{
-	let key = identity::ed25519::Keypair::generate();
-	let id_keys = identity::Keypair::Ed25519(key.clone());
-	let peer_id = id_keys.public().to_peer_id();
-	let noise_keys = noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys).unwrap();
-	(
-		peer_id,
-		key,
-		TcpTransport::new(GenTcpConfig::new().nodelay(true))
-			.upgrade(upgrade::Version::V1)
-			.authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
-			.multiplex(mplex::MplexConfig::default())
-			.boxed(),
-	)
 }

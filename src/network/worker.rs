@@ -22,7 +22,8 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload, Topology},
+	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload},
+	topology::Topology,
 	network::connection::Connection,
 	DecodedMessage, MixnetEvent, SendOptions,
 };

@@ -25,13 +25,13 @@ pub(crate) mod connection;
 mod error;
 mod fragment;
 mod sphinx;
-mod topology;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ManagedConnection},
 	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, WorkerSink2,
+	Topology,
 };
 pub use config::Config;
 pub use connection::Connection;
@@ -48,7 +48,6 @@ use std::{
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
-pub use topology::{NoTopology, Topology};
 
 /// Mixnet peer DH static public key.
 pub type MixPublicKey = sphinx::PublicKey;

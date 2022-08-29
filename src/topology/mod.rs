@@ -20,8 +20,12 @@
 
 //! Mixnet topology interface.
 
-use crate::{core::NetworkPeerId, Error, MixPeerId, MixPublicKey, SendOptions, WindowStats};
+mod hash_table;
+
+use crate::{NetworkPeerId, Error, MixPeerId, MixPublicKey, SendOptions, WindowStats};
 use rand::Rng;
+
+pub use hash_table::TopologyHashTable;
 
 /// Provide network topology information to the mixnet.
 pub trait Topology: Sized + Send + 'static {

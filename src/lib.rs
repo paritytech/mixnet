@@ -23,13 +23,15 @@ extern crate arrayref;
 
 mod core;
 mod network;
+mod topology;
 
 pub use crate::core::{
 	generate_new_keys, public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config,
-	ConnectionStats, Error, MixPublicKey, MixSecretKey, NoTopology, Packet, SurbsPayload, Topology,
+	ConnectionStats, Error, MixPublicKey, MixSecretKey, Packet, SurbsPayload,
 	WindowStats, PACKET_SIZE,
 };
-pub use network::{
+pub use crate::topology::{NoTopology, Topology, TopologyHashTable};
+pub use crate::network::{
 	MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerSink2,
 };
 
