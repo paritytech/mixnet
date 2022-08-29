@@ -20,9 +20,7 @@
 
 //! TopologyHashTable tests.
 
-mod common;
-
-use common::mk_transport;
+//mod common;
 
 #[test]
 fn dummy() {}

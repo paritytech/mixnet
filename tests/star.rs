@@ -22,21 +22,20 @@
 
 mod common;
 
-use common::{mk_transport, PeerTestReply};
-use futures::{channel::mpsc, future::Either, prelude::*, task::SpawnExt};
-use libp2p_core::{Multiaddr, PeerId};
-use libp2p_swarm::{Swarm, SwarmEvent};
+use common::PeerTestReply;
+use futures::prelude::*;
+use libp2p_core::PeerId;
 use rand::{prelude::IteratorRandom, RngCore};
 use std::{
 	collections::HashMap,
 	sync::{
 		atomic::{AtomicUsize, Ordering},
-		Arc, Mutex,
+		Arc,
 	},
 	task::Poll,
 };
 
-use mixnet::{Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand};
+use mixnet::{MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -211,362 +210,6 @@ fn test_messages(
 	with_surb: bool,
 	from_external: bool,
 ) {
-	let _ = env_logger::try_init();
-	let mut source_message = Vec::new();
-	source_message.resize(message_size, 0);
-	rand::thread_rng().fill_bytes(&mut source_message);
-
-	let executor = futures::executor::ThreadPool::new().unwrap();
-	let extra_external = if from_external {
-		2 // 2 external node at ix num_peers and num_peers + 1
-	} else {
-		0
-	};
-	let mut nodes = Vec::new();
-	let mut network_ids = Vec::new();
-	let mut secrets = Vec::new();
-	let mut transports = Vec::new();
-	for _ in 0..num_peers + extra_external {
-		let (peer_id, _peer_key, trans) = mk_transport();
-		let (peer_public_key, peer_secret_key) = mixnet::generate_new_keys();
-		let mut secret_mix = [0u8; 32];
-		rand::thread_rng().fill_bytes(&mut secret_mix);
-		let mix_secret_key: ed25519_zebra::SigningKey = secret_mix.into();
-		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
-		let mix_id: [u8; 32] = mix_public_key.into();
-		nodes.push((mix_id, peer_public_key.clone()));
-		network_ids.push((peer_id, Arc::new((mix_secret_key, mix_public_key))));
-		secrets.push(peer_secret_key);
-		transports.push(trans);
-	}
-
-	let topology = TopologyGraph::new_star(&nodes[..num_peers]);
-
-	let mut swarms = Vec::new();
-	let mut count_connection = Vec::new();
-	let mut workers = Vec::new();
-	for (i, trans) in transports.into_iter().enumerate() {
-		let (id, pub_key) = nodes[i];
-		let cfg = mixnet::Config {
-			secret_key: secrets[i].clone(),
-			public_key: pub_key.clone(),
-			local_id: id.clone(),
-			target_bytes_per_second: 512 * 1024,
-			timeout_ms: 10000,
-			num_hops: 3,
-			average_message_delay_ms: 50,
-			persist_surb_query: false,
-			replay_ttl_ms: 100_000,
-			surb_ttl_ms: 100_000,
-		};
-
-		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);
-
-		let (from_worker_sink, from_worker_stream) = mpsc::channel(1000);
-
-		let mixnet =
-			mixnet::MixnetBehaviour::new(Box::new(to_worker_sink), Box::new(from_worker_stream));
-		let mut topo = topology.clone();
-		let counter = Arc::new(AtomicUsize::new(0));
-		topo.nb_connected = counter.clone();
-		topo.local_id = Some(id.clone());
-		topo.local_network_id = Some(network_ids[i].0.clone());
-		topo.mix_secret_key = Some(network_ids[i].1.clone());
-		count_connection.push(counter);
-		let worker = Arc::new(Mutex::new(mixnet::MixnetWorker::new(
-			cfg,
-			topo,
-			(Box::new(from_worker_sink), Box::new(to_worker_stream)),
-		)));
-		workers.push(worker.clone());
-		let worker = future::poll_fn(move |cx| loop {
-			match worker.lock().unwrap().poll(cx) {
-				Poll::Ready(false) => {
-					log::error!(target: "mixnet", "Shutting worker");
-					return Poll::Ready(())
-				},
-				Poll::Pending => return Poll::Pending,
-				Poll::Ready(true) => (),
-			}
-		});
-		executor.spawn(worker).unwrap();
-		let mut swarm = Swarm::new(trans, mixnet, network_ids[i].0.clone());
-
-		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
-		swarm.listen_on(addr).unwrap();
-		swarms.push(swarm);
-	}
-
-	let mut to_notify = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
-	let mut to_wait = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
-
-	for p1 in 0..num_peers {
-		for p2 in p1 + 1..num_peers {
-			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
-			to_notify[p1].push(tx);
-			to_wait[p2].push(rx);
-		}
-		if from_external {
-			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
-			// 0 with ext 1
-			to_notify[num_peers].push(tx);
-			to_wait[0].push(rx);
-		}
-	}
-
-	let mut connect_futures = Vec::new();
-	for (p, (mut swarm, (mut to_notify, mut to_wait))) in swarms
-		.into_iter()
-		.zip(to_notify.into_iter().zip(to_wait.into_iter()))
-		.enumerate()
-	{
-		let external_1 = from_external && p == num_peers;
-		let external_2 = from_external && p > num_peers;
-		let num_peers = if from_external && p == 0 {
-			num_peers + 1
-		} else if external_1 {
-			2 // one connection is enough for external one
-		} else {
-			num_peers
-		};
-		let peer_future = async move {
-			let mut num_connected = 0;
-
-			if external_2 {
-				// Do not attempt connection for external 2.
-				return (swarm, p)
-			}
-			// connect as topology
-			loop {
-				match swarm.select_next_some().await {
-					SwarmEvent::NewListenAddr { address, .. } => {
-						for mut tx in to_notify.drain(..) {
-							tx.send(address.clone()).await.unwrap()
-						}
-						for mut rx in to_wait.drain(..) {
-							swarm.dial(rx.next().await.unwrap()).unwrap();
-						}
-					},
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::Connected(_, _)) => {
-						num_connected += 1;
-						log::trace!(target: "mixnet", "{} Connected  {}/{}", p, num_connected, num_peers - 1);
-						if num_connected == num_peers - 1 {
-							return (swarm, p)
-						}
-					},
-					_ => {},
-				}
-			}
-		};
-		connect_futures.push(Box::pin(peer_future));
-	}
-
-	let mut swarms = Vec::new();
-	while !connect_futures.is_empty() {
-		let result = futures::future::select_all(connect_futures);
-		let ((swarm, p), _, rest) = async_std::task::block_on(result);
-		log::trace!(target: "mixnet", "Connecting {} completed", p);
-		connect_futures = rest;
-		swarms.push((p, swarm));
-	}
-
-	for i in 0..num_peers {
-		if from_external && i == 0 {
-			assert_eq!(count_connection[i].load(Ordering::Relaxed), num_peers);
-		} else {
-			assert_eq!(count_connection[i].load(Ordering::Relaxed), num_peers - 1);
-		}
-	}
-
-	let mut sender = if from_external {
-		assert_eq!(count_connection[num_peers].load(Ordering::Relaxed), 1);
-		assert_eq!(count_connection[num_peers + 1].load(Ordering::Relaxed), 0);
-		// ext 1 can route through peer 0 (only peer acceptiong)
-		assert!(workers[num_peers]
-			.lock()
-			.unwrap()
-			.mixnet_mut()
-			.register_message(
-				Some(nodes[1].0.clone()), // we are connected to 0, sending to 1
-				None,
-				source_message.to_vec(),
-				SendOptions { num_hop: None, with_surb },
-			)
-			.is_ok());
-		// ext 2 cannot
-		assert!(matches!(
-			workers[num_peers + 1].lock().unwrap().mixnet_mut().register_message(
-				Some(nodes[0].0.clone()),
-				None,
-				source_message.to_vec(),
-				SendOptions { num_hop: None, with_surb },
-			),
-			Err(Error::Unreachable(_))
-		));
-
-		let index = swarms.iter().position(|(p, _)| *p == num_peers).unwrap();
-		let (_, sender) = swarms.remove(index);
-		sender
-	} else {
-		let index = swarms.iter().position(|(p, _)| *p == 0).unwrap();
-		let (_, mut sender) = swarms.remove(index);
-		for np in 1..num_peers {
-			let (recipient, _) = nodes[np];
-			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
-			for _ in 0..message_count {
-				sender
-					.behaviour_mut()
-					.send(
-						recipient.clone(),
-						source_message.to_vec(),
-						SendOptions { num_hop: None, with_surb },
-					)
-					.unwrap();
-			}
-		}
-		sender
-	};
-
-	let mut futures = Vec::new();
-	for (p, mut swarm) in swarms {
-		let source_message = &source_message;
-		let peer_future = async move {
-			let mut received = 0;
-			if from_external && p != 1 {
-				// only 1 is targeted.
-				return swarm
-			}
-			loop {
-				match swarm.select_next_some().await {
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(
-						mixnet::DecodedMessage { peer, message, kind },
-					)) => {
-						received += 1;
-						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
-						assert_eq!(source_message.as_slice(), message.as_slice());
-						if let Some(reply) = kind.surb() {
-							swarm.behaviour_mut().send_surb(b"pong".to_vec(), reply).unwrap();
-						}
-						if received == message_count {
-							return swarm
-						}
-					},
-					_ => {},
-				}
-			}
-		};
-		futures.push(Box::pin(peer_future.boxed()));
-	}
-
-	let mut done_futures = Vec::new();
-	let spin_future =
-		async move {
-			let mut expected_surb = if with_surb {
-				if from_external {
-					Some(1)
-				} else {
-					Some(num_peers - 1)
-				}
-			} else {
-				None
-			};
-			loop {
-				match sender.select_next_some().await {
-					// TODO have surb original message (can be small vec id: make it an input
-					// param) attached.
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(
-						mixnet::DecodedMessage { peer: _, message, kind: _ },
-					)) => {
-						assert!(message.as_slice() == b"pong");
-						expected_surb.as_mut().map(|nb| *nb -= 1);
-						if expected_surb == Some(0) {
-							return sender
-						}
-					},
-					_ => {},
-				}
-			}
-		};
-	done_futures.push(Box::pin(spin_future.boxed()));
-
-	while done_futures.len() < num_peers + extra_external {
-		let result1 = futures::future::select_all(futures.drain(..));
-		let result2 = futures::future::select_all(&mut done_futures);
-		match async_std::task::block_on(futures::future::select(result1, result2)) {
-			Either::Left((t, _)) => {
-				let (mut swarm, index, rest) = t;
-				log::trace!(target: "mixnet", "{} Completed", index);
-				futures = rest;
-				let spin_future = async move {
-					loop {
-						swarm.select_next_some().await;
-					}
-				};
-				done_futures.push(Box::pin(spin_future.boxed()));
-			},
-			Either::Right((t, _)) => {
-				// can only be with surb of first
-				assert!(with_surb);
-				let (_swarm, index, _rest) = t;
-				assert_eq!(index, 0);
-				return
-			},
-		}
-	}
-	while with_surb {
-		// TODO just if?
-		let result2 = futures::future::select_all(&mut done_futures);
-		match async_std::task::block_on(result2) {
-			(_swarm, index, _rest) => {
-				assert_eq!(index, 0);
-				return
-			},
-		}
-	}
-}
-
-#[test]
-fn message_exchange_no_surb() {
-	test_messages(5, 10, 1, false, false);
-}
-
-#[test]
-fn fragmented_messages_no_surb() {
-	test_messages(2, 1, 8 * 1024, false, false);
-}
-
-#[test]
-fn message_exchange_with_surb() {
-	test_messages(5, 10, 1, true, false);
-}
-
-#[test]
-fn fragmented_messages_with_surb() {
-	test_messages(2, 1, 8 * 1024, true, false);
-}
-
-#[test]
-fn from_external_with_surb() {
-	test_messages(5, 1, 100, true, true);
-}
-
-#[test]
-fn from_external_no_surb() {
-	test_messages(5, 1, 4 * 1024, false, true);
-}
-
-#[test]
-fn message_exchange_no_surb2() {
-	test_messages2(5, 10, 1, false, false);
-}
-
-fn test_messages2(
-	num_peers: usize,
-	message_count: usize,
-	message_size: usize,
-	with_surb: bool,
-	from_external: bool,
-) {
 	let seed: u64 = 0;
 	let single_thread = false;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
@@ -678,7 +321,7 @@ fn test_messages2(
 	let mut received_messages: Vec<_> =
 		with_swarm_channels[range]
 			.iter_mut()
-			.map(|(receiver, _)| {
+			.map(|(receiver, sender)| {
 				future::poll_fn(move |cx| loop {
 					match receiver.poll_next_unpin(cx) {
 						Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
@@ -688,7 +331,9 @@ fn test_messages2(
 							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
 							assert_eq!(source_message.as_slice(), message.as_slice());
 							if let Some(reply) = kind.surb() {
-								// TODO
+								sender
+									.try_send(WorkerCommand::RegisterSurbs(b"pong".to_vec(), reply))
+									.unwrap();
 							}
 							return Poll::Ready(())
 						},
@@ -704,4 +349,64 @@ fn test_messages2(
 		log::trace!(target: "mixnet", "Connecting {} completed", p);
 		received_messages = remaining;
 	}
+
+	if !with_surb {
+		return
+	}
+
+	let (from, mut expected_surb) = if from_external { (num_peers, 1) } else { (0, num_peers - 1) };
+	let expected_surb = &mut expected_surb;
+
+	let (receiver, _sender) = &mut with_swarm_channels[from];
+	let poll_fn = future::poll_fn(move |cx| loop {
+		match receiver.poll_next_unpin(cx) {
+			Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
+			Poll::Ready(Some(PeerTestReply::ReceiveMessage(mixnet::DecodedMessage {
+				peer,
+				message,
+				kind,
+			}))) => {
+				log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
+				assert_eq!(b"pong", message.as_slice());
+				assert!(kind.surb().is_none());
+				*expected_surb -= 1;
+				if *expected_surb == 0 {
+					return Poll::Ready(())
+				}
+			},
+			Poll::Ready(None) => (),
+			Poll::Pending => return Poll::Pending,
+		}
+	});
+	async_std::task::block_on(poll_fn);
+}
+
+#[test]
+fn message_exchange_no_surb() {
+	test_messages(5, 10, 1, false, false);
+}
+
+#[test]
+fn fragmented_messages_no_surb() {
+	test_messages(2, 1, 8 * 1024, false, false);
+}
+
+#[test]
+fn message_exchange_with_surb() {
+	test_messages(5, 10, 1, true, false);
+}
+
+#[test]
+fn fragmented_messages_with_surb() {
+	test_messages(2, 1, 8 * 1024, true, false);
+}
+
+#[test]
+fn from_external_with_surb() {
+	test_messages(5, 1, 100, true, true);
+}
+
+#[test]
+fn from_external_no_surb() {
+	test_messages(5, 1, 4 * 1024, false, true);
 }

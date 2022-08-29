@@ -20,9 +20,9 @@
 
 //! Tests utility (simple implementation of mixnet around local libp2p transport).
 
-use futures::{channel::mpsc, executor::ThreadPool, future::Either, prelude::*, task::SpawnExt};
+use futures::{channel::mpsc, executor::ThreadPool, prelude::*, task::SpawnExt};
 use libp2p_core::{
-	identity::{self},
+	identity,
 	muxing::StreamMuxerBox,
 	transport::{self, Transport},
 	upgrade, Multiaddr, PeerId,
@@ -35,22 +35,8 @@ use mixnet::{
 	Config, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetWorker, SinkToWorker,
 	StreamFromWorker, Topology, WorkerChannels, WorkerCommand,
 };
-use rand::{prelude::IteratorRandom, rngs::SmallRng, RngCore};
-use std::{
-	collections::HashMap,
-	sync::{
-		atomic::{AtomicUsize, Ordering},
-		Arc, Mutex,
-	},
-	task::Poll,
-};
-
-/// Test topology to bind topology with
-/// test structure.
-pub struct TestTopology<T> {
-	worker: MixnetWorker<T>,
-	// TODO messages & implement topo
-}
+use rand::{rngs::SmallRng, RngCore};
+use std::task::Poll;
 
 /// Message that test peer replies with.
 pub enum PeerTestReply {
@@ -61,9 +47,8 @@ pub enum PeerTestReply {
 pub type TestChannels = (mpsc::Receiver<PeerTestReply>, mpsc::Sender<WorkerCommand>);
 
 /// Spawn a lip2p local transport for tests.
-/// TODO not pub
-pub fn mk_transport(
-) -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>) {
+fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)
+{
 	let key = identity::ed25519::Keypair::generate();
 	let id_keys = identity::Keypair::Ed25519(key.clone());
 	let peer_id = id_keys.public().to_peer_id();
@@ -330,7 +315,7 @@ pub fn spawn_workers<T: Topology>(
 	single_thread: bool,
 ) -> Vec<MixPeerId> {
 	let mut nodes = Vec::with_capacity(handles.len());
-	let mut workers = mk_workers(handles, num_peers, rng, config_proto, make_topo);
+	let workers = mk_workers(handles, num_peers, rng, config_proto, make_topo);
 
 	let mut workers_futures = Vec::with_capacity(workers.len());
 	for mut worker in workers.into_iter() {
