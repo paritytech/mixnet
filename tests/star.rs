@@ -36,7 +36,7 @@ use std::{
 	task::Poll,
 };
 
-use mixnet::{Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions};
+use mixnet::{Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -582,6 +582,13 @@ fn test_messages2(
 		replay_ttl_ms: 100_000,
 		surb_ttl_ms: 100_000,
 	};
+	let mut source_message = Vec::new();
+	use rand::SeedableRng;
+	let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+	source_message.resize(message_size, 0);
+	rng.fill_bytes(&mut source_message);
+	let source_message = &source_message;
+
 	let executor = futures::executor::ThreadPool::new().unwrap();
 	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
 	let (handles, mut with_swarm_channels) =
@@ -600,18 +607,19 @@ fn test_messages2(
 		topo.mix_secret_key = Some(Arc::new((mix_secret_key, mix_public_key)));
 		topo
 	};
-	common::spawn_workers::<TopologyGraph>(
+	let nodes = common::spawn_workers::<TopologyGraph>(
 		handles,
 		num_peers,
-		seed,
+		&mut rng,
 		&config_proto,
 		make_topo,
 		&executor,
 		single_thread,
 	);
-	let mut connected_futures: Vec<_> = with_swarm_channels
+	let nb_conn = if from_external { num_peers + 1 } else { num_peers };
+	let mut connected_futures: Vec<_> = with_swarm_channels[..nb_conn]
 		.iter_mut()
-		.map(|receiver| {
+		.map(|(receiver, _)| {
 			future::poll_fn(move |cx| loop {
 				match receiver.poll_next_unpin(cx) {
 					Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) =>
@@ -628,5 +636,72 @@ fn test_messages2(
 			async_std::task::block_on(futures::future::select_all(connected_futures));
 		log::trace!(target: "mixnet", "Connecting {} completed", p);
 		connected_futures = remaining;
+	}
+
+	if from_external {
+		// ext 1 can route through peer 0 (only peer acceptiong)
+		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
+			WorkerCommand::RegisterMessage(
+				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				source_message.to_vec(),
+				SendOptions { num_hop: None, with_surb },
+			)
+		))
+		.is_ok());
+		// ext 2 cannot
+		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
+			WorkerCommand::RegisterMessage(
+				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				source_message.to_vec(),
+				SendOptions { num_hop: None, with_surb },
+			)
+		))
+		.is_ok());
+	} else {
+		for np in 1..num_peers {
+			let recipient = nodes[np];
+			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
+			for _ in 0..message_count {
+				assert!(async_std::task::block_on(with_swarm_channels[0].1.send(
+					WorkerCommand::RegisterMessage(
+						Some(recipient.clone()), // we are connected to 0, sending to 1
+						source_message.to_vec(),
+						SendOptions { num_hop: None, with_surb },
+					)
+				))
+				.is_ok());
+			}
+		}
+	}
+
+	let range = if from_external { 1..2 } else { 1..num_peers };
+	let mut received_messages: Vec<_> =
+		with_swarm_channels[range]
+			.iter_mut()
+			.map(|(receiver, _)| {
+				future::poll_fn(move |cx| loop {
+					match receiver.poll_next_unpin(cx) {
+						Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
+						Poll::Ready(Some(PeerTestReply::ReceiveMessage(
+							mixnet::DecodedMessage { peer, message, kind },
+						))) => {
+							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
+							assert_eq!(source_message.as_slice(), message.as_slice());
+							if let Some(reply) = kind.surb() {
+								// TODO
+							}
+							return Poll::Ready(())
+						},
+						Poll::Ready(None) => (),
+						Poll::Pending => return Poll::Pending,
+					}
+				})
+			})
+			.collect();
+	while !received_messages.is_empty() {
+		let (_, p, remaining) =
+			async_std::task::block_on(futures::future::select_all(received_messages));
+		log::trace!(target: "mixnet", "Connecting {} completed", p);
+		received_messages = remaining;
 	}
 }
