@@ -22,7 +22,7 @@
 
 mod hash_table;
 
-use crate::{NetworkPeerId, Error, MixPeerId, MixPublicKey, SendOptions, WindowStats};
+use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, WindowStats};
 use rand::Rng;
 
 pub use hash_table::TopologyHashTable;

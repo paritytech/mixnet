@@ -21,11 +21,9 @@
 //! Topology where direct peers are resolved
 //! by hashing peers id (so randomly distributed).
 
-
 /// A topology where connections are determined by taking first
 /// hashes of a set of mixpeers.
 ///
 /// This assumes all peers are connected (`external_routing_table` defaults to `false`).
 /// And routing table are updated on mixpeer set changes.
-pub struct TopologyHashTable {
-}
+pub struct TopologyHashTable {}

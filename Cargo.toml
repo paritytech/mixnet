@@ -43,3 +43,4 @@ libp2p-yamux = "0.38.0"
 libp2p-mplex = "0.34.0"
 env_logger = "0.9.0"
 ed25519-zebra = "3.0.0"
+rand = { version = "0.8.4", features = ["small_rng"] }

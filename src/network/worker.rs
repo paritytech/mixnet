@@ -23,8 +23,8 @@
 
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload},
-	topology::Topology,
 	network::connection::Connection,
+	topology::Topology,
 	DecodedMessage, MixnetEvent, SendOptions,
 };
 use futures::{
@@ -38,6 +38,7 @@ use std::task::{Context, Poll};
 pub type WorkerStream = Box<dyn Stream<Item = WorkerCommand> + Unpin + Send>;
 pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Send>;
 
+// TODO this got exposed recently, maybe refactor api to just be send_command.
 pub enum WorkerCommand {
 	RegisterMessage(Option<crate::MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),

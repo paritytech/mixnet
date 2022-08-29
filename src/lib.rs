@@ -25,14 +25,17 @@ mod core;
 mod network;
 mod topology;
 
-pub use crate::core::{
-	generate_new_keys, public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config,
-	ConnectionStats, Error, MixPublicKey, MixSecretKey, Packet, SurbsPayload,
-	WindowStats, PACKET_SIZE,
-};
-pub use crate::topology::{NoTopology, Topology, TopologyHashTable};
-pub use crate::network::{
-	MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerSink2,
+pub use crate::{
+	core::{
+		generate_new_keys, public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config,
+		ConnectionStats, Error, MixPublicKey, MixSecretKey, Packet, SurbsPayload, WindowStats,
+		PACKET_SIZE,
+	},
+	network::{
+		MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels,
+		WorkerCommand, WorkerSink2,
+	},
+	topology::{NoTopology, Topology, TopologyHashTable},
 };
 
 /// Mixnet peer identity.

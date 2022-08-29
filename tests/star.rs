@@ -22,18 +22,10 @@
 
 mod common;
 
-use common::mk_transport;
+use common::{mk_transport, PeerTestReply};
 use futures::{channel::mpsc, future::Either, prelude::*, task::SpawnExt};
-use libp2p_core::{
-	identity::{self},
-	muxing::StreamMuxerBox,
-	transport::{self, Transport},
-	upgrade, Multiaddr, PeerId,
-};
-use libp2p_mplex as mplex;
-use libp2p_noise as noise;
+use libp2p_core::{Multiaddr, PeerId};
 use libp2p_swarm::{Swarm, SwarmEvent};
-use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use rand::{prelude::IteratorRandom, RngCore};
 use std::{
 	collections::HashMap,
@@ -44,7 +36,7 @@ use std::{
 	task::Poll,
 };
 
-use mixnet::{Error, MixPeerId, MixPublicKey, SendOptions};
+use mixnet::{Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -561,4 +553,80 @@ fn from_external_with_surb() {
 #[test]
 fn from_external_no_surb() {
 	test_messages(5, 1, 4 * 1024, false, true);
+}
+
+#[test]
+fn message_exchange_no_surb2() {
+	test_messages2(5, 10, 1, false, false);
+}
+
+fn test_messages2(
+	num_peers: usize,
+	message_count: usize,
+	message_size: usize,
+	with_surb: bool,
+	from_external: bool,
+) {
+	let seed: u64 = 0;
+	let single_thread = false;
+	let (public_key, secret_key) = mixnet::generate_new_keys();
+	let config_proto = mixnet::Config {
+		secret_key,
+		public_key,
+		local_id: Default::default(),
+		target_bytes_per_second: 512 * 1024,
+		timeout_ms: 10000,
+		num_hops: 3,
+		average_message_delay_ms: 50,
+		persist_surb_query: false,
+		replay_ttl_ms: 100_000,
+		surb_ttl_ms: 100_000,
+	};
+	let executor = futures::executor::ThreadPool::new().unwrap();
+	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
+	let (handles, mut with_swarm_channels) =
+		common::spawn_swarms(num_peers, from_external, &executor);
+
+	let make_topo = move |p: usize,
+	                      network_id: PeerId,
+	                      nodes: &[(MixPeerId, MixPublicKey)],
+	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
+	                      config: &mixnet::Config| {
+		let mut topo = TopologyGraph::new_star(&nodes[..num_peers]);
+		topo.local_id = Some(config.local_id.clone());
+		topo.local_network_id = Some(network_id);
+		let mix_secret_key = secrets[p].1.clone();
+		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
+		topo.mix_secret_key = Some(Arc::new((mix_secret_key, mix_public_key)));
+		topo
+	};
+	common::spawn_workers::<TopologyGraph>(
+		handles,
+		num_peers,
+		seed,
+		&config_proto,
+		make_topo,
+		&executor,
+		single_thread,
+	);
+	let mut connected_futures: Vec<_> = with_swarm_channels
+		.iter_mut()
+		.map(|receiver| {
+			future::poll_fn(move |cx| loop {
+				match receiver.poll_next_unpin(cx) {
+					Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) =>
+						return Poll::Ready(()),
+					Poll::Ready(Some(PeerTestReply::ReceiveMessage(_))) => (),
+					Poll::Ready(None) => (),
+					Poll::Pending => return Poll::Pending,
+				}
+			})
+		})
+		.collect();
+	while !connected_futures.is_empty() {
+		let (_, p, remaining) =
+			async_std::task::block_on(futures::future::select_all(connected_futures));
+		log::trace!(target: "mixnet", "Connecting {} completed", p);
+		connected_futures = remaining;
+	}
 }

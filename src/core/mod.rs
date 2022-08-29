@@ -30,8 +30,8 @@ use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ManagedConnection},
-	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, WorkerSink2,
-	Topology,
+	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, Topology,
+	WorkerSink2,
 };
 pub use config::Config;
 pub use connection::Connection;

@@ -27,10 +27,9 @@ mod handler;
 mod protocol;
 mod worker;
 
-pub use crate::network::worker::WorkerSink as WorkerSink2;
+pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
 use crate::{
 	core::{self, SurbsPayload},
-	network::worker::WorkerCommand,
 	MixPeerId, MixnetEvent, SendOptions,
 };
 use dyn_clone::DynClone;

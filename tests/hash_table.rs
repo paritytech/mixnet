@@ -25,5 +25,4 @@ mod common;
 use common::mk_transport;
 
 #[test]
-fn dummy() {
-}
+fn dummy() {}

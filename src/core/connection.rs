@@ -25,7 +25,7 @@
 
 use crate::{
 	core::{PacketType, QueuedPacket, WINDOW_MARGIN_PERCENT},
-	ConnectionStats, MixPeerId, MixPublicKey, Packet, Topology, PACKET_SIZE, NetworkPeerId,
+	ConnectionStats, MixPeerId, MixPublicKey, NetworkPeerId, Packet, Topology, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
