@@ -23,12 +23,28 @@
 mod hash_table;
 
 use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, WindowStats};
+use dyn_clone::DynClone;
+use futures::{channel::mpsc::SendError, Sink};
 use rand::Rng;
+use std::task::{Context, Poll};
 
+pub use crate::WorkerCommand;
 pub use hash_table::TopologyHashTable;
 
+pub trait ClonableSink: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
+impl<T> ClonableSink for T where T: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
+
+/// Provide Configuration of mixnet.
+pub trait Configuration: Topology + Handshake + Sized + Send + 'static {
+	/// Do we need stats for each windows.
+	fn collect_windows_stats(&self) -> bool;
+
+	/// Callback on windows stats.
+	fn window_stats(&self, stats: &WindowStats);
+}
+
 /// Provide network topology information to the mixnet.
-pub trait Topology: Sized + Send + 'static {
+pub trait Topology: Sized {
 	/// Select a random recipient for the message to be delivered. This is
 	/// called when the user sends the message with no recipient specified.
 	/// E.g. this can select a random validator that can accept the blockchain
@@ -150,31 +166,31 @@ pub trait Topology: Sized + Send + 'static {
 	/// On disconnect.
 	fn disconnect(&mut self, id: &MixPeerId);
 
-	fn handshake_size(&self) -> usize;
-
-	fn check_handshake(
-		&mut self,
-		payload: &[u8],
-		from: &NetworkPeerId,
-	) -> Option<(MixPeerId, MixPublicKey)>;
-
-	/// On handshake, can extract peer id and publickey.
-	///
-	/// Return None if peer is filtered by network id.
-	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>>;
-
 	/// Utils that should be call when using `check_handshake`.
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
 		self.routing_to(local_id, peer_id) ||
 			self.routing_to(peer_id, local_id) ||
 			self.bandwidth_external(peer_id).is_some()
 	}
+}
 
-	/// Do we need stats for each windows.
-	fn collect_windows_stats(&self) -> bool;
+/// Handshake on peer connection.
+pub trait Handshake {
+	/// Handshake size expected.
+	fn handshake_size(&self) -> usize;
 
-	/// Callback on windows stats.
-	fn window_stats(&self, stats: &WindowStats);
+	/// Check handshake payload and extract (or return from state)
+	/// peer id and public key.
+	fn check_handshake(
+		&mut self,
+		payload: &[u8],
+		from: &NetworkPeerId,
+	) -> Option<(MixPeerId, MixPublicKey)>;
+
+	/// On handshake, return handshake payload.
+	///
+	/// Return None if peer is filtered by network id.
+	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>>;
 }
 
 fn gen_paths<T: Topology>(
@@ -275,7 +291,17 @@ impl Topology for NoTopology {
 	fn disconnect(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
 	}
+}
 
+impl Configuration for NoTopology {
+	fn collect_windows_stats(&self) -> bool {
+		false
+	}
+
+	fn window_stats(&self, _: &WindowStats) {}
+}
+
+impl Handshake for NoTopology {
 	fn handshake_size(&self) -> usize {
 		32
 	}
@@ -295,10 +321,18 @@ impl Topology for NoTopology {
 	fn handshake(&mut self, _with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		Some(public_key.to_bytes().to_vec())
 	}
+}
 
-	fn collect_windows_stats(&self) -> bool {
-		false
-	}
-
-	fn window_stats(&self, _: &WindowStats) {}
+/// Primitives needed from a network connection.
+pub trait Connection {
+	/// Start sending a message. This trait expects to queue a single message
+	/// and return the message back if another message is currently being send.
+	fn try_queue_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>>;
+	/// Send and flush, return true when queued message is written and flushed.
+	/// Return false if ignored (no queued message).
+	/// Return Error if connection broke.
+	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>>;
+	/// Try receive a packet of a given size.
+	/// Maximum supported size is `PACKET_SIZE`, return error otherwise.
+	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>>;
 }

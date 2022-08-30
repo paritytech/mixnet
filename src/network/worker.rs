@@ -24,7 +24,7 @@
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload},
 	network::connection::Connection,
-	topology::Topology,
+	traits::Configuration,
 	DecodedMessage, MixnetEvent, SendOptions,
 };
 use futures::{
@@ -55,7 +55,7 @@ pub struct MixnetWorker<T> {
 	worker_out: WorkerSink,
 }
 
-impl<T: Topology> MixnetWorker<T> {
+impl<T: Configuration> MixnetWorker<T> {
 	pub fn new(config: Config, topology: T, inner_channels: (WorkerSink, WorkerStream)) -> Self {
 		let (worker_out, worker_in) = inner_channels;
 		let mixnet = crate::core::Mixnet::new(config, topology);

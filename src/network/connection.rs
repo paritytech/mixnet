@@ -27,7 +27,7 @@ use std::{
 	task::{Context, Poll},
 };
 
-use crate::core::connection::Connection as ConnectionT;
+use crate::traits::Connection as ConnectionT;
 use libp2p_swarm::NegotiatedSubstream;
 
 /// Internal information tracked for an established connection.

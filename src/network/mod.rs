@@ -30,10 +30,10 @@ mod worker;
 pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
 use crate::{
 	core::{self, SurbsPayload},
+	traits::ClonableSink,
 	MixPeerId, MixnetEvent, SendOptions,
 };
-use dyn_clone::DynClone;
-use futures::{channel::mpsc::SendError, Sink, SinkExt, Stream, StreamExt};
+use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
@@ -49,9 +49,6 @@ pub use worker::MixnetWorker;
 pub type StreamFromWorker = Box<dyn Stream<Item = MixnetEvent> + Unpin + Send>;
 pub type SinkToWorker = Box<dyn ClonableSink>;
 pub type WorkerChannels = (WorkerSink2, worker::WorkerStream);
-
-pub trait ClonableSink: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
-impl<T> ClonableSink for T where T: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct MixnetBehaviour {

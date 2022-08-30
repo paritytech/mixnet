@@ -32,8 +32,8 @@ use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
-	Config, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetWorker, SinkToWorker,
-	StreamFromWorker, Topology, WorkerChannels, WorkerCommand,
+	traits::Configuration, Config, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour,
+	MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
 use std::task::Poll;
@@ -119,7 +119,7 @@ fn mk_swarms(
 }
 
 /// Spawn a libp2p local swarm with all peers.
-pub fn mk_workers<T: Topology>(
+pub fn mk_workers<T: Configuration>(
 	handles: Vec<(PeerId, WorkerChannels)>,
 	num_peers: usize,
 	rng: &mut SmallRng,
@@ -299,7 +299,7 @@ pub fn spawn_swarms(
 }
 
 /// Spawn the mixnet workers workers
-pub fn spawn_workers<T: Topology>(
+pub fn spawn_workers<T: Configuration>(
 	handles: Vec<(PeerId, WorkerChannels)>,
 	num_peers: usize,
 	rng: &mut SmallRng,

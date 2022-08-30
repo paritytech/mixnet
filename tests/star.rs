@@ -35,7 +35,7 @@ use std::{
 	task::Poll,
 };
 
-use mixnet::{MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand};
+use mixnet::{traits::Topology, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -79,7 +79,67 @@ impl TopologyGraph {
 	}
 }
 
-impl mixnet::Topology for TopologyGraph {
+impl mixnet::traits::Configuration for TopologyGraph {
+	fn collect_windows_stats(&self) -> bool {
+		true
+	}
+
+	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
+}
+
+impl mixnet::traits::Handshake for TopologyGraph {
+	fn handshake_size(&self) -> usize {
+		32 + 32 + 64
+	}
+
+	fn check_handshake(
+		&mut self,
+		payload: &[u8],
+		_from: &PeerId,
+	) -> Option<(MixPeerId, MixPublicKey)> {
+		let mut peer_id = [0u8; 32];
+		peer_id.copy_from_slice(&payload[0..32]);
+		//		let peer_id = mixnet::to_sphinx_id(&payload[0..32]).ok()?;
+		let mut pk = [0u8; 32];
+		pk.copy_from_slice(&payload[32..64]);
+		let mut signature = [0u8; 64];
+		signature.copy_from_slice(&payload[64..]);
+		let signature = ed25519_zebra::Signature::try_from(&signature[..]).unwrap();
+		let pub_key = ed25519_zebra::VerificationKey::try_from(&peer_id[..]).unwrap();
+		let mut message = self.local_network_id.unwrap().to_bytes().to_vec();
+		message.extend_from_slice(&pk[..]);
+		if pub_key.verify(&signature, &message[..]).is_ok() {
+			let pk = MixPublicKey::from(pk);
+			if !self.accept_peer(self.local_id.as_ref().unwrap(), &peer_id) {
+				return None
+			}
+			if !self.is_routing(&peer_id) {
+				debug_assert!(self.external.is_none());
+				self.external = Some(peer_id.clone());
+			}
+			Some((peer_id, pk))
+		} else {
+			None
+		}
+	}
+
+	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+		let mut result = self.local_id.as_ref().unwrap().to_vec();
+		result.extend_from_slice(&public_key.as_bytes()[..]);
+		if let Some(keypair) = &self.mix_secret_key {
+			let mut message = with.to_bytes().to_vec();
+			message.extend_from_slice(&public_key.as_bytes()[..]);
+			let signature = keypair.0.sign(&message[..]);
+			let signature: [u8; 64] = signature.into();
+			result.extend_from_slice(&signature[..]);
+		} else {
+			return None
+		}
+		Some(result)
+	}
+}
+
+impl Topology for TopologyGraph {
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		self.connections.get(id).cloned()
 	}
@@ -145,62 +205,6 @@ impl mixnet::Topology for TopologyGraph {
 		}
 		Some((1, 1))
 	}
-
-	fn handshake_size(&self) -> usize {
-		32 + 32 + 64
-	}
-
-	fn check_handshake(
-		&mut self,
-		payload: &[u8],
-		_from: &PeerId,
-	) -> Option<(MixPeerId, MixPublicKey)> {
-		let mut peer_id = [0u8; 32];
-		peer_id.copy_from_slice(&payload[0..32]);
-		//		let peer_id = mixnet::to_sphinx_id(&payload[0..32]).ok()?;
-		let mut pk = [0u8; 32];
-		pk.copy_from_slice(&payload[32..64]);
-		let mut signature = [0u8; 64];
-		signature.copy_from_slice(&payload[64..]);
-		let signature = ed25519_zebra::Signature::try_from(&signature[..]).unwrap();
-		let pub_key = ed25519_zebra::VerificationKey::try_from(&peer_id[..]).unwrap();
-		let mut message = self.local_network_id.unwrap().to_bytes().to_vec();
-		message.extend_from_slice(&pk[..]);
-		if pub_key.verify(&signature, &message[..]).is_ok() {
-			let pk = MixPublicKey::from(pk);
-			if !self.accept_peer(self.local_id.as_ref().unwrap(), &peer_id) {
-				return None
-			}
-			if !self.is_routing(&peer_id) {
-				debug_assert!(self.external.is_none());
-				self.external = Some(peer_id.clone());
-			}
-			Some((peer_id, pk))
-		} else {
-			None
-		}
-	}
-
-	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
-		let mut result = self.local_id.as_ref().unwrap().to_vec();
-		result.extend_from_slice(&public_key.as_bytes()[..]);
-		if let Some(keypair) = &self.mix_secret_key {
-			let mut message = with.to_bytes().to_vec();
-			message.extend_from_slice(&public_key.as_bytes()[..]);
-			let signature = keypair.0.sign(&message[..]);
-			let signature: [u8; 64] = signature.into();
-			result.extend_from_slice(&signature[..]);
-		} else {
-			return None
-		}
-		Some(result)
-	}
-
-	fn collect_windows_stats(&self) -> bool {
-		true
-	}
-
-	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
 }
 
 fn test_messages(

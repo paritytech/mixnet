@@ -23,19 +23,18 @@ extern crate arrayref;
 
 mod core;
 mod network;
-mod topology;
+pub mod traits;
 
 pub use crate::{
 	core::{
-		generate_new_keys, public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config,
-		ConnectionStats, Error, MixPublicKey, MixSecretKey, Packet, SurbsPayload, WindowStats,
+		connection::ConnectionStats, generate_new_keys, public_from_ed25519, secret_from_ed25519,
+		to_sphinx_id, Config, Error, MixPublicKey, MixSecretKey, Packet, SurbsPayload, WindowStats,
 		PACKET_SIZE,
 	},
 	network::{
 		MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels,
 		WorkerCommand, WorkerSink2,
 	},
-	topology::{NoTopology, Topology, TopologyHashTable},
 };
 
 /// Mixnet peer identity.
@@ -49,8 +48,8 @@ pub struct SendOptions {
 	/// Number of hops for the message.
 	/// If undefined, mixnet configured number of hop will be used.
 	/// This number is automatically increased by one for node that are not
-	/// in topology and by two for node that are not in topology trying to
-	/// reach another node that is not in topology.
+	/// in traits and by two for node that are not in topology trying to
+	/// reach another node that is not in traits.
 	pub num_hop: Option<usize>,
 
 	/// Do we attach a surb with the message.

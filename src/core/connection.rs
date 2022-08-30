@@ -25,7 +25,8 @@
 
 use crate::{
 	core::{PacketType, QueuedPacket, WINDOW_MARGIN_PERCENT},
-	ConnectionStats, MixPeerId, MixPublicKey, NetworkPeerId, Packet, Topology, PACKET_SIZE,
+	traits::{Configuration, Connection, Handshake, Topology},
+	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -37,20 +38,6 @@ use std::{
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Primitives needed from a network connection.
-pub trait Connection {
-	/// Start sending a message. This trait expects to queue a single message
-	/// and return the message back if another message is currently being send.
-	fn try_queue_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>>;
-	/// Send and flush, return true when queued message is written and flushed.
-	/// Return false if ignored (no queued message).
-	/// Return Error if connection broke.
-	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>>;
-	/// Try receive a packet of a given size.
-	/// Maximum supported size is `PACKET_SIZE`, return error otherwise.
-	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>>;
-}
 
 pub(crate) enum ConnectionEvent {
 	Established(MixPeerId, MixPublicKey),
@@ -123,7 +110,7 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		cx: &mut Context,
 		public_key: &MixPublicKey,
-		topology: &mut impl Topology,
+		topology: &mut impl Handshake,
 	) -> Poll<Result<(), ()>> {
 		if !self.handshake_sent {
 			let handshake =
@@ -183,7 +170,7 @@ impl<C: Connection> ManagedConnection<C> {
 	fn try_recv_handshake(
 		&mut self,
 		cx: &mut Context,
-		topology: &mut impl Topology,
+		topology: &mut impl Handshake,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
 		if self.handshake_received() {
 			// ignore
@@ -287,7 +274,7 @@ impl<C: Connection> ManagedConnection<C> {
 		current_packet_limit: usize,
 		packet_per_window: usize,
 		now: Instant,
-		topology: &mut impl Topology,
+		topology: &mut impl Configuration,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
@@ -443,5 +430,96 @@ impl<C> Drop for ManagedConnection<C> {
 				stats.failure_packet(Some(packet.kind))
 			}
 		});
+	}
+}
+
+#[derive(Default, Debug)]
+pub struct ConnectionStats {
+	// Do not include external or self
+	pub number_forwarded_success: usize,
+	pub number_forwarded_failed: usize,
+
+	pub number_from_external_forwarded_success: usize,
+	pub number_from_external_forwarded_failed: usize,
+
+	pub number_from_self_send_success: usize,
+	pub number_from_self_send_failed: usize,
+
+	pub number_surbs_reply_success: usize,
+	pub number_surbs_reply_failed: usize,
+
+	pub number_cover_send_success: usize,
+	pub number_cover_send_failed: usize,
+
+	pub max_peer_paquet_queue_size: usize,
+
+	pub peer_paquet_queue_size: usize,
+}
+
+impl ConnectionStats {
+	pub(crate) fn add(&mut self, other: &Self) {
+		self.number_forwarded_success += other.number_forwarded_success;
+		self.number_forwarded_failed += other.number_forwarded_failed;
+
+		self.number_from_external_forwarded_success += other.number_from_external_forwarded_success;
+		self.number_from_external_forwarded_failed += other.number_from_external_forwarded_success;
+
+		self.number_from_self_send_success += other.number_from_self_send_success;
+		self.number_from_self_send_failed += other.number_from_self_send_failed;
+
+		self.number_surbs_reply_success += other.number_surbs_reply_success;
+		self.number_surbs_reply_failed += other.number_surbs_reply_failed;
+
+		self.number_cover_send_success += other.number_cover_send_success;
+		self.number_cover_send_failed += other.number_cover_send_failed;
+
+		self.max_peer_paquet_queue_size =
+			std::cmp::max(self.max_peer_paquet_queue_size, other.max_peer_paquet_queue_size);
+
+		self.peer_paquet_queue_size += other.peer_paquet_queue_size;
+	}
+
+	fn success_packet(&mut self, kind: Option<PacketType>) {
+		let kind = if let Some(kind) = kind { kind } else { return };
+
+		match kind {
+			PacketType::Forward => {
+				self.number_forwarded_success += 1;
+			},
+			PacketType::ForwardExternal => {
+				self.number_from_external_forwarded_success += 1;
+			},
+			PacketType::SendFromSelf => {
+				self.number_from_self_send_success += 1;
+			},
+			PacketType::Cover => {
+				self.number_cover_send_success += 1;
+			},
+			PacketType::Surbs => {
+				self.number_surbs_reply_success += 1;
+			},
+		}
+	}
+
+	fn failure_packet(&mut self, kind: Option<PacketType>) {
+		let kind = if let Some(kind) = kind { kind } else { return };
+
+		match kind {
+			PacketType::Forward => {
+				self.number_forwarded_failed += 1;
+			},
+			PacketType::ForwardExternal => {
+				self.number_from_external_forwarded_failed += 1;
+			},
+			PacketType::SendFromSelf => {
+				self.number_from_self_send_failed += 1;
+			},
+			PacketType::Cover => {
+				self.number_cover_send_failed += 1;
+			},
+			PacketType::Surbs => {
+				self.number_surbs_reply_failed += 1;
+			},
+		}
 	}
 }

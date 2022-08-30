@@ -29,12 +29,11 @@ mod sphinx;
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
 use crate::{
-	core::connection::{ConnectionEvent, ManagedConnection},
-	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, Topology,
-	WorkerSink2,
+	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
+	traits::{Configuration, Connection},
+	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, WorkerSink2,
 };
 pub use config::Config;
-pub use connection::Connection;
 pub use error::Error;
 use futures::{FutureExt, SinkExt};
 use futures_timer::Delay;
@@ -210,7 +209,7 @@ pub struct Mixnet<T, C> {
 	stats: Option<WindowStats>,
 }
 
-impl<T: Topology, C: Connection> Mixnet<T, C> {
+impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
 		let window_delay = Delay::new(WINDOW_DELAY);
@@ -919,97 +918,6 @@ pub struct WindowStats {
 
 	pub number_from_external_received_valid: usize,
 	pub number_from_external_received_invalid: usize,
-}
-
-#[derive(Default, Debug)]
-pub struct ConnectionStats {
-	// Do not include external or self
-	pub number_forwarded_success: usize,
-	pub number_forwarded_failed: usize,
-
-	pub number_from_external_forwarded_success: usize,
-	pub number_from_external_forwarded_failed: usize,
-
-	pub number_from_self_send_success: usize,
-	pub number_from_self_send_failed: usize,
-
-	pub number_surbs_reply_success: usize,
-	pub number_surbs_reply_failed: usize,
-
-	pub number_cover_send_success: usize,
-	pub number_cover_send_failed: usize,
-
-	pub max_peer_paquet_queue_size: usize,
-
-	pub peer_paquet_queue_size: usize,
-}
-
-impl ConnectionStats {
-	fn add(&mut self, other: &Self) {
-		self.number_forwarded_success += other.number_forwarded_success;
-		self.number_forwarded_failed += other.number_forwarded_failed;
-
-		self.number_from_external_forwarded_success += other.number_from_external_forwarded_success;
-		self.number_from_external_forwarded_failed += other.number_from_external_forwarded_success;
-
-		self.number_from_self_send_success += other.number_from_self_send_success;
-		self.number_from_self_send_failed += other.number_from_self_send_failed;
-
-		self.number_surbs_reply_success += other.number_surbs_reply_success;
-		self.number_surbs_reply_failed += other.number_surbs_reply_failed;
-
-		self.number_cover_send_success += other.number_cover_send_success;
-		self.number_cover_send_failed += other.number_cover_send_failed;
-
-		self.max_peer_paquet_queue_size =
-			std::cmp::max(self.max_peer_paquet_queue_size, other.max_peer_paquet_queue_size);
-
-		self.peer_paquet_queue_size += other.peer_paquet_queue_size;
-	}
-
-	fn success_packet(&mut self, kind: Option<PacketType>) {
-		let kind = if let Some(kind) = kind { kind } else { return };
-
-		match kind {
-			PacketType::Forward => {
-				self.number_forwarded_success += 1;
-			},
-			PacketType::ForwardExternal => {
-				self.number_from_external_forwarded_success += 1;
-			},
-			PacketType::SendFromSelf => {
-				self.number_from_self_send_success += 1;
-			},
-			PacketType::Cover => {
-				self.number_cover_send_success += 1;
-			},
-			PacketType::Surbs => {
-				self.number_surbs_reply_success += 1;
-			},
-		}
-	}
-
-	fn failure_packet(&mut self, kind: Option<PacketType>) {
-		let kind = if let Some(kind) = kind { kind } else { return };
-
-		match kind {
-			PacketType::Forward => {
-				self.number_forwarded_failed += 1;
-			},
-			PacketType::ForwardExternal => {
-				self.number_from_external_forwarded_failed += 1;
-			},
-			PacketType::SendFromSelf => {
-				self.number_from_self_send_failed += 1;
-			},
-			PacketType::Cover => {
-				self.number_cover_send_failed += 1;
-			},
-			PacketType::Surbs => {
-				self.number_surbs_reply_failed += 1;
-			},
-		}
-	}
 }
 
 #[test]
