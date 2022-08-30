@@ -27,7 +27,7 @@ mod fragment;
 mod sphinx;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
-pub use crate::core::sphinx::{SurbsPayload, SurbsPersistance};
+pub use crate::core::sphinx::{hash, SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection},

@@ -32,10 +32,8 @@
 mod crypto;
 
 use crate::core::{Packet, ReplayFilter, ReplayTag, SurbsCollection};
-pub use crypto::HASH_OUTPUT_SIZE;
-use crypto::{
-	hash, PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE,
-};
+pub use crypto::{hash, HASH_OUTPUT_SIZE};
+use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
 use rand::{CryptoRng, Rng};
 use std::time::Instant;
 use subtle::ConstantTimeEq;
