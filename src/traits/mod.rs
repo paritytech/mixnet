@@ -20,12 +20,11 @@
 
 //! Mixnet topology interface.
 
-mod hash_table;
+pub mod hash_table;
 
 use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, WindowStats};
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
-use rand::Rng;
 use std::task::{Context, Poll};
 
 pub use crate::WorkerCommand;
@@ -88,8 +87,6 @@ pub trait Topology: Sized {
 	/// Warning number of hops is indicative and for some topology
 	/// could be higher (eg if `start` or `recipient` are not routing
 	/// a hop should be added).
-	///
-	/// Default implementation is taking random of all possible path.
 	fn random_path(
 		&mut self,
 		start_node: (&MixPeerId, Option<&MixPublicKey>),
@@ -98,73 +95,13 @@ pub trait Topology: Sized {
 		num_hops: usize,
 		max_hops: usize,
 		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
-	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		if num_hops > max_hops {
-			return Err(Error::TooManyHops)
-		}
-		let mut rng = rand::thread_rng();
-		let mut add_start = None;
-		let mut add_end = None;
-		let start = if self.is_first_node(start_node.0) {
-			*start_node.0
-		} else {
-			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0);
-			if firsts.is_empty() {
-				return Err(Error::NoPath(Some(*recipient_node.0)))
-			}
-			let n: usize = rng.gen_range(0..firsts.len());
-			add_start = Some(firsts[n]);
-			firsts[n].0
-		};
-		let recipient = if self.is_routing(recipient_node.0) {
-			*recipient_node.0
-		} else if let Some(query) = last_query_if_surb {
-			// reuse a node that was recently connected.
-			if let Some(rec) = query.get(0) {
-				add_end = Some(recipient_node);
-				rec.0
-			} else {
-				return Err(Error::NoPath(Some(*recipient_node.0)))
-			}
-		} else {
-			return Err(Error::NoPath(Some(*recipient_node.0)))
-		};
-		// Generate all possible paths and select one at random
-		let mut partial = Vec::new();
-		let mut paths = Vec::new();
-		gen_paths(self, &mut partial, &mut paths, &start, &recipient, num_hops);
-
-		if paths.is_empty() {
-			return Err(Error::NoPath(Some(recipient)))
-		}
-
-		let mut result = Vec::new();
-		while result.len() < count {
-			// TODO path pool could be persisted, but at this point this implementation
-			// is not really targetted.
-			let n: usize = rng.gen_range(0..paths.len());
-			let mut path = paths[n].clone();
-			if let Some((peer, key)) = add_start {
-				path.insert(0, (peer, key));
-			}
-			if let Some((peer, key)) = add_end {
-				if let Some(key) = key {
-					path.push((*peer, *key));
-				} else {
-					return Err(Error::NoPath(Some(*recipient_node.0)))
-				}
-			}
-			result.push(path);
-		}
-		log::trace!(target: "mixnet", "Random path {:?}", result);
-		Ok(result)
-	}
+	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error>;
 
 	/// On connection successful handshake.
 	fn connected(&mut self, id: MixPeerId, public_key: MixPublicKey);
 
 	/// On disconnect.
-	fn disconnect(&mut self, id: &MixPeerId);
+	fn disconnected(&mut self, id: &MixPeerId);
 
 	/// Utils that should be call when using `check_handshake`.
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
@@ -191,34 +128,6 @@ pub trait Handshake {
 	///
 	/// Return None if peer is filtered by network id.
 	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>>;
-}
-
-fn gen_paths<T: Topology>(
-	topology: &T,
-	partial: &mut Vec<(MixPeerId, MixPublicKey)>,
-	paths: &mut Vec<Vec<(MixPeerId, MixPublicKey)>>,
-	last: &MixPeerId,
-	target: &MixPeerId,
-	num_hops: usize,
-) {
-	let neighbors = topology.neighbors(last).unwrap_or_default();
-	for (id, key) in neighbors {
-		if partial.len() < num_hops - 1 {
-			partial.push((id, key));
-			gen_paths(topology, partial, paths, &id, target, num_hops);
-			partial.pop();
-		}
-
-		if partial.len() == num_hops - 1 {
-			// About to complete path. Only select paths that end up at target.
-			if &id != target {
-				continue
-			}
-			partial.push((id, key));
-			paths.push(partial.clone());
-			partial.pop();
-		}
-	}
 }
 
 /// No topology try direct connection.
@@ -288,7 +197,7 @@ impl Topology for NoTopology {
 		self.connected_peers.insert(id, key);
 	}
 
-	fn disconnect(&mut self, id: &MixPeerId) {
+	fn disconnected(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
 	}
 }

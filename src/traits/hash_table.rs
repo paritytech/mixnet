@@ -57,12 +57,14 @@ pub trait Configuration {
 
 	/// Percent of additional bandwidth allowed for external
 	/// node message reception.
-	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
+	const EXTERNAL_BANDWIDTH: (usize, usize);
 
 	// TODO encode/decode
 }
 
 pub trait TableVersion: Default + Eq + PartialEq + std::fmt::Debug + 'static {}
+
+impl TableVersion for () {}
 
 /// A topology where connections are determined by taking first
 /// hashes of a set of mixpeers.
@@ -308,10 +310,12 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		debug!(target: "mixnet", "Number path for dest {:?}.", nb_path);
 		debug!(target: "mixnet", "{:?} to {:?}", start, recipient);
 		if nb_path < C::LOW_MIXNET_PATHS {
+			error!(target: "mixnet", "not enough paths: {:?}", nb_path);
 			trace!(target: "mixnet", "not enough paths: {:?}", &self.paths);
 			// TODO NotEnoughPath error
 			return Err(Error::NoPath(Some(recipient)))
 		};
+		trace!(target: "mixnet", "enough paths: {:?}", nb_path);
 
 		let mut result = Vec::with_capacity(nb_chunk);
 		while result.len() < nb_chunk {
@@ -380,7 +384,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.add_connected_peer(peer_id)
 	}
 
-	fn disconnect(&mut self, peer_id: &MixPeerId) {
+	fn disconnected(&mut self, peer_id: &MixPeerId) {
 		// TODO extedn in branch with
 		/*
 			self.copy_connected_info_to_metrics();
@@ -395,7 +399,13 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.add_disconnected_peer(&peer_id);
 	}
 
-	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
+		if !self.routing {
+			if self.is_routing(id) {
+				// expect surbs: TODO make it optional??
+				return Some((1, 1))
+			}
+		}
 		// TODO can cache this result (Option<Option<(usize, usize))
 
 		// Equal bandwidth amongst connected peers.
@@ -474,7 +484,8 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	fn has_enough_nodes_to_proxy(&self) -> bool {
+	/// Is peer able to proxy.
+	pub fn has_enough_nodes_to_proxy(&self) -> bool {
 		self.authorities.len() >= C::LOW_MIXNET_THRESHOLD
 	}
 
@@ -588,7 +599,53 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	pub fn refresh_routing_tables(&mut self) {
+	pub fn handle_new_routing_set(
+		&mut self,
+		set: impl Iterator<Item = (MixPeerId, MixPublicKey)>,
+		new_self: Option<(MixPeerId, MixPublicKey)>,
+		_version: C::Version,
+	) {
+		if C::DISTRIBUTE_ROUTES {
+			unimplemented!()
+		} else {
+			if let Some((id, pub_key)) = new_self {
+				self.local_id = id;
+				self.routing_table.public_key = pub_key;
+			}
+			// TODO update
+			//			let current_public_key = self.worker.public_key().clone();
+
+			debug!(target: "mixnet", "Change authorities");
+			self.authorities.clear();
+			self.authorities_tables.clear();
+
+			self.routing = false;
+
+			for (peer_id, public_key) in set {
+				self.authorities.insert(peer_id, public_key.clone());
+				if self.local_id == peer_id {
+					self.routing = true;
+				}
+			}
+
+			self.refresh_routing_tables();
+
+			let connected = std::mem::take(&mut self.connected_nodes);
+			self.nb_connected_forward_routing = 0;
+			self.nb_connected_receive_routing = 0;
+			self.nb_connected_external = 0;
+			// TODO	extend branch with		self.copy_connected_info_to_metrics();
+			for peer_id in connected.into_iter() {
+				self.add_connected_peer(peer_id.0);
+			}
+		}
+	}
+
+	pub fn handle_new_self_key(&mut self) {
+		unimplemented!("rotate key");
+	}
+
+	fn refresh_routing_tables(&mut self) {
 		if C::DISTRIBUTE_ROUTES {
 			unimplemented!("TODO get code to calculate path from routes stored.");
 		} else {
@@ -681,10 +738,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 
 		(past != &receive_from).then(|| receive_from)
-	}
-
-	fn change_routing_set(&mut self) {
-		unimplemented!("TODO");
 	}
 }
 
@@ -1034,5 +1087,5 @@ fn test_fill_paths() {
 	let med_nb_con = med_nb_con as f64 / (nb_peers as f64 - 1.0);
 	let reachable = nb_reachable as f64 / (nb_peers as f64 - 1.0);
 	println!("Reachable {:?}, Med nb {:?}", reachable, med_nb_con);
-//	panic!("to print");
+	//	panic!("to print");
 }

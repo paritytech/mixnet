@@ -22,10 +22,10 @@
 
 mod common;
 
-use common::PeerTestReply;
+use common::{PeerTestReply, SimpleHandshake};
 use futures::prelude::*;
 use libp2p_core::PeerId;
-use rand::{prelude::IteratorRandom, RngCore};
+use rand::{prelude::IteratorRandom, Rng, RngCore};
 use std::{
 	collections::HashMap,
 	sync::{
@@ -35,7 +35,14 @@ use std::{
 	task::Poll,
 };
 
-use mixnet::{traits::Topology, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand};
+use mixnet::{
+	traits::Topology, Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand,
+};
+
+#[derive(Clone)]
+struct ConfigGraph {
+	inner: SimpleHandshake<TopologyGraph>,
+}
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -48,9 +55,6 @@ struct TopologyGraph {
 	nb_connected: Arc<AtomicUsize>,
 	local_id: Option<MixPeerId>,
 	local_network_id: Option<PeerId>,
-	// key for signing handshake (assert mix_pub_key, MixPeerId is related to
-	// MixPublicKey by signing it (and also dest MixPublicKey to avoid replay).
-	mix_secret_key: Option<Arc<(ed25519_zebra::SigningKey, ed25519_zebra::VerificationKey)>>,
 }
 
 impl TopologyGraph {
@@ -74,12 +78,11 @@ impl TopologyGraph {
 			nb_connected: Arc::new(0.into()),
 			local_id: None,
 			local_network_id: None,
-			mix_secret_key: None,
 		}
 	}
 }
 
-impl mixnet::traits::Configuration for TopologyGraph {
+impl mixnet::traits::Configuration for ConfigGraph {
 	fn collect_windows_stats(&self) -> bool {
 		true
 	}
@@ -87,55 +90,82 @@ impl mixnet::traits::Configuration for TopologyGraph {
 	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
 }
 
-impl mixnet::traits::Handshake for TopologyGraph {
+impl mixnet::traits::Handshake for ConfigGraph {
 	fn handshake_size(&self) -> usize {
-		32 + 32 + 64
+		self.inner.handshake_size()
 	}
 
 	fn check_handshake(
 		&mut self,
 		payload: &[u8],
-		_from: &PeerId,
+		from: &PeerId,
 	) -> Option<(MixPeerId, MixPublicKey)> {
-		let mut peer_id = [0u8; 32];
-		peer_id.copy_from_slice(&payload[0..32]);
-		//		let peer_id = mixnet::to_sphinx_id(&payload[0..32]).ok()?;
-		let mut pk = [0u8; 32];
-		pk.copy_from_slice(&payload[32..64]);
-		let mut signature = [0u8; 64];
-		signature.copy_from_slice(&payload[64..]);
-		let signature = ed25519_zebra::Signature::try_from(&signature[..]).unwrap();
-		let pub_key = ed25519_zebra::VerificationKey::try_from(&peer_id[..]).unwrap();
-		let mut message = self.local_network_id.unwrap().to_bytes().to_vec();
-		message.extend_from_slice(&pk[..]);
-		if pub_key.verify(&signature, &message[..]).is_ok() {
-			let pk = MixPublicKey::from(pk);
-			if !self.accept_peer(self.local_id.as_ref().unwrap(), &peer_id) {
-				return None
-			}
-			if !self.is_routing(&peer_id) {
-				debug_assert!(self.external.is_none());
-				self.external = Some(peer_id.clone());
-			}
-			Some((peer_id, pk))
-		} else {
-			None
-		}
+		self.inner.check_handshake(payload, from)
 	}
 
 	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
-		let mut result = self.local_id.as_ref().unwrap().to_vec();
-		result.extend_from_slice(&public_key.as_bytes()[..]);
-		if let Some(keypair) = &self.mix_secret_key {
-			let mut message = with.to_bytes().to_vec();
-			message.extend_from_slice(&public_key.as_bytes()[..]);
-			let signature = keypair.0.sign(&message[..]);
-			let signature: [u8; 64] = signature.into();
-			result.extend_from_slice(&signature[..]);
-		} else {
-			return None
-		}
-		Some(result)
+		self.inner.handshake(with, public_key)
+	}
+}
+
+impl Topology for ConfigGraph {
+	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+		self.inner.topo.neighbors(id)
+	}
+
+	fn first_hop_nodes_external(
+		&self,
+		from: &MixPeerId,
+		to: &MixPeerId,
+	) -> Vec<(MixPeerId, MixPublicKey)> {
+		self.inner.topo.first_hop_nodes_external(from, to)
+	}
+
+	fn is_first_node(&self, id: &MixPeerId) -> bool {
+		self.inner.topo.is_first_node(id)
+	}
+
+	fn random_recipient(
+		&mut self,
+		local_id: &MixPeerId,
+		options: &SendOptions,
+	) -> Option<(MixPeerId, MixPublicKey)> {
+		self.inner.topo.random_recipient(local_id, options)
+	}
+
+	fn random_path(
+		&mut self,
+		start_node: (&MixPeerId, Option<&MixPublicKey>),
+		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
+		count: usize,
+		num_hops: usize,
+		max_hops: usize,
+		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
+	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
+		self.inner.topo.random_path(
+			start_node,
+			recipient_node,
+			count,
+			num_hops,
+			max_hops,
+			last_query_if_surb,
+		)
+	}
+
+	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
+		self.inner.topo.routing_to(from, to)
+	}
+
+	fn connected(&mut self, peer_id: MixPeerId, pub_key: MixPublicKey) {
+		self.inner.topo.connected(peer_id, pub_key)
+	}
+
+	fn disconnected(&mut self, id: &MixPeerId) {
+		self.inner.topo.disconnected(id)
+	}
+
+	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
+		self.inner.topo.bandwidth_external(id)
 	}
 }
 
@@ -169,6 +199,75 @@ impl Topology for TopologyGraph {
 			.map(|(k, v)| (k.clone(), v.clone()))
 	}
 
+	fn random_path(
+		&mut self,
+		start_node: (&MixPeerId, Option<&MixPublicKey>),
+		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
+		count: usize,
+		num_hops: usize,
+		max_hops: usize,
+		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
+	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
+		if num_hops > max_hops {
+			return Err(Error::TooManyHops)
+		}
+		let mut rng = rand::thread_rng();
+		let mut add_start = None;
+		let mut add_end = None;
+		let start = if self.is_first_node(start_node.0) {
+			*start_node.0
+		} else {
+			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0);
+			if firsts.is_empty() {
+				return Err(Error::NoPath(Some(*recipient_node.0)))
+			}
+			let n: usize = rng.gen_range(0..firsts.len());
+			add_start = Some(firsts[n]);
+			firsts[n].0
+		};
+		let recipient = if self.is_routing(recipient_node.0) {
+			*recipient_node.0
+		} else if let Some(query) = last_query_if_surb {
+			// reuse a node that was recently connected.
+			if let Some(rec) = query.get(0) {
+				add_end = Some(recipient_node);
+				rec.0
+			} else {
+				return Err(Error::NoPath(Some(*recipient_node.0)))
+			}
+		} else {
+			return Err(Error::NoPath(Some(*recipient_node.0)))
+		};
+		// Generate all possible paths and select one at random
+		let mut partial = Vec::new();
+		let mut paths = Vec::new();
+		gen_paths(self, &mut partial, &mut paths, &start, &recipient, num_hops);
+
+		if paths.is_empty() {
+			return Err(Error::NoPath(Some(recipient)))
+		}
+
+		let mut result = Vec::new();
+		while result.len() < count {
+			// TODO path pool could be persisted, but at this point this implementation
+			// is not really targetted.
+			let n: usize = rng.gen_range(0..paths.len());
+			let mut path = paths[n].clone();
+			if let Some((peer, key)) = add_start {
+				path.insert(0, (peer, key));
+			}
+			if let Some((peer, key)) = add_end {
+				if let Some(key) = key {
+					path.push((*peer, *key));
+				} else {
+					return Err(Error::NoPath(Some(*recipient_node.0)))
+				}
+			}
+			result.push(path);
+		}
+		log::trace!(target: "mixnet", "Random path {:?}", result);
+		Ok(result)
+	}
 	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
 		if self.external.as_ref() == Some(to) {
 			// this is partly incorrect as we also need to check that from is self.
@@ -189,7 +288,7 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn disconnect(&mut self, id: &MixPeerId) {
+	fn disconnected(&mut self, id: &MixPeerId) {
 		self.nb_connected.fetch_sub(1, Ordering::Relaxed);
 		if self.external.as_ref() == Some(id) {
 			self.external = None;
@@ -204,6 +303,34 @@ impl Topology for TopologyGraph {
 			return None
 		}
 		Some((1, 1))
+	}
+}
+
+fn gen_paths<T: Topology>(
+	topology: &T,
+	partial: &mut Vec<(MixPeerId, MixPublicKey)>,
+	paths: &mut Vec<Vec<(MixPeerId, MixPublicKey)>>,
+	last: &MixPeerId,
+	target: &MixPeerId,
+	num_hops: usize,
+) {
+	let neighbors = topology.neighbors(last).unwrap_or_default();
+	for (id, key) in neighbors {
+		if partial.len() < num_hops - 1 {
+			partial.push((id, key));
+			gen_paths(topology, partial, paths, &id, target, num_hops);
+			partial.pop();
+		}
+
+		if partial.len() == num_hops - 1 {
+			// About to complete path. Only select paths that end up at target.
+			if &id != target {
+				continue
+			}
+			partial.push((id, key));
+			paths.push(partial.clone());
+			partial.pop();
+		}
 	}
 }
 
@@ -248,15 +375,21 @@ fn test_messages(
 	                      config: &mixnet::Config| {
 		let mut topo = TopologyGraph::new_star(&nodes[..num_peers]);
 		topo.local_id = Some(config.local_id.clone());
-		topo.local_network_id = Some(network_id);
+		topo.local_network_id = Some(network_id.clone());
 		let mix_secret_key = secrets[p].1.clone();
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
-		topo.mix_secret_key = Some(Arc::new((mix_secret_key, mix_public_key)));
-		topo
+		let handshake = SimpleHandshake {
+			local_id: Some(config.local_id.clone()),
+			local_network_id: Some(network_id),
+			nb_external: 0,
+			max_external: 1,
+			topo,
+			mix_secret_key: Some(Arc::new((mix_secret_key, mix_public_key))),
+		};
+		ConfigGraph { inner: handshake }
 	};
-	let nodes = common::spawn_workers::<TopologyGraph>(
+	let nodes = common::spawn_workers::<ConfigGraph>(
 		handles,
-		num_peers,
 		&mut rng,
 		&config_proto,
 		make_topo,

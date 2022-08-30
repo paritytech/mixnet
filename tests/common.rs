@@ -25,18 +25,19 @@ use libp2p_core::{
 	identity,
 	muxing::StreamMuxerBox,
 	transport::{self, Transport},
-	upgrade, Multiaddr, PeerId,
+	upgrade, Multiaddr, PeerId as NetworkPeerId,
 };
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
-	traits::Configuration, Config, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour,
-	MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerCommand,
+	traits::{Configuration, Topology},
+	Config, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetWorker, SinkToWorker,
+	StreamFromWorker, WorkerChannels, WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
-use std::task::Poll;
+use std::{sync::Arc, task::Poll};
 
 /// Message that test peer replies with.
 pub enum PeerTestReply {
@@ -47,7 +48,8 @@ pub enum PeerTestReply {
 pub type TestChannels = (mpsc::Receiver<PeerTestReply>, mpsc::Sender<WorkerCommand>);
 
 /// Spawn a lip2p local transport for tests.
-fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)
+fn mk_transport(
+) -> (NetworkPeerId, identity::ed25519::Keypair, transport::Boxed<(NetworkPeerId, StreamMuxerBox)>)
 {
 	let key = identity::ed25519::Keypair::generate();
 	let id_keys = identity::Keypair::Ed25519(key.clone());
@@ -69,13 +71,13 @@ fn mk_transports(
 	extra_external: usize,
 ) -> (
 	Vec<(
-		PeerId,
-		transport::Boxed<(PeerId, StreamMuxerBox)>,
+		NetworkPeerId,
+		transport::Boxed<(NetworkPeerId, StreamMuxerBox)>,
 		SinkToWorker,
 		StreamFromWorker,
 		mpsc::Sender<WorkerCommand>,
 	)>,
-	Vec<(PeerId, WorkerChannels)>,
+	Vec<(NetworkPeerId, WorkerChannels)>,
 ) {
 	let mut transports = Vec::<(_, _, SinkToWorker, StreamFromWorker, _)>::new();
 	let mut handles = Vec::<(_, WorkerChannels)>::new();
@@ -99,8 +101,8 @@ fn mk_transports(
 
 fn mk_swarms(
 	transports: Vec<(
-		PeerId,
-		transport::Boxed<(PeerId, StreamMuxerBox)>,
+		NetworkPeerId,
+		transport::Boxed<(NetworkPeerId, StreamMuxerBox)>,
 		SinkToWorker,
 		StreamFromWorker,
 		mpsc::Sender<WorkerCommand>,
@@ -120,13 +122,12 @@ fn mk_swarms(
 
 /// Spawn a libp2p local swarm with all peers.
 pub fn mk_workers<T: Configuration>(
-	handles: Vec<(PeerId, WorkerChannels)>,
-	num_peers: usize,
+	handles: Vec<(NetworkPeerId, WorkerChannels)>,
 	rng: &mut SmallRng,
 	config_proto: &Config,
 	mut make_topo: impl FnMut(
 		usize,
-		PeerId,
+		NetworkPeerId,
 		&[(MixPeerId, MixPublicKey)],
 		&[(MixSecretKey, ed25519_zebra::SigningKey)],
 		&Config,
@@ -157,7 +158,7 @@ pub fn mk_workers<T: Configuration>(
 			..config_proto.clone()
 		};
 
-		let topo = make_topo(i, network_id, &nodes[..num_peers], &secrets[..], &cfg);
+		let topo = make_topo(i, network_id, &nodes[..], &secrets[..], &cfg);
 
 		workers.push(mixnet::MixnetWorker::new(cfg, topo, (from_worker_sink, to_worker_stream)));
 	}
@@ -169,7 +170,7 @@ pub fn spawn_swarms(
 	num_peers: usize,
 	from_external: bool,
 	executor: &ThreadPool,
-) -> (Vec<(PeerId, WorkerChannels)>, Vec<TestChannels>) {
+) -> (Vec<(NetworkPeerId, WorkerChannels)>, Vec<TestChannels>) {
 	let extra_external = if from_external {
 		2 // 2 external node at ix num_peers and num_peers + 1
 	} else {
@@ -300,13 +301,12 @@ pub fn spawn_swarms(
 
 /// Spawn the mixnet workers workers
 pub fn spawn_workers<T: Configuration>(
-	handles: Vec<(PeerId, WorkerChannels)>,
-	num_peers: usize,
+	handles: Vec<(NetworkPeerId, WorkerChannels)>,
 	rng: &mut SmallRng,
 	config_proto: &Config,
 	make_topo: impl FnMut(
 		usize,
-		PeerId,
+		NetworkPeerId,
 		&[(MixPeerId, MixPublicKey)],
 		&[(MixSecretKey, ed25519_zebra::SigningKey)],
 		&Config,
@@ -315,7 +315,7 @@ pub fn spawn_workers<T: Configuration>(
 	single_thread: bool,
 ) -> Vec<MixPeerId> {
 	let mut nodes = Vec::with_capacity(handles.len());
-	let workers = mk_workers(handles, num_peers, rng, config_proto, make_topo);
+	let workers = mk_workers(handles, rng, config_proto, make_topo);
 
 	let mut workers_futures = Vec::with_capacity(workers.len());
 	for mut worker in workers.into_iter() {
@@ -358,4 +358,76 @@ pub fn spawn_workers<T: Configuration>(
 			.unwrap();
 	}
 	nodes
+}
+
+/// Simple key signing handshake.
+/// Handshake is our MixPeerId concatenated with
+/// MixPublicKey and a signature of NetworkId peer
+/// concatenated with the mix public key.
+/// Signing key is MixPeerId (we use the publickey as Mixpeerid).
+#[derive(Clone)]
+pub struct SimpleHandshake<T> {
+	pub local_id: Option<MixPeerId>,
+	pub local_network_id: Option<NetworkPeerId>,
+	pub nb_external: usize,
+	pub max_external: usize,
+	pub topo: T,
+	// key for signing handshake (assert mix_pub_key, MixPeerId is related to
+	// MixPublicKey by signing it (and also dest MixPublicKey to avoid replay).
+	pub mix_secret_key: Option<Arc<(ed25519_zebra::SigningKey, ed25519_zebra::VerificationKey)>>,
+}
+
+impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
+	fn handshake_size(&self) -> usize {
+		32 + 32 + 64
+	}
+
+	fn check_handshake(
+		&mut self,
+		payload: &[u8],
+		_from: &NetworkPeerId,
+	) -> Option<(MixPeerId, MixPublicKey)> {
+		let mut peer_id = [0u8; 32];
+		peer_id.copy_from_slice(&payload[0..32]);
+		//		let peer_id = mixnet::to_sphinx_id(&payload[0..32]).ok()?;
+		let mut pk = [0u8; 32];
+		pk.copy_from_slice(&payload[32..64]);
+		let mut signature = [0u8; 64];
+		signature.copy_from_slice(&payload[64..]);
+		let signature = ed25519_zebra::Signature::try_from(&signature[..]).unwrap();
+		let pub_key = ed25519_zebra::VerificationKey::try_from(&peer_id[..]).unwrap();
+		let mut message = self.local_network_id.unwrap().to_bytes().to_vec();
+		message.extend_from_slice(&pk[..]);
+		if pub_key.verify(&signature, &message[..]).is_ok() {
+			let pk = MixPublicKey::from(pk);
+			if !self.topo.accept_peer(self.local_id.as_ref().unwrap(), &peer_id) {
+				return None
+			}
+			if !self.topo.is_routing(&peer_id) {
+				if self.nb_external == self.max_external {
+					return None
+				} else {
+					self.nb_external += 1;
+				}
+			}
+			Some((peer_id, pk))
+		} else {
+			None
+		}
+	}
+
+	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+		let mut result = self.local_id.as_ref().unwrap().to_vec();
+		result.extend_from_slice(&public_key.as_bytes()[..]);
+		if let Some(keypair) = &self.mix_secret_key {
+			let mut message = with.to_bytes().to_vec();
+			message.extend_from_slice(&public_key.as_bytes()[..]);
+			let signature = keypair.0.sign(&message[..]);
+			let signature: [u8; 64] = signature.into();
+			result.extend_from_slice(&signature[..]);
+		} else {
+			return None
+		}
+		Some(result)
+	}
 }

@@ -262,7 +262,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		for (_mix_id, connection) in std::mem::take(&mut self.connected_peers).into_iter() {
 			if let Some(mix_id) = connection.mixnet_id() {
 				self.handshaken_peers.remove(mix_id);
-				self.topology.disconnect(mix_id);
+				self.topology.disconnected(mix_id);
 			}
 		}
 	}
@@ -538,7 +538,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	pub fn remove_connected_peer(&mut self, id: &NetworkPeerId) {
 		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|c| c.mixnet_id().cloned()) {
 			self.handshaken_peers.remove(&mix_id);
-			self.topology.disconnect(&mix_id);
+			self.topology.disconnected(&mix_id);
 		}
 	}
 

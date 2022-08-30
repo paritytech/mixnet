@@ -20,7 +20,343 @@
 
 //! TopologyHashTable tests.
 
-//mod common;
+mod common;
+
+use common::{PeerTestReply, SimpleHandshake};
+use futures::prelude::*;
+use libp2p_core::PeerId;
+use rand::RngCore;
+use std::{sync::Arc, task::Poll};
+
+use mixnet::{
+	traits::{
+		hash_table::{Configuration as TopologyConfig, TopologyHashTable},
+		Topology,
+	},
+	Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand,
+};
+
+impl TopologyConfig for NotDistributed {
+	type Version = ();
+
+	const DISTRIBUTE_ROUTES: bool = false;
+
+	const LOW_MIXNET_THRESHOLD: usize = 5;
+
+	const LOW_MIXNET_PATHS: usize = 2;
+
+	const NUMBER_CONNECTED_FORWARD: usize = 4;
+
+	const NUMBER_CONNECTED_BACKWARD: usize = Self::NUMBER_CONNECTED_FORWARD - 2;
+
+	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
+}
+
+struct NotDistributed {
+	inner: SimpleHandshake<TopologyHashTable<Self>>,
+}
+
+impl mixnet::traits::Configuration for NotDistributed {
+	fn collect_windows_stats(&self) -> bool {
+		true
+	}
+
+	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
+}
+
+impl mixnet::traits::Handshake for NotDistributed {
+	fn handshake_size(&self) -> usize {
+		self.inner.handshake_size()
+	}
+
+	fn check_handshake(
+		&mut self,
+		payload: &[u8],
+		from: &PeerId,
+	) -> Option<(MixPeerId, MixPublicKey)> {
+		self.inner.check_handshake(payload, from)
+	}
+
+	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+		self.inner.handshake(with, public_key)
+	}
+}
+
+impl Topology for NotDistributed {
+	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+		self.inner.topo.neighbors(id)
+	}
+
+	fn first_hop_nodes_external(
+		&self,
+		from: &MixPeerId,
+		to: &MixPeerId,
+	) -> Vec<(MixPeerId, MixPublicKey)> {
+		self.inner.topo.first_hop_nodes_external(from, to)
+	}
+
+	fn is_first_node(&self, id: &MixPeerId) -> bool {
+		self.inner.topo.is_first_node(id)
+	}
+
+	fn random_recipient(
+		&mut self,
+		local_id: &MixPeerId,
+		options: &SendOptions,
+	) -> Option<(MixPeerId, MixPublicKey)> {
+		self.inner.topo.random_recipient(local_id, options)
+	}
+
+	fn random_path(
+		&mut self,
+		start_node: (&MixPeerId, Option<&MixPublicKey>),
+		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
+		count: usize,
+		num_hops: usize,
+		max_hops: usize,
+		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
+	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
+		self.inner.topo.random_path(
+			start_node,
+			recipient_node,
+			count,
+			num_hops,
+			max_hops,
+			last_query_if_surb,
+		)
+	}
+
+	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
+		self.inner.topo.routing_to(from, to)
+	}
+
+	fn connected(&mut self, peer_id: MixPeerId, pub_key: MixPublicKey) {
+		self.inner.topo.connected(peer_id, pub_key)
+	}
+
+	fn disconnected(&mut self, id: &MixPeerId) {
+		self.inner.topo.disconnected(id)
+	}
+
+	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
+		self.inner.topo.bandwidth_external(id)
+	}
+}
+
+// TODO extract part of test_messages in common:
+// - send message(from: usize, to: usize)
+// - wait_on_message(expected: Vec<Messages>)
+fn test_messages(
+	num_peers: usize,
+	message_count: usize,
+	message_size: usize,
+	with_surb: bool,
+	from_external: bool,
+) {
+	let seed: u64 = 0;
+	let single_thread = false;
+	let (public_key, secret_key) = mixnet::generate_new_keys();
+	let config_proto = mixnet::Config {
+		secret_key,
+		public_key,
+		local_id: Default::default(),
+		target_bytes_per_second: 512 * 1024,
+		timeout_ms: 10000,
+		num_hops: 3,
+		average_message_delay_ms: 50,
+		persist_surb_query: false,
+		replay_ttl_ms: 100_000,
+		surb_ttl_ms: 100_000,
+	};
+	let mut source_message = Vec::new();
+	use rand::SeedableRng;
+	let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+	source_message.resize(message_size, 0);
+	rng.fill_bytes(&mut source_message);
+	let source_message = &source_message;
+
+	let executor = futures::executor::ThreadPool::new().unwrap();
+	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
+	let (handles, mut with_swarm_channels) =
+		common::spawn_swarms(num_peers, from_external, &executor);
+
+	let make_topo = move |p: usize,
+	                      network_id: PeerId,
+	                      nodes: &[(MixPeerId, MixPublicKey)],
+	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
+	                      config: &mixnet::Config| {
+		let mut topo =
+			TopologyHashTable::new(nodes[p].0.clone(), nodes[p].1.clone(), config, Some(10), ());
+		topo.handle_new_routing_set(nodes[..num_peers].iter().cloned(), None, ());
+		let mix_secret_key = secrets[p].1.clone();
+		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
+
+		let inner = SimpleHandshake {
+			local_id: Some(config.local_id.clone()),
+			local_network_id: Some(network_id),
+			nb_external: 0,
+			max_external: 1,
+			topo,
+			mix_secret_key: Some(Arc::new((mix_secret_key, mix_public_key))),
+		};
+		NotDistributed { inner }
+	};
+	let nodes = common::spawn_workers::<NotDistributed>(
+		handles,
+		&mut rng,
+		&config_proto,
+		make_topo,
+		&executor,
+		single_thread,
+	);
+	let nb_conn = if from_external { num_peers + 1 } else { num_peers };
+	let mut connected_futures: Vec<_> = with_swarm_channels[..nb_conn]
+		.iter_mut()
+		.map(|(receiver, _)| {
+			future::poll_fn(move |cx| loop {
+				match receiver.poll_next_unpin(cx) {
+					Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) =>
+						return Poll::Ready(()),
+					Poll::Ready(Some(PeerTestReply::ReceiveMessage(_))) => (),
+					Poll::Ready(None) => (),
+					Poll::Pending => return Poll::Pending,
+				}
+			})
+		})
+		.collect();
+	while !connected_futures.is_empty() {
+		let (_, p, remaining) =
+			async_std::task::block_on(futures::future::select_all(connected_futures));
+		log::trace!(target: "mixnet", "Connecting {} completed", p);
+		connected_futures = remaining;
+	}
+
+	if from_external {
+		// ext 1 can route through peer 0 (only peer acceptiong)
+		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
+			WorkerCommand::RegisterMessage(
+				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				source_message.to_vec(),
+				SendOptions { num_hop: None, with_surb },
+			)
+		))
+		.is_ok());
+		// ext 2 cannot
+		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
+			WorkerCommand::RegisterMessage(
+				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				source_message.to_vec(),
+				SendOptions { num_hop: None, with_surb },
+			)
+		))
+		.is_ok());
+	} else {
+		for np in 1..num_peers {
+			let recipient = nodes[np];
+			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
+			for _ in 0..message_count {
+				assert!(async_std::task::block_on(with_swarm_channels[0].1.send(
+					WorkerCommand::RegisterMessage(
+						Some(recipient.clone()), // we are connected to 0, sending to 1
+						source_message.to_vec(),
+						SendOptions { num_hop: None, with_surb },
+					)
+				))
+				.is_ok());
+			}
+		}
+	}
+
+	let range = if from_external { 1..2 } else { 1..num_peers };
+	let mut received_messages: Vec<_> =
+		with_swarm_channels[range]
+			.iter_mut()
+			.map(|(receiver, sender)| {
+				future::poll_fn(move |cx| loop {
+					match receiver.poll_next_unpin(cx) {
+						Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
+						Poll::Ready(Some(PeerTestReply::ReceiveMessage(
+							mixnet::DecodedMessage { peer, message, kind },
+						))) => {
+							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
+							assert_eq!(source_message.as_slice(), message.as_slice());
+							if let Some(reply) = kind.surb() {
+								sender
+									.try_send(WorkerCommand::RegisterSurbs(b"pong".to_vec(), reply))
+									.unwrap();
+							}
+							return Poll::Ready(())
+						},
+						Poll::Ready(None) => (),
+						Poll::Pending => return Poll::Pending,
+					}
+				})
+			})
+			.collect();
+	while !received_messages.is_empty() {
+		let (_, p, remaining) =
+			async_std::task::block_on(futures::future::select_all(received_messages));
+		log::trace!(target: "mixnet", "Connecting {} completed", p);
+		received_messages = remaining;
+	}
+
+	if !with_surb {
+		return
+	}
+
+	let (from, mut expected_surb) = if from_external { (num_peers, 1) } else { (0, num_peers - 1) };
+	let expected_surb = &mut expected_surb;
+
+	let (receiver, _sender) = &mut with_swarm_channels[from];
+	let poll_fn = future::poll_fn(move |cx| loop {
+		match receiver.poll_next_unpin(cx) {
+			Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
+			Poll::Ready(Some(PeerTestReply::ReceiveMessage(mixnet::DecodedMessage {
+				peer,
+				message,
+				kind,
+			}))) => {
+				log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
+				assert_eq!(b"pong", message.as_slice());
+				assert!(kind.surb().is_none());
+				*expected_surb -= 1;
+				if *expected_surb == 0 {
+					return Poll::Ready(())
+				}
+			},
+			Poll::Ready(None) => (),
+			Poll::Pending => return Poll::Pending,
+		}
+	});
+	async_std::task::block_on(poll_fn);
+}
 
 #[test]
-fn dummy() {}
+fn message_exchange_no_surb() {
+	test_messages(6, 10, 1, false, false);
+}
+
+#[test]
+fn fragmented_messages_no_surb() {
+	test_messages(6, 1, 8 * 1024, false, false);
+}
+
+#[test]
+fn message_exchange_with_surb() {
+	test_messages(6, 10, 1, true, false);
+}
+
+#[test]
+fn fragmented_messages_with_surb() {
+	test_messages(6, 1, 8 * 1024, true, false);
+}
+
+#[test]
+fn from_external_with_surb() {
+	test_messages(6, 1, 100, true, true);
+}
+
+#[test]
+fn from_external_no_surb() {
+	test_messages(6, 1, 4 * 1024, false, true);
+}
