@@ -25,7 +25,8 @@ use crate::{traits::Topology, Error, MixPeerId, MixPublicKey};
 use log::{debug, error, trace};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-enum ConnectedKind {
+// TODO make private or remove when all related stat in mixnet crate
+pub enum ConnectedKind {
 	External,
 	RoutingForward,
 	RoutingReceive,
@@ -59,7 +60,16 @@ pub trait Configuration {
 	/// node message reception.
 	const EXTERNAL_BANDWIDTH: (usize, usize);
 
+	/// Default parameters for the topology.
+	const DEFAULT_PARAMETERS: Parameters;
 	// TODO encode/decode
+}
+
+/// Configuration parameters for topology.
+#[derive(Clone)]
+pub struct Parameters {
+	// limit to external connection
+	pub max_external: Option<usize>,
 }
 
 pub trait TableVersion: Default + Eq + PartialEq + std::fmt::Debug + 'static {}
@@ -78,15 +88,15 @@ pub struct TopologyHashTable<C: Configuration> {
 	routing: bool,
 
 	// TODO put this stats in mixnet stats directly
-	nb_connected_forward_routing: usize,
-	nb_connected_receive_routing: usize,
-	nb_connected_external: usize,
+	pub nb_connected_forward_routing: usize,
+	pub nb_connected_receive_routing: usize,
+	pub nb_connected_external: usize,
 
 	// TODO put in authorities_tables??
 	routing_table: AuthorityTable<C::Version>,
 
 	// The connected nodes (for first hop use `authorities` joined `connected_nodes`).
-	connected_nodes: HashMap<MixPeerId, ConnectedKind>,
+	pub connected_nodes: HashMap<MixPeerId, ConnectedKind>,
 
 	// All rooting peers are considered connected (when building message except first hop).
 	// TODO rename routing_peers
@@ -99,8 +109,7 @@ pub struct TopologyHashTable<C: Configuration> {
 
 	target_bytes_per_seconds: usize,
 
-	// limit to external connection
-	max_external: Option<usize>,
+	params: Parameters,
 
 	// all path of a given size.
 	// on every change to auth table this is cleared TODO make change synchronously to
@@ -427,7 +436,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
 		self.routing_to(peer_id, local_id) ||
-			(self.nb_connected_external < self.max_external.unwrap_or(usize::MAX) &&
+			(self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX) &&
 				self.bandwidth_external(peer_id).is_some())
 		// TODO overload with (or add to mixnet stats):
 		/*
@@ -444,7 +453,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		local_id: MixPeerId,
 		node_public_key: MixPublicKey,
 		config: &crate::Config,
-		max_external: Option<usize>,
+		params: Parameters,
 		routing_table_version: C::Version,
 	) -> Self {
 		let routing_table = AuthorityTable {
@@ -467,7 +476,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			nb_connected_receive_routing: 0,
 			nb_connected_external: 0,
 			target_bytes_per_seconds: config.target_bytes_per_second as usize,
-			max_external,
+			params,
 			default_num_hop: config.num_hops as usize,
 		}
 	}
@@ -602,20 +611,22 @@ impl<C: Configuration> TopologyHashTable<C> {
 	pub fn handle_new_routing_set(
 		&mut self,
 		set: impl Iterator<Item = (MixPeerId, MixPublicKey)>,
-		new_self: Option<(MixPeerId, MixPublicKey)>,
+		new_self: Option<(Option<MixPeerId>, Option<MixPublicKey>)>,
 		_version: C::Version,
 	) {
+		debug!(target: "mixnet", "Handle new routing set.");
 		if C::DISTRIBUTE_ROUTES {
 			unimplemented!()
 		} else {
 			if let Some((id, pub_key)) = new_self {
-				self.local_id = id;
-				self.routing_table.public_key = pub_key;
+				id.map(|id| {
+					self.local_id = id;
+				});
+				pub_key.map(|pub_key| {
+					self.routing_table.public_key = pub_key;
+				});
 			}
-			// TODO update
-			//			let current_public_key = self.worker.public_key().clone();
 
-			debug!(target: "mixnet", "Change authorities");
 			self.authorities.clear();
 			self.authorities_tables.clear();
 
@@ -624,6 +635,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			for (peer_id, public_key) in set {
 				self.authorities.insert(peer_id, public_key.clone());
 				if self.local_id == peer_id {
+					debug!(target: "mixnet", "In new routing set, routing.");
 					self.routing = true;
 				}
 			}

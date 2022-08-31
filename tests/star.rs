@@ -109,6 +109,10 @@ impl mixnet::traits::Handshake for ConfigGraph {
 }
 
 impl Topology for ConfigGraph {
+	fn is_routing(&self, id: &MixPeerId) -> bool {
+		self.inner.topo.is_routing(id)
+	}
+
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		self.inner.topo.neighbors(id)
 	}
@@ -170,6 +174,10 @@ impl Topology for ConfigGraph {
 }
 
 impl Topology for TopologyGraph {
+	fn is_routing(&self, id: &MixPeerId) -> bool {
+		self.neighbors(id).is_some()
+	}
+
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		self.connections.get(id).cloned()
 	}

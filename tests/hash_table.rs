@@ -30,7 +30,7 @@ use std::{sync::Arc, task::Poll};
 
 use mixnet::{
 	traits::{
-		hash_table::{Configuration as TopologyConfig, TopologyHashTable},
+		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
 		Topology,
 	},
 	Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand,
@@ -50,6 +50,8 @@ impl TopologyConfig for NotDistributed {
 	const NUMBER_CONNECTED_BACKWARD: usize = Self::NUMBER_CONNECTED_FORWARD - 2;
 
 	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
+
+	const DEFAULT_PARAMETERS: Parameters = Parameters { max_external: Some(10) };
 }
 
 struct NotDistributed {
@@ -83,6 +85,10 @@ impl mixnet::traits::Handshake for NotDistributed {
 }
 
 impl Topology for NotDistributed {
+	fn is_routing(&self, id: &MixPeerId) -> bool {
+		self.inner.topo.is_routing(id)
+	}
+
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		self.inner.topo.neighbors(id)
 	}
@@ -185,8 +191,13 @@ fn test_messages(
 	                      nodes: &[(MixPeerId, MixPublicKey)],
 	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
 	                      config: &mixnet::Config| {
-		let mut topo =
-			TopologyHashTable::new(nodes[p].0.clone(), nodes[p].1.clone(), config, Some(10), ());
+		let mut topo = TopologyHashTable::new(
+			nodes[p].0.clone(),
+			nodes[p].1.clone(),
+			config,
+			NotDistributed::DEFAULT_PARAMETERS.clone(),
+			(),
+		);
 		topo.handle_new_routing_set(nodes[..num_peers].iter().cloned(), None, ());
 		let mix_secret_key = secrets[p].1.clone();
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();

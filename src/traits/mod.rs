@@ -60,9 +60,7 @@ pub trait Topology: Sized {
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
 	/// Check if a peer is in topology, do not need to be connected.
-	fn is_routing(&self, id: &MixPeerId) -> bool {
-		self.neighbors(id).is_some()
-	}
+	fn is_routing(&self, id: &MixPeerId) -> bool;
 
 	/// first hop nodes that may currently allow external node connection.
 	fn first_hop_nodes_external(
@@ -76,9 +74,7 @@ pub trait Topology: Sized {
 
 	/// If external is allowed, it returns a ratio of
 	/// routing node bandwidth to use.
-	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
-		None
-	}
+	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)>;
 
 	/// Check node links.
 	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool;
@@ -136,6 +132,10 @@ pub struct NoTopology {
 }
 
 impl Topology for NoTopology {
+	fn is_routing(&self, id: &MixPeerId) -> bool {
+		self.neighbors(id).is_some()
+	}
+
 	fn random_recipient(
 		&mut self,
 		from: &MixPeerId,
