@@ -147,6 +147,10 @@ impl Topology for NotDistributed {
 	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
 		self.inner.topo.bandwidth_external(id)
 	}
+
+	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		self.inner.topo.accept_peer(local_id, peer_id)
+	}
 }
 
 // TODO extract part of test_messages in common:
@@ -198,7 +202,7 @@ fn test_messages(
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
-		topo.handle_new_routing_set(nodes[..num_peers].iter().cloned(), None, ());
+		topo.handle_new_routing_set(&nodes[..num_peers], None, ());
 		let mix_secret_key = secrets[p].1.clone();
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 

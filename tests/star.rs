@@ -171,6 +171,10 @@ impl Topology for ConfigGraph {
 	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
 		self.inner.topo.bandwidth_external(id)
 	}
+
+	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		self.inner.topo.accept_peer(local_id, peer_id)
+	}
 }
 
 impl Topology for TopologyGraph {
@@ -311,6 +315,12 @@ impl Topology for TopologyGraph {
 			return None
 		}
 		Some((1, 1))
+	}
+
+	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		self.routing_to(local_id, peer_id) ||
+			self.routing_to(peer_id, local_id) ||
+			self.bandwidth_external(peer_id).is_some()
 	}
 }
 

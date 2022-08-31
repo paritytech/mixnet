@@ -60,6 +60,7 @@ pub trait Topology: Sized {
 	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
 
 	/// Check if a peer is in topology, do not need to be connected.
+	/// TODO rename can_route
 	fn is_routing(&self, id: &MixPeerId) -> bool;
 
 	/// first hop nodes that may currently allow external node connection.
@@ -100,11 +101,7 @@ pub trait Topology: Sized {
 	fn disconnected(&mut self, id: &MixPeerId);
 
 	/// Utils that should be call when using `check_handshake`.
-	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
-		self.routing_to(local_id, peer_id) ||
-			self.routing_to(peer_id, local_id) ||
-			self.bandwidth_external(peer_id).is_some()
-	}
+	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool;
 }
 
 /// Handshake on peer connection.
@@ -172,6 +169,7 @@ impl Topology for NoTopology {
 		}
 	}
 
+	// TODO consider remplacing with `my_connected_neighbors` or removing
 	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
 		None
 	}
@@ -199,6 +197,12 @@ impl Topology for NoTopology {
 
 	fn disconnected(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
+	}
+
+	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		self.routing_to(local_id, peer_id) ||
+			self.routing_to(peer_id, local_id) ||
+			self.bandwidth_external(peer_id).is_some()
 	}
 }
 
