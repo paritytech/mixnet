@@ -37,7 +37,7 @@ use mixnet::{
 	StreamFromWorker, WorkerChannels, WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
-use std::{sync::Arc, task::Poll};
+use std::{collections::HashSet, sync::Arc, task::Poll};
 
 /// Message that test peer replies with.
 pub enum PeerTestReply {
@@ -170,6 +170,7 @@ pub fn spawn_swarms(
 	num_peers: usize,
 	from_external: bool,
 	executor: &ThreadPool,
+	expect_all_connected: bool,
 ) -> (Vec<(NetworkPeerId, WorkerChannels)>, Vec<TestChannels>) {
 	let extra_external = if from_external {
 		2 // 2 external node at ix num_peers and num_peers + 1
@@ -224,6 +225,9 @@ pub fn spawn_swarms(
 		let poll_fn = async move {
 			let mut num_connected = 0;
 			let mut num_connected_p2p = 0;
+			let mut handshake_done = HashSet::new();
+			let mut expect_all_connected = expect_all_connected && target_peers.is_some();
+			let mut count_connected = true;
 			loop {
 				match swarm.select_next_some().await {
 					SwarmEvent::NewListenAddr { address, .. } => {
@@ -234,20 +238,28 @@ pub fn spawn_swarms(
 							swarm.dial(rx.next().await.unwrap()).unwrap();
 						}
 					},
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::Connected(_, _)) => {
+					SwarmEvent::Behaviour(mixnet::MixnetEvent::Connected(peer, _)) => {
 						num_connected += 1;
 						log::trace!(target: "mixnet", "{} Connected  {}/{:?}", p, num_connected, target_peers);
-						if Some(num_connected) == target_peers {
-							from_swarm_sink
-								.send(PeerTestReply::InitialConnectionsCompleted)
-								.await
-								.unwrap();
-							target_peers = None;
+						if count_connected {
+							if !expect_all_connected {
+								handshake_done.insert(peer);
+							}
+							if Some(num_connected) == target_peers ||
+								Some(handshake_done.len()) == target_peers
+							{
+								expect_all_connected = false;
+								count_connected = false;
+								from_swarm_sink
+									.send(PeerTestReply::InitialConnectionsCompleted)
+									.await
+									.unwrap();
+								target_peers = None;
+							}
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(_)) => {
-						num_connected -= 1;
-						log::trace!(target: "mixnet", "{} P2P connected  {}/{:?}", p, num_connected, target_peers);
+						unreachable!("This event generate `ConnectionClosed`")
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
 						from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await.unwrap();
@@ -260,9 +272,26 @@ pub fn spawn_swarms(
 						num_connected_p2p += 1;
 						log::trace!(target: "mixnet", "{} P2p connected  {}", p, num_connected_p2p);
 					},
-					SwarmEvent::ConnectionClosed { .. } => {
+					SwarmEvent::ConnectionClosed { peer_id, .. } => {
 						num_connected_p2p -= 1;
 						log::trace!(target: "mixnet", "{} P2p connected  {}", p, num_connected_p2p);
+						num_connected -= 1;
+						log::trace!(target: "mixnet", "{} connected  {}/{:?}", p, num_connected, target_peers);
+						if count_connected {
+							if !expect_all_connected {
+								handshake_done.insert(peer_id);
+
+								if Some(handshake_done.len()) == target_peers {
+									expect_all_connected = false;
+									count_connected = false;
+									from_swarm_sink
+										.send(PeerTestReply::InitialConnectionsCompleted)
+										.await
+										.unwrap();
+									target_peers = None;
+								}
+							}
+						}
 					},
 					SwarmEvent::IncomingConnection { .. } |
 					SwarmEvent::BannedPeer { .. } |

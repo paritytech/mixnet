@@ -78,7 +78,7 @@ pub trait TableVersion: Default + Clone + Eq + PartialEq + Ord + std::fmt::Debug
 }
 
 impl TableVersion for () {
-	fn register_change(&mut self) { }
+	fn register_change(&mut self) {}
 }
 
 /// A topology where connections are determined by taking first
@@ -189,7 +189,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			.filter(|(id, _key)| to != *id)
 			.filter(|(id, _key)| &self.local_id != *id)
 			.filter(|(id, _key)| self.connected_nodes.contains_key(*id))
-			.map(|(k, table)| (k.clone(), table.public_key.clone())			)
+			.map(|(k, table)| (k.clone(), table.public_key.clone()))
 			.collect()
 	}
 
@@ -283,7 +283,10 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				false
 			}
 		} else {
-			self.authorities_tables.get(from).map(|table| table.connected_to.contains(to)).unwrap_or(false)
+			self.authorities_tables
+				.get(from)
+				.map(|table| table.connected_to.contains(to))
+				.unwrap_or(false)
 		}
 	}
 
@@ -474,15 +477,17 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
 		if self.routing {
-		self.routing_to(peer_id, local_id) ||
-			self.routing_to(local_id, peer_id) ||
-			(!self.is_routing(peer_id) && self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX) &&
-				self.bandwidth_external(peer_id).is_some())
+			self.routing_to(peer_id, local_id) ||
+				self.routing_to(local_id, peer_id) ||
+				(!self.is_routing(peer_id) &&
+					self.nb_connected_external <
+						self.params.max_external.unwrap_or(usize::MAX) &&
+					self.bandwidth_external(peer_id).is_some())
 		} else {
 			// connect as many routing node as possible
 			// TODO could use a different counter than nb_connected_external
-			self.is_routing(peer_id)
-			 && self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
+			self.is_routing(peer_id) &&
+				self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
 		}
 	}
 }
@@ -685,7 +690,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 		self.authorities.clear();
 		self.authorities_tables.clear();
-
 		self.routing = false;
 
 		for peer_id in set {
@@ -697,9 +701,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	fn handle_new_routing_set_end(
-		&mut self,
-	) {
+	fn handle_new_routing_set_end(&mut self) {
 		let connected = std::mem::take(&mut self.connected_nodes);
 		self.nb_connected_forward_routing = 0;
 		self.nb_connected_receive_routing = 0;
@@ -718,8 +720,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 	) {
 		assert!(C::DISTRIBUTE_ROUTES);
 		self.handle_new_routing_set_start(set.iter(), new_self);
-		self.should_connect_to =
-			should_connect_to(&self.local_id, &self.authorities, usize::MAX);
+		self.should_connect_to = should_connect_to(&self.local_id, &self.authorities, usize::MAX);
 		for (index, id) in self.should_connect_to.iter().enumerate() {
 			self.should_connect_pending.insert(id.clone(), (index, true));
 		}
@@ -744,10 +745,14 @@ impl<C: Configuration> TopologyHashTable<C> {
 		unimplemented!("rotate key");
 	}
 
-	pub fn receive_new_routing_table(&mut self, with: MixPeerId, new_table: AuthorityTable<C::Version>) {
+	pub fn receive_new_routing_table(
+		&mut self,
+		with: MixPeerId,
+		new_table: AuthorityTable<C::Version>,
+	) {
 		if with == self.local_id {
 			// ignore
-			return;
+			return
 		}
 		let mut insert = true;
 		if let Some(table) = self.authorities_tables.get(&with) {
@@ -795,56 +800,56 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	fn refresh_static_routing_tables(&mut self,	set: &[(MixPeerId, MixPublicKey)]) {
-			for (auth, public_key) in set.iter() {
-				if auth == &self.local_id {
-					if let Some(table) = Self::refresh_connection_table_to(
-						auth,
-						public_key,
-						Some(&self.routing_table),
-						&self.authorities,
-					) {
-						self.routing_table = table;
-						self.paths.clear();
-						self.paths_depth = 0;
-					}
-				} else {
-					let past = self.authorities_tables.get(auth);
-					if let Some(table) =
-						Self::refresh_connection_table_to(auth, public_key, past, &self.authorities)
-					{
-						self.authorities_tables.insert(auth.clone(), table);
-						self.paths.clear();
-						self.paths_depth = 0;
-					}
+	fn refresh_static_routing_tables(&mut self, set: &[(MixPeerId, MixPublicKey)]) {
+		for (auth, public_key) in set.iter() {
+			if auth == &self.local_id {
+				if let Some(table) = Self::refresh_connection_table_to(
+					auth,
+					public_key,
+					Some(&self.routing_table),
+					&self.authorities,
+				) {
+					self.routing_table = table;
+					self.paths.clear();
+					self.paths_depth = 0;
+				}
+			} else {
+				let past = self.authorities_tables.get(auth);
+				if let Some(table) =
+					Self::refresh_connection_table_to(auth, public_key, past, &self.authorities)
+				{
+					self.authorities_tables.insert(auth.clone(), table);
+					self.paths.clear();
+					self.paths_depth = 0;
 				}
 			}
+		}
 
-			for auth in self.authorities.iter() {
-				if auth == &self.local_id {
+		for auth in self.authorities.iter() {
+			if auth == &self.local_id {
+				if let Some(from) = Self::refresh_connection_table_from(
+					auth,
+					&self.routing_table.receive_from,
+					self.authorities_tables.iter(),
+				) {
+					self.routing_table.receive_from = from;
+				}
+			} else {
+				if let Some(routing_table) = self.authorities_tables.get(auth) {
 					if let Some(from) = Self::refresh_connection_table_from(
 						auth,
-						&self.routing_table.receive_from,
-						self.authorities_tables.iter(),
+						&routing_table.receive_from,
+						self.authorities_tables
+							.iter()
+							.chain(std::iter::once((&self.local_id, &self.routing_table))),
 					) {
-						self.routing_table.receive_from = from;
-					}
-				} else {
-					if let Some(routing_table) = self.authorities_tables.get(auth) {
-						if let Some(from) = Self::refresh_connection_table_from(
-							auth,
-							&routing_table.receive_from,
-							self.authorities_tables
-								.iter()
-								.chain(std::iter::once((&self.local_id, &self.routing_table))),
-						) {
-							if let Some(routing_table) = self.authorities_tables.get_mut(auth) {
-								routing_table.receive_from = from;
-							}
+						if let Some(routing_table) = self.authorities_tables.get_mut(auth) {
+							routing_table.receive_from = from;
 						}
 					}
 				}
 			}
+		}
 	}
 
 	fn refresh_connection_table_to(
@@ -1177,11 +1182,8 @@ fn test_fill_paths() {
 		})
 		.collect();
 	let local_id = [255u8; 32];
-	let authorities: BTreeSet<_> = peers
-		.iter()
-		.chain(std::iter::once(&local_id))
-		.cloned()
-		.collect();
+	let authorities: BTreeSet<_> =
+		peers.iter().chain(std::iter::once(&local_id)).cloned().collect();
 
 	/*	let from_to: HashMap<MixPeerId, Vec<MixPeerId>> = vec![
 		(peers[0].clone(), vec![peers[1].clone(), peers[2].clone()]),

@@ -188,7 +188,7 @@ fn test_messages(
 	let executor = futures::executor::ThreadPool::new().unwrap();
 	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
 	let (handles, mut with_swarm_channels) =
-		common::spawn_swarms(num_peers, from_external, &executor);
+		common::spawn_swarms(num_peers, from_external, &executor, false);
 
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
