@@ -985,7 +985,7 @@ fn should_connect_to(
 
 	let mut auths: Vec<_> = authorities
 		.iter()
-		.filter_map(|a| if a != from { Some(a) } else { None })
+		.filter(|a| a != &from)
 		.collect();
 	let mut nb_auth = auths.len();
 	let mut result = Vec::with_capacity(std::cmp::min(nb, nb_auth));
@@ -1013,8 +1013,8 @@ fn should_connect_to(
 				hash = crate::core::hash(&hash);
 			}
 		}
-		at = at % nb_auth;
-		result.push(auths.remove(at).clone());
+		at %= nb_auth;
+		result.push(*auths.remove(at));
 		nb_auth = auths.len();
 	}
 	result
@@ -1036,15 +1036,15 @@ fn random_path_inner(
 	let ix = ix % routes.len();
 
 	for key in routes[ix..].iter() {
-		if !skip(&key) {
+		if !skip(key) {
 			debug!(target: "mixnet", "Random route node");
-			return Some(key.clone())
+			return Some(*key)
 		}
 	}
 	for key in routes[..ix].iter() {
 		if !skip(key) {
 			debug!(target: "mixnet", "Random route node");
-			return Some(key.clone())
+			return Some(*key)
 		}
 	}
 	None
@@ -1064,11 +1064,11 @@ fn random_path(
 	let mut rng = rand::thread_rng();
 	let mut at = size_path;
 	let mut exclude = HashSet::new();
-	exclude.insert(from.clone());
-	exclude.insert(to.clone());
+	exclude.insert(*from);
+	exclude.insert(*to);
 	let mut result = Vec::<MixPeerId>::with_capacity(size_path); // allocate two extra for case where a node is
 															 // appended front or/and back.
-	result.push(from.clone());
+	result.push(*from);
 	// TODO consider Vec instead of hashset (small nb elt)
 	let mut touched = Vec::<HashSet<MixPeerId>>::with_capacity(size_path - 2);
 	touched.push(HashSet::new());
@@ -1081,9 +1081,9 @@ fn random_path(
 					touched.last().map(|touched| touched.contains(p)).unwrap_or(false)
 			}) {
 				result.push(next);
-				touched.last_mut().map(|touched| {
+				if let Some(touched) = touched.last_mut() {
 					touched.insert(next);
-				});
+				}
 				touched.push(HashSet::new());
 				exclude.insert(next);
 				at -= 1;
@@ -1113,11 +1113,11 @@ fn count_paths(
 	let mut total = 0;
 	let mut at = size_path;
 	let mut exclude = HashSet::new();
-	exclude.insert(from.clone());
-	exclude.insert(to.clone());
+	exclude.insert(*from);
+	exclude.insert(*to);
 	let mut result = Vec::<(MixPeerId, usize)>::with_capacity(size_path); // allocate two extra for case where a node is
 																	  // appended front or/and back.
-	result.push((from.clone(), 0));
+	result.push((*from, 0));
 	let mut touched = Vec::<HashSet<MixPeerId>>::with_capacity(size_path - 2);
 	touched.push(HashSet::new());
 	loop {
@@ -1129,9 +1129,9 @@ fn count_paths(
 				.map(|p| (p, *at_ix))
 		}) {
 			if let Some(next) = paths.get(at_ix).cloned() {
-				result.last_mut().map(|(_, at_ix)| {
+				if let Some((_, at_ix)) = result.last_mut() {
 					*at_ix += 1;
-				});
+				}
 				if !exclude.contains(&next) &&
 					!touched.last().map(|touched| touched.contains(&next)).unwrap_or(false)
 				{
@@ -1139,9 +1139,9 @@ fn count_paths(
 						total += 1;
 					} else {
 						result.push((next, 0));
-						touched.last_mut().map(|touched| {
+						if let Some(touched) = touched.last_mut() {
 							touched.insert(next);
-						});
+						};
 						touched.push(HashSet::new());
 						exclude.insert(next);
 						at -= 1;
