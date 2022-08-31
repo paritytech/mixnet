@@ -72,7 +72,7 @@ pub struct Parameters {
 	pub max_external: Option<usize>,
 }
 
-pub trait TableVersion: Default + Clone + Eq + PartialEq + std::fmt::Debug + 'static {
+pub trait TableVersion: Default + Clone + Eq + PartialEq + Ord + std::fmt::Debug + 'static {
 	/// Associated table content did change.
 	fn register_change(&mut self);
 }
@@ -98,7 +98,8 @@ pub struct TopologyHashTable<C: Configuration> {
 	pub nb_connected_external: usize,
 
 	// TODO put in authorities_tables??
-	routing_table: AuthorityTable<C::Version>,
+	// TODO priv
+	pub routing_table: AuthorityTable<C::Version>,
 
 	// The connected nodes (for first hop use `authorities` joined `connected_nodes`).
 	pub connected_nodes: HashMap<MixPeerId, ConnectedKind>,
@@ -275,8 +276,15 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	}
 
 	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
-		(self.authorities.contains(from) || (&self.local_id == from && self.routing)) &&
-			(self.authorities.contains(to) || (&self.local_id == to && self.routing))
+		if &self.local_id == from {
+			if self.routing {
+				self.routing_table.connected_to.contains(to)
+			} else {
+				false
+			}
+		} else {
+			self.authorities_tables.get(from).map(|table| table.connected_to.contains(to)).unwrap_or(false)
+		}
 	}
 
 	fn random_path(
@@ -401,7 +409,11 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	}
 
 	fn is_routing(&self, id: &MixPeerId) -> bool {
-		self.authorities.contains(id)
+		if &self.local_id == id {
+			self.routing
+		} else {
+			self.authorities.contains(id)
+		}
 	}
 
 	fn connected(&mut self, peer_id: MixPeerId, _key: MixPublicKey) {
@@ -462,7 +474,8 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
 		self.routing_to(peer_id, local_id) ||
-			(self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX) &&
+			self.routing_to(local_id, peer_id) ||
+			(!self.is_routing(peer_id) && self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX) &&
 				self.bandwidth_external(peer_id).is_some())
 	}
 }
@@ -648,11 +661,10 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	pub fn handle_new_routing_set(
+	fn handle_new_routing_set_start<'a>(
 		&mut self,
-		set: &[(MixPeerId, MixPublicKey)],
+		set: impl Iterator<Item = &'a MixPeerId>,
 		new_self: Option<(Option<MixPeerId>, Option<MixPublicKey>)>,
-		_version: C::Version,
 	) {
 		debug!(target: "mixnet", "Handle new routing set.");
 		if let Some((id, pub_key)) = new_self {
@@ -669,26 +681,18 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 		self.routing = false;
 
-		for (peer_id, _public_key) in set.iter() {
+		for peer_id in set {
 			self.authorities.insert(peer_id.clone());
 			if &self.local_id == peer_id {
 				debug!(target: "mixnet", "In new routing set, routing.");
 				self.routing = true;
 			}
 		}
+	}
 
-		if C::DISTRIBUTE_ROUTES {
-			self.should_connect_to =
-				should_connect_to(&self.local_id, &self.authorities, usize::MAX);
-			for (index, id) in self.should_connect_to.iter().enumerate() {
-				self.should_connect_pending.insert(id.clone(), (index, true));
-			}
-			debug!(target: "mixnet", "should connect to {:?}", self.should_connect_to);
-			self.refresh_self_routing_table();
-		} else {
-			self.refresh_static_routing_tables(set);
-		}
-
+	fn handle_new_routing_set_end(
+		&mut self,
+	) {
 		let connected = std::mem::take(&mut self.connected_nodes);
 		self.nb_connected_forward_routing = 0;
 		self.nb_connected_receive_routing = 0;
@@ -699,8 +703,62 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
+	pub fn handle_new_routing_distributed(
+		&mut self,
+		set: &[MixPeerId],
+		new_self: Option<(Option<MixPeerId>, Option<MixPublicKey>)>,
+		version: C::Version,
+	) {
+		assert!(C::DISTRIBUTE_ROUTES);
+		self.handle_new_routing_set_start(set.iter(), new_self);
+		self.should_connect_to =
+			should_connect_to(&self.local_id, &self.authorities, usize::MAX);
+		for (index, id) in self.should_connect_to.iter().enumerate() {
+			self.should_connect_pending.insert(id.clone(), (index, true));
+		}
+		debug!(target: "mixnet", "should connect to {:?}", self.should_connect_to);
+		self.routing_table.version = version;
+		self.refresh_self_routing_table();
+		self.handle_new_routing_set_end();
+	}
+
+	pub fn handle_new_routing_set(
+		&mut self,
+		set: &[(MixPeerId, MixPublicKey)],
+		new_self: Option<(Option<MixPeerId>, Option<MixPublicKey>)>,
+	) {
+		assert!(!C::DISTRIBUTE_ROUTES);
+		self.handle_new_routing_set_start(set.iter().map(|k| &k.0), new_self);
+		self.refresh_static_routing_tables(set);
+		self.handle_new_routing_set_end();
+	}
+
 	pub fn handle_new_self_key(&mut self) {
 		unimplemented!("rotate key");
+	}
+
+	pub fn receive_new_routing_table(&mut self, with: MixPeerId, new_table: AuthorityTable<C::Version>) {
+		if with == self.local_id {
+			// ignore
+			return;
+		}
+		let mut insert = true;
+		if let Some(table) = self.authorities_tables.get(&with) {
+			if new_table.version <= table.version {
+				log::debug!(target: "mixnet", "Not updated routes: {:?}", self.authorities_tables);
+				// TODO old tables should lower dht peer prio.
+				insert = false;
+			}
+		}
+		if insert {
+			// TODO sanity check of table (not connected to too many peers), ~ consistent with
+			// peer neighbors (at least from the connected one we know)...
+			// TODO number of non connected neighbor that should be.
+			self.authorities_tables.insert(with, new_table);
+			self.paths.clear();
+			self.paths_depth = 0;
+			log::debug!(target: "mixnet", "current routes: {:?}", self.authorities_tables);
+		}
 	}
 
 	fn refresh_self_routing_table(&mut self) {

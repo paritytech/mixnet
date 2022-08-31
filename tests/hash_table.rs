@@ -202,7 +202,7 @@ fn test_messages(
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
-		topo.handle_new_routing_set(&nodes[..num_peers], None, ());
+		topo.handle_new_routing_set(&nodes[..num_peers], None);
 		let mix_secret_key = secrets[p].1.clone();
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 
