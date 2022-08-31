@@ -473,10 +473,17 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	}
 
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		if self.routing {
 		self.routing_to(peer_id, local_id) ||
 			self.routing_to(local_id, peer_id) ||
 			(!self.is_routing(peer_id) && self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX) &&
 				self.bandwidth_external(peer_id).is_some())
+		} else {
+			// connect as many routing node as possible
+			// TODO could use a different counter than nb_connected_external
+			self.is_routing(peer_id)
+			 && self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
+		}
 	}
 }
 
