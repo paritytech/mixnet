@@ -101,6 +101,7 @@ pub trait Topology: Sized {
 	fn disconnected(&mut self, id: &MixPeerId);
 
 	/// Utils that should be call when using `check_handshake`.
+	/// TODO remove local_id param
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool;
 }
 

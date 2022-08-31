@@ -82,7 +82,7 @@ impl<C: Connection> ManagedConnection<C> {
 			sent_in_window: 0,
 			recv_in_window: 0,
 			packet_queue: Default::default(),
-			stats: with_stats.then(|| Default::default()),
+			stats: with_stats.then(Default::default),
 		}
 	}
 
@@ -146,12 +146,16 @@ impl<C: Connection> ManagedConnection<C> {
 	fn try_send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
 		match self.connection.send_flushed(cx) {
 			Poll::Ready(Ok(sent)) => {
-				self.stats.as_mut().map(|(stats, kind)| stats.success_packet(kind.take()));
+				if let Some((stats, kind)) = self.stats.as_mut() {
+					stats.success_packet(kind.take());
+				}
 				Poll::Ready(Ok(sent))
 			},
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error sending to peer {:?}", self.network_id);
-				self.stats.as_mut().map(|(stats, kind)| stats.failure_packet(kind.take()));
+				if let Some((stats, kind)) = self.stats.as_mut() {
+					stats.failure_packet(kind.take());
+				};
 				Poll::Ready(Err(()))
 			},
 			Poll::Pending => Poll::Pending,
@@ -250,7 +254,7 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::NoPath(Some(*peer_id)))
 			}
 			self.packet_queue.push(packet);
-			self.stats.as_mut().map(|(stats, _)| {
+			if let Some((stats, _)) = self.stats.as_mut() {
 				let mut len = self.packet_queue.len();
 				if self.next_packet.is_some() {
 					len += 1;
@@ -258,7 +262,7 @@ impl<C: Connection> ManagedConnection<C> {
 				if len > stats.max_peer_paquet_queue_size {
 					stats.max_peer_paquet_queue_size = len;
 				}
-			});
+			}
 			Ok(())
 		} else {
 			Err(crate::Error::NoSphinxId)
@@ -314,14 +318,12 @@ impl<C: Connection> ManagedConnection<C> {
 						if let Some(packet) = self.next_packet.take() {
 							if let Some(unsend) = self.try_queue_send_packet(packet.0) {
 								log::error!(target: "mixnet", "try send should not fail on flushed queue.");
-								self.stats
-									.as_mut()
-									.map(|(stats, _)| stats.failure_packet(Some(packet.1)));
+								if let Some((stats, _)) = self.stats.as_mut() {
+									stats.failure_packet(Some(packet.1));
+								}
 								self.next_packet = Some((unsend, packet.1));
-							} else {
-								self.stats.as_mut().map(|stats| {
-									stats.1 = Some(packet.1);
-								});
+							} else if let Some(stats) = self.stats.as_mut() {
+								stats.1 = Some(packet.1);
 							}
 							continue
 						}
@@ -339,9 +341,9 @@ impl<C: Connection> ManagedConnection<C> {
 									.map(|p| (p.into_vec(), PacketType::Cover));
 								if self.next_packet.is_none() {
 									log::error!(target: "mixnet", "Could not create cover for {:?}", self.network_id);
-									self.stats
-										.as_mut()
-										.map(|stats| stats.0.number_cover_send_failed += 1);
+									if let Some(stats) = self.stats.as_mut() {
+										stats.0.number_cover_send_failed += 1;
+									}
 								}
 							}
 							if self.next_packet.is_none() {
@@ -422,14 +424,14 @@ impl<C: Connection> ManagedConnection<C> {
 
 impl<C> Drop for ManagedConnection<C> {
 	fn drop(&mut self) {
-		self.stats.as_mut().map(|(stats, _)| {
+		if let Some((stats, _)) = self.stats.as_mut() {
 			if let Some(packet) = self.next_packet.take() {
 				stats.failure_packet(Some(packet.1))
 			}
 			for packet in self.packet_queue.iter() {
 				stats.failure_packet(Some(packet.kind))
 			}
-		});
+		}
 	}
 }
 

@@ -432,7 +432,7 @@ pub fn unwrap_packet(
 
 	// Decrypt the Sphinx Packet Payload.
 	let mut p = vec![0u8; payload.len()];
-	p.copy_from_slice(&payload[..]);
+	p.copy_from_slice(payload);
 	// Transform the packet for forwarding to the next mix
 	match maybe_next_hop {
 		DoNextHop::Forward(next_hop) => {

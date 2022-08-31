@@ -87,7 +87,7 @@ impl TableVersion for () {
 /// This assumes all peers are connected (`external_routing_table` defaults to `false`).
 /// And routing table are updated on mixpeer set changes.
 pub struct TopologyHashTable<C: Configuration> {
-	pub local_id: MixPeerId,
+	local_id: MixPeerId,
 
 	// true when we are in routing set.
 	routing: bool,
@@ -189,7 +189,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			.filter(|(id, _key)| to != *id)
 			.filter(|(id, _key)| &self.local_id != *id)
 			.filter(|(id, _key)| self.connected_nodes.contains_key(*id))
-			.map(|(k, table)| (k.clone(), table.public_key.clone()))
+			.map(|(k, table)| (*k, table.public_key))
 			.collect()
 	}
 
@@ -228,12 +228,12 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 					// different that path one -> then the check on count could be part of path
 					// building
 					let firsts = self.first_hop_nodes_external(from, &peer);
-					if firsts.len() == 0 {
+					if firsts.is_empty() {
 						return None
 					}
-					firsts[0].0.clone()
+					firsts[0].0
 				} else {
-					from.clone()
+					*from
 				};
 				// TODO also count surbs??
 				let nb_path = count_paths(&self.paths, &from_count, &peer, nb_hop);
@@ -263,9 +263,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 					.connected_to
 					.iter()
 					.filter_map(|k| {
-						self.authorities_tables
-							.get(k)
-							.map(|table| (k.clone(), table.public_key.clone()))
+						self.authorities_tables.get(k).map(|table| (*k, table.public_key))
 					})
 					.collect(),
 			)
@@ -304,7 +302,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		let mut add_start = None;
 		let mut add_end = None;
 		let start = if self.is_first_node(start_node.0) {
-			start_node.0.clone()
+			*start_node.0
 		} else {
 			trace!(target: "mixnet", "External node");
 			if num_hops + 1 > max_hops {
@@ -312,18 +310,18 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			}
 
 			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0);
-			if firsts.len() == 0 {
-				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+			if firsts.is_empty() {
+				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
 			let mut rng = rand::thread_rng();
 			use rand::Rng;
 			let n: usize = rng.gen_range(0..firsts.len());
-			add_start = Some(firsts[n].clone());
-			firsts[n].0.clone()
+			add_start = Some(firsts[n]);
+			firsts[n].0
 		};
 
 		let recipient = if self.is_routing(recipient_node.0) {
-			recipient_node.0.clone()
+			*recipient_node.0
 		} else {
 			trace!(target: "mixnet", "Non routing recipient");
 			if num_hops + 1 > max_hops {
@@ -335,12 +333,12 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				if let Some(rec) = query.get(0) {
 					trace!(target: "mixnet", "Surbs last: {:?}", rec);
 					add_end = Some(recipient_node);
-					rec.0.clone()
+					rec.0
 				} else {
-					return Err(Error::NoPath(Some(recipient_node.0.clone())))
+					return Err(Error::NoPath(Some(*recipient_node.0)))
 				}
 			} else {
-				return Err(Error::NoPath(Some(recipient_node.0.clone())))
+				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
 		};
 		trace!(target: "mixnet", "number hop: {:?}", num_hops);
@@ -375,34 +373,32 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			let mut path = Vec::with_capacity(num_hops + 1);
 			if let Some((peer, key)) = add_start {
 				debug!(target: "mixnet", "Add first, nexts {:?}.", path_ids.len());
-				path.push((peer.clone(), key.clone()));
+				path.push((peer, key));
 			}
 
 			for peer_id in path_ids.into_iter() {
 				if let Some(table) = self.authorities_tables.get(&peer_id) {
-					path.push((peer_id, table.public_key.clone()));
+					path.push((peer_id, table.public_key));
 				} else {
 					error!(target: "mixnet", "node in routing_nodes must also be in connected_nodes");
 					unreachable!("node in routing_nodes must also be in connected_nodes");
 				}
 			}
 			if let Some(table) = self.authorities_tables.get(&recipient) {
-				path.push((recipient.clone(), table.public_key.clone()));
+				path.push((recipient, table.public_key));
+			} else if self.local_id == recipient {
+				// surb reply
+				path.push((self.local_id, self.routing_table.public_key));
 			} else {
-				if self.local_id == recipient {
-					// surb reply
-					path.push((self.local_id.clone(), self.routing_table.public_key.clone()));
-				} else {
-					error!(target: "mixnet", "Unknown recipient {:?}", recipient);
-					return Err(Error::NotEnoughRoutingPeers)
-				}
+				error!(target: "mixnet", "Unknown recipient {:?}", recipient);
+				return Err(Error::NotEnoughRoutingPeers)
 			}
 
 			if let Some((peer, key)) = add_end {
 				if let Some(key) = key {
-					path.push((peer.clone(), key.clone()));
+					path.push((*peer, *key));
 				} else {
-					return Err(Error::NoPath(Some(recipient_node.0.clone())))
+					return Err(Error::NoPath(Some(*recipient_node.0)))
 				}
 			}
 			result.push(path);
@@ -420,41 +416,19 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	}
 
 	fn connected(&mut self, peer_id: MixPeerId, _key: MixPublicKey) {
-		// TODO extend in branch with a
-		/*
-				self.copy_connected_info_to_metrics();
-				if let Some(info) = self.should_connect_pending.get_mut(&peer_id) {
-					if info.1 == true {
-						info.1 = false;
-						self.refresh_connection_table();
-					}
-				}
-		*/
 		debug!(target: "mixnet", "Connected from internal");
 		self.add_connected_peer(peer_id)
 	}
 
 	fn disconnected(&mut self, peer_id: &MixPeerId) {
-		// TODO extedn in branch with
-		/*
-			self.copy_connected_info_to_metrics();
-		if let Some(info) = self.should_connect_pending.get_mut(peer_id) {
-			if info.1 == false {
-				info.1 = true;
-				self.refresh_connection_table();
-			}
-		}
-		*/
 		debug!(target: "mixnet", "Disconnected from internal");
-		self.add_disconnected_peer(&peer_id);
+		self.add_disconnected_peer(peer_id);
 	}
 
 	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
-		if !self.routing {
-			if self.is_routing(id) {
-				// expect surbs: TODO make it optional??
-				return Some((1, 1))
-			}
+		if !self.routing && self.is_routing(id) {
+			// expect surbs: TODO make it optional??
+			return Some((1, 1))
 		}
 		// TODO can cache this result (Option<Option<(usize, usize))
 
@@ -476,6 +450,14 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	}
 
 	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
+		if C::DISTRIBUTE_ROUTES {
+			// allow any authorities as it can be any of the should_connect_to in case
+			// there is many disconnected TODO !!!! disco on more prioritary (only for connect_to)
+			// and/or limit the peer accepted given time.
+			if self.routing && self.is_routing(local_id) && self.is_routing(peer_id) {
+				return true
+			}
+		}
 		if self.routing {
 			self.routing_to(peer_id, local_id) ||
 				self.routing_to(local_id, peer_id) ||
@@ -554,19 +536,19 @@ impl<C: Configuration> TopologyHashTable<C> {
 		trace!(target: "mixnet", "routing {:?}, ix {:?}", self.authorities_tables, ix);
 		for (key, table) in self.authorities_tables.range(ix..) {
 			// TODO alert on low receive_from
-			if !skip(&key) && !(table.receive_from.len() < C::NUMBER_CONNECTED_BACKWARD) {
+			if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
 				debug!(target: "mixnet", "Random route node");
-				return Some(key.clone())
+				return Some(*key)
 			} else {
-				debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(&key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
+				debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
 			}
 		}
 		for (key, table) in self.authorities_tables.range(..ix).rev() {
-			if !skip(&key) && !(table.receive_from.len() < C::NUMBER_CONNECTED_BACKWARD) {
+			if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
 				debug!(target: "mixnet", "Random route node");
-				return Some(key.clone())
+				return Some(*key)
 			} else {
-				debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(&key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
+				debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
 			}
 		}
 		None
@@ -594,7 +576,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			authorities_tables.iter().chain(std::iter::once((local_id, local_routing)))
 		{
 			// TODO change if limitting size of receive_from
-			to_from.insert(from.clone(), table.receive_from.iter().cloned().collect());
+			to_from.insert(*from, table.receive_from.iter().cloned().collect());
 		}
 
 		fill_paths_inner(to_from, paths, *paths_depth, depth);
@@ -605,7 +587,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 	pub fn add_connected_peer(&mut self, peer_id: MixPeerId) {
 		debug!(target: "mixnet", "Connected to mixnet {:?}", peer_id);
-		if let Some(_) = self.connected_nodes.get_mut(&peer_id) {
+		if self.connected_nodes.contains_key(&peer_id) {
 			return
 		}
 		let kind = if self.is_routing(&peer_id) {
@@ -635,7 +617,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 		if C::DISTRIBUTE_ROUTES {
 			if let Some(info) = self.should_connect_pending.get_mut(&peer_id) {
-				if info.1 == true {
+				if info.1 {
 					info.1 = false;
 					self.refresh_self_routing_table();
 				}
@@ -664,7 +646,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 			if C::DISTRIBUTE_ROUTES {
 				if let Some(info) = self.should_connect_pending.get_mut(peer_id) {
-					if info.1 == false {
+					if !info.1 {
 						info.1 = true;
 						self.refresh_self_routing_table();
 					}
@@ -680,12 +662,12 @@ impl<C: Configuration> TopologyHashTable<C> {
 	) {
 		debug!(target: "mixnet", "Handle new routing set.");
 		if let Some((id, pub_key)) = new_self {
-			id.map(|id| {
+			if let Some(id) = id {
 				self.local_id = id;
-			});
-			pub_key.map(|pub_key| {
+			}
+			if let Some(pub_key) = pub_key {
 				self.routing_table.public_key = pub_key;
-			});
+			}
 		}
 
 		self.authorities.clear();
@@ -693,7 +675,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		self.routing = false;
 
 		for peer_id in set {
-			self.authorities.insert(peer_id.clone());
+			self.authorities.insert(*peer_id);
 			if &self.local_id == peer_id {
 				debug!(target: "mixnet", "In new routing set, routing.");
 				self.routing = true;
@@ -722,7 +704,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		self.handle_new_routing_set_start(set.iter(), new_self);
 		self.should_connect_to = should_connect_to(&self.local_id, &self.authorities, usize::MAX);
 		for (index, id) in self.should_connect_to.iter().enumerate() {
-			self.should_connect_pending.insert(id.clone(), (index, true));
+			self.should_connect_pending.insert(*id, (index, true));
 		}
 		debug!(target: "mixnet", "should connect to {:?}", self.should_connect_to);
 		self.routing_table.version = version;
@@ -774,12 +756,13 @@ impl<C: Configuration> TopologyHashTable<C> {
 	}
 
 	fn refresh_self_routing_table(&mut self) {
+		log::debug!(target: "mixnet", "Refresh self route: {:?}", self.routing_table);
 		let past = self.routing_table.clone();
 		self.routing_table.connected_to.clear(); // TODO update a bit more precise
 		for peer in self.should_connect_to.iter() {
 			if let Some(info) = self.should_connect_pending.get(peer) {
-				if info.1 == false {
-					self.routing_table.connected_to.insert(peer.clone());
+				if !info.1 {
+					self.routing_table.connected_to.insert(*peer);
 				}
 			}
 			if self.routing_table.connected_to.len() == C::NUMBER_CONNECTED_FORWARD {
@@ -789,7 +772,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		self.routing_table.receive_from.clear(); // TODO update a bit more precise
 		for (peer_id, table) in self.authorities_tables.iter() {
 			if table.connected_to.contains(&self.local_id) {
-				self.routing_table.receive_from.insert(peer_id.clone());
+				self.routing_table.receive_from.insert(*peer_id);
 			}
 		}
 
@@ -797,6 +780,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			self.routing_table.version.register_change();
 			self.paths.clear();
 			self.paths_depth = 0;
+			log::debug!(target: "mixnet", "Refreshed self route: {:?}", self.routing_table);
 		}
 	}
 
@@ -818,7 +802,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 				if let Some(table) =
 					Self::refresh_connection_table_to(auth, public_key, past, &self.authorities)
 				{
-					self.authorities_tables.insert(auth.clone(), table);
+					self.authorities_tables.insert(*auth, table);
 					self.paths.clear();
 					self.paths_depth = 0;
 				}
@@ -834,18 +818,16 @@ impl<C: Configuration> TopologyHashTable<C> {
 				) {
 					self.routing_table.receive_from = from;
 				}
-			} else {
-				if let Some(routing_table) = self.authorities_tables.get(auth) {
-					if let Some(from) = Self::refresh_connection_table_from(
-						auth,
-						&routing_table.receive_from,
-						self.authorities_tables
-							.iter()
-							.chain(std::iter::once((&self.local_id, &self.routing_table))),
-					) {
-						if let Some(routing_table) = self.authorities_tables.get_mut(auth) {
-							routing_table.receive_from = from;
-						}
+			} else if let Some(routing_table) = self.authorities_tables.get(auth) {
+				if let Some(from) = Self::refresh_connection_table_from(
+					auth,
+					&routing_table.receive_from,
+					self.authorities_tables
+						.iter()
+						.chain(std::iter::once((&self.local_id, &self.routing_table))),
+				) {
+					if let Some(routing_table) = self.authorities_tables.get_mut(auth) {
+						routing_table.receive_from = from;
 					}
 				}
 			}
@@ -860,7 +842,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 	) -> Option<AuthorityTable<C::Version>> {
 		let tos = should_connect_to(from, authorities, C::NUMBER_CONNECTED_FORWARD);
 		let mut routing_table = AuthorityTable {
-			public_key: from_key.clone(),
+			public_key: *from_key,
 			version: Default::default(), // No version when refreshing from peer set only
 			connected_to: Default::default(),
 			receive_from: Default::default(),
@@ -884,11 +866,16 @@ impl<C: Configuration> TopologyHashTable<C> {
 		let mut receive_from = BTreeSet::default();
 		for (peer_id, table) in authorities_tables {
 			if table.connected_to.contains(from) {
-				receive_from.insert(peer_id.clone());
+				receive_from.insert(*peer_id);
 			}
 		}
 
 		(past != &receive_from).then(|| receive_from)
+	}
+
+	/// Returns the mixnet peer id of our node.
+	pub fn local_id(&self) -> &MixPeerId {
+		&self.local_id
 	}
 }
 
@@ -905,7 +892,7 @@ fn fill_paths_inner(
 			let at = paths.entry(depth).or_default();
 			for (to, mid) in to_from.iter() {
 				let depth_paths: &mut HashMap<MixPeerId, Vec<MixPeerId>> =
-					at.entry(to.clone()).or_default();
+					at.entry(*to).or_default();
 				for mid in mid {
 					if let Some(parents) = to_from.get(mid) {
 						for from in parents.iter() {
@@ -916,7 +903,7 @@ fn fill_paths_inner(
 							if from == to {
 								continue
 							}
-							depth_paths.entry(from.clone()).or_default().push(mid.clone());
+							depth_paths.entry(*from).or_default().push(*mid);
 						}
 					}
 				}
@@ -925,14 +912,14 @@ fn fill_paths_inner(
 			let at = paths.entry(start_depth).or_default();
 			let mut dest_at = HashMap::<MixPeerId, HashMap<MixPeerId, Vec<MixPeerId>>>::new();
 			for (to, paths_to) in at.iter() {
-				let depth_paths = dest_at.entry(to.clone()).or_default();
+				let depth_paths = dest_at.entry(*to).or_default();
 				for (mid, _) in paths_to.iter() {
 					if let Some(parents) = to_from.get(mid) {
 						for from in parents.iter() {
 							if from == to {
 								continue
 							}
-							depth_paths.entry(from.clone()).or_default().push(mid.clone());
+							depth_paths.entry(*from).or_default().push(*mid);
 						}
 					}
 				}
@@ -983,10 +970,7 @@ fn should_connect_to(
 		hash[i] ^= common_seed[i];
 	}
 
-	let mut auths: Vec<_> = authorities
-		.iter()
-		.filter(|a| a != &from)
-		.collect();
+	let mut auths: Vec<_> = authorities.iter().filter(|a| a != &from).collect();
 	let mut nb_auth = auths.len();
 	let mut result = Vec::with_capacity(std::cmp::min(nb, nb_auth));
 	let mut cursor = 0;

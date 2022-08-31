@@ -220,7 +220,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		debug_assert!(packet_per_window > 0);
 
 		let now = Instant::now();
-		let stats = topology.collect_windows_stats().then(|| WindowStats::default());
+		let stats = topology.collect_windows_stats().then(WindowStats::default);
 		Mixnet {
 			topology,
 			surb: SurbsCollection::new(&config),
@@ -419,7 +419,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				let persistance = SurbsPersistance {
 					keys,
 					query: surb_query.take(),
-					recipient: paths[n].last().unwrap().clone(),
+					recipient: *paths[n].last().unwrap(),
 				};
 				self.surb.insert(surb_id, persistance, self.last_now);
 			}
@@ -594,7 +594,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					self.current_window_start += WINDOW_DELAY;
 				}
 
-				self.stats.as_mut().map(|stats| {
+				if let Some(stats) = self.stats.as_mut() {
 					*stats = Default::default();
 					stats.last_window = self.current_window.0 - nb_spent;
 					stats.window = self.current_window.0;
@@ -607,7 +607,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					}
 
 					self.topology.window_stats(stats);
-				});
+				}
 
 				self.window_delay.reset(WINDOW_DELAY);
 				while !matches!(self.window_delay.poll_unpin(cx), Poll::Pending) {
@@ -677,13 +677,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				// warning this only indicate a peer send wrong packet, but cannot presume
 				// who (can be external).
 				log::trace!(target: "mixnet", "Error importing packet, wrong format.");
-				self.stats.as_mut().map(|stats| {
+				if let Some(stats) = self.stats.as_mut() {
 					if external {
 						stats.number_from_external_received_valid += 1;
 					} else {
 						stats.number_received_valid += 1;
 					}
-				});
+				}
 			}
 		}
 
