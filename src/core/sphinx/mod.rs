@@ -172,21 +172,20 @@ pub struct SurbsPayload {
 	pub header: Header,
 }
 
-unsafe impl bytemuck::Zeroable for SurbsPayload{ }
-unsafe impl bytemuck::Pod for SurbsPayload { }
+unsafe impl bytemuck::Zeroable for SurbsPayload {}
+unsafe impl bytemuck::Pod for SurbsPayload {}
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 struct SurbsReply([u8; SURBS_REPLY_SIZE]);
 
-unsafe impl bytemuck::Zeroable for SurbsReply{ }
-unsafe impl bytemuck::Pod for SurbsReply { }
+unsafe impl bytemuck::Zeroable for SurbsReply {}
+unsafe impl bytemuck::Pod for SurbsReply {}
 
 impl From<Vec<u8>> for SurbsPayload {
 	fn from(encoded: Vec<u8>) -> Self {
-		let buf: &[u8; SURBS_REPLY_SIZE] = unsafe {
-			&*(encoded.as_slice().as_ptr() as *const [u8; SURBS_REPLY_SIZE])
-		};
+		let buf: &[u8; SURBS_REPLY_SIZE] =
+			unsafe { &*(encoded.as_slice().as_ptr() as *const [u8; SURBS_REPLY_SIZE]) };
 		bytemuck::cast(SurbsReply(*buf))
 	}
 }
@@ -412,9 +411,8 @@ pub fn unwrap_packet(
 		return Err(Error::InvalidPacket)
 	}
 
-	let group_element_bytes: &mut [u8; GROUP_ELEMENT_SIZE] = unsafe {
-		&mut *(group_element_bytes.as_ptr() as *mut [u8; GROUP_ELEMENT_SIZE])
-	};
+	let group_element_bytes: &mut [u8; GROUP_ELEMENT_SIZE] =
+		unsafe { &mut *(group_element_bytes.as_ptr() as *mut [u8; GROUP_ELEMENT_SIZE]) };
 
 	// Calculate the hop's shared secret, and replay_tag.
 	let mut group_element = PublicKey::from(*group_element_bytes);
