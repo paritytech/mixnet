@@ -27,12 +27,9 @@ mod handler;
 mod protocol;
 mod worker;
 
+pub(crate) use crate::network::worker::Command;
 pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
-use crate::{
-	core::{self, SurbsPayload},
-	traits::ClonableSink,
-	MixPeerId, MixnetEvent, SendOptions,
-};
+use crate::{core::SurbsPayload, traits::ClonableSink, MixPeerId, MixnetEvent, SendOptions};
 use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -70,41 +67,49 @@ impl MixnetBehaviour {
 			connected: Default::default(),
 		}
 	}
+}
 
+/// Sink allowing to send external mixnet command.
+pub struct MixnetCommandSink(pub SinkToWorker);
+
+impl Clone for MixnetCommandSink {
+	fn clone(&self) -> Self {
+		MixnetCommandSink(dyn_clone::clone_box(&*self.0))
+	}
+}
+
+impl From<SinkToWorker> for MixnetCommandSink {
+	fn from(sink: SinkToWorker) -> Self {
+		MixnetCommandSink(sink)
+	}
+}
+
+impl MixnetCommandSink {
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to the specified recipient.
+	///
+	/// If no recipient, it is send to a random recipient.
+	/// When attaching a surb, it is send using this surbs infos.
 	pub fn send(
 		&mut self,
-		to: MixPeerId,
+		to: Option<MixPeerId>,
 		message: Vec<u8>,
 		send_options: SendOptions,
-	) -> std::result::Result<(), core::Error> {
-		self.mixnet_worker_sink
-			.start_send_unpin(WorkerCommand::RegisterMessage(Some(to), message, send_options))
-			.map_err(|_| core::Error::WorkerChannelFull)
+	) -> std::result::Result<(), crate::Error> {
+		self.0
+			.start_send_unpin(Command::RegisterMessage(to, message, send_options).into())
+			.map_err(|_| crate::Error::WorkerChannelFull)
 	}
 
-	/// Send a new message to the mix network. The message will be split, chunked and sent over
-	/// multiple hops with random delays to a random recipient.
-	pub fn send_to_random_recipient(
-		&mut self,
-		message: Vec<u8>,
-		send_options: SendOptions,
-	) -> std::result::Result<(), core::Error> {
-		self.mixnet_worker_sink
-			.start_send_unpin(WorkerCommand::RegisterMessage(None, message, send_options))
-			.map_err(|_| core::Error::WorkerChannelFull)
-	}
-
-	/// Send surb reply in mixnet.
-	pub fn send_surb(
+	/// Send a surb reply to the mix network.
+	pub fn surb(
 		&mut self,
 		message: Vec<u8>,
 		surb: Box<SurbsPayload>,
-	) -> std::result::Result<(), core::Error> {
-		self.mixnet_worker_sink
-			.start_send_unpin(WorkerCommand::RegisterSurbs(message, surb))
-			.map_err(|_| core::Error::WorkerChannelFull)
+	) -> std::result::Result<(), crate::Error> {
+		self.0
+			.start_send_unpin(Command::RegisterSurbs(message, surb).into())
+			.map_err(|_| crate::Error::WorkerChannelFull)
 	}
 }
 
@@ -144,6 +149,13 @@ impl NetworkBehaviour for MixnetBehaviour {
 		log::trace!(target: "mixnet", "Disconnected: {}", peer_id);
 		if self.connected.get(peer_id) == Some(con_id) {
 			self.connected.remove(peer_id);
+		}
+		if let Err(e) = self
+			.mixnet_worker_sink
+			.as_mut()
+			.start_send_unpin(Command::RemoveConnectedPeer(*peer_id).into())
+		{
+			log::warn!(target: "mixnet", "Could not send disconnected peer to mixnet {:?}", e);
 		}
 	}
 

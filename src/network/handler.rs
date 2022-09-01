@@ -20,7 +20,7 @@
 
 // libp2p connection handler for the mixnet protocol.
 
-use crate::network::{protocol, SinkToWorker, WorkerCommand};
+use crate::network::{protocol, Command, SinkToWorker};
 use futures::prelude::*;
 use libp2p_core::{upgrade::NegotiationError, PeerId, UpgradeError};
 use libp2p_swarm::{
@@ -149,7 +149,7 @@ impl Handler {
 				if let Err(e) = self
 					.mixnet_worker_sink
 					.as_mut()
-					.start_send_unpin(WorkerCommand::AddPeer(peer, inbound, outbound, sender))
+					.start_send_unpin(Command::AddPeer(peer, inbound, outbound, sender).into())
 				{
 					log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 				}
@@ -169,7 +169,7 @@ impl Handler {
 				if let Err(e) = self
 					.mixnet_worker_sink
 					.as_mut()
-					.start_send_unpin(WorkerCommand::AddPeerInbound(peer, inbound))
+					.start_send_unpin(Command::AddPeerInbound(peer, inbound).into())
 				{
 					log::error!(target: "mixnet", "Error sending in worker sink {:?}", e);
 					self.pending_errors.push_front(Failure::Other { error: Box::new(e) });

@@ -22,10 +22,10 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload},
+	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsPayload},
 	network::connection::Connection,
 	traits::Configuration,
-	DecodedMessage, MixnetEvent, SendOptions,
+	MixnetEvent, SendOptions,
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
@@ -38,14 +38,21 @@ use std::task::{Context, Poll};
 pub type WorkerStream = Box<dyn Stream<Item = WorkerCommand> + Unpin + Send>;
 pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Send>;
 
-// TODO this got exposed recently, maybe refactor api to just be send_command.
-pub enum WorkerCommand {
+/// Opaque worker command.
+pub struct WorkerCommand(pub(crate) Command);
+
+pub(crate) enum Command {
 	RegisterMessage(Option<crate::MixPeerId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),
 	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
 	AddPeerInbound(PeerId, NegotiatedSubstream),
 	RemoveConnectedPeer(PeerId),
-	ImportExternalMessage(crate::MixPeerId, Packet),
+}
+
+impl Command {
+	pub(crate) fn into(self) -> WorkerCommand {
+		WorkerCommand(self)
+	}
 }
 
 /// Embed mixnet and process queue of instruction.
@@ -82,8 +89,8 @@ impl<T: Configuration> MixnetWorker<T> {
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		let mut result = Poll::Pending;
 		match self.worker_in.poll_next_unpin(cx) {
-			Poll::Ready(Some(message)) => match message {
-				WorkerCommand::RegisterMessage(peer_id, message, send_options) => {
+			Poll::Ready(Some(message)) => match message.0 {
+				Command::RegisterMessage(peer_id, message, send_options) => {
 					match self.mixnet.register_message(peer_id, None, message, send_options) {
 						Ok(()) => (),
 						Err(e) => {
@@ -92,7 +99,7 @@ impl<T: Configuration> MixnetWorker<T> {
 					}
 					return Poll::Ready(true)
 				},
-				WorkerCommand::RegisterSurbs(message, surb) => {
+				Command::RegisterSurbs(message, surb) => {
 					match self.mixnet.register_surb(message, *surb) {
 						Ok(()) => (),
 						Err(e) => {
@@ -101,7 +108,7 @@ impl<T: Configuration> MixnetWorker<T> {
 					}
 					return Poll::Ready(true)
 				},
-				WorkerCommand::AddPeer(peer, inbound, outbound, close_handler) => {
+				Command::AddPeer(peer, inbound, outbound, close_handler) => {
 					if let Some(_con) = self.mixnet.connected_mut(&peer) {
 						// TODO this can happen due to a race.
 						log::error!("Trying to replace an existing connection for {:?}", peer);
@@ -111,7 +118,7 @@ impl<T: Configuration> MixnetWorker<T> {
 					}
 					log::trace!(target: "mixnet", "added peer out: {:?}", peer);
 				},
-				WorkerCommand::AddPeerInbound(peer, inbound) => {
+				Command::AddPeerInbound(peer, inbound) => {
 					if let Some(con) = self.mixnet.connected_mut(&peer) {
 						log::trace!(target: "mixnet", "Added inbound to peer: {:?}", peer);
 						con.set_inbound(inbound);
@@ -122,13 +129,8 @@ impl<T: Configuration> MixnetWorker<T> {
 						log::warn!(target: "mixnet", "Received inbound for dropped peer: {:?}", peer);
 					}
 				},
-				WorkerCommand::RemoveConnectedPeer(peer) => {
+				Command::RemoveConnectedPeer(peer) => {
 					self.disconnect_peer(&peer);
-				},
-				WorkerCommand::ImportExternalMessage(peer, packet) => {
-					if !self.import_packet(peer, packet) {
-						return Poll::Ready(false)
-					};
 				},
 			},
 			Poll::Ready(None) => {
@@ -164,27 +166,6 @@ impl<T: Configuration> MixnetWorker<T> {
 			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 		}
 		self.mixnet.remove_connected_peer(peer);
-	}
-
-	fn import_packet(&mut self, peer: crate::MixPeerId, packet: Packet) -> bool {
-		match self.mixnet.import_message(peer, packet) {
-			Ok(Some((message, kind))) => {
-				if let Err(e) = self
-					.worker_out
-					.start_send_unpin(MixnetEvent::Message(DecodedMessage { peer, message, kind }))
-				{
-					log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-					if e.is_disconnected() {
-						return false
-					}
-				}
-			},
-			Ok(None) => (),
-			Err(e) => {
-				log::warn!(target: "mixnet", "Error importing message: {:?}", e);
-			},
-		}
-		true
 	}
 
 	pub fn mixnet_mut(&mut self) -> &mut Mixnet<T, Connection> {

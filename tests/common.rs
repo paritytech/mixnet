@@ -35,8 +35,8 @@ use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
 	ambassador_impl_Topology,
 	traits::{Configuration, Topology},
-	Config, Error, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetWorker,
-	SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerCommand,
+	Config, Error, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetCommandSink,
+	MixnetWorker, SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
 use std::{collections::HashSet, sync::Arc, task::Poll};
@@ -47,7 +47,7 @@ pub enum PeerTestReply {
 	ReceiveMessage(mixnet::DecodedMessage),
 }
 
-pub type TestChannels = (mpsc::Receiver<PeerTestReply>, mpsc::Sender<WorkerCommand>);
+pub type TestChannels = (mpsc::Receiver<PeerTestReply>, MixnetCommandSink);
 
 /// Spawn a lip2p local transport for tests.
 fn mk_transport(
@@ -203,7 +203,7 @@ pub fn spawn_swarms(
 
 	for (p, (mut swarm, to_worker)) in swarms.into_iter().enumerate() {
 		let (mut from_swarm_sink, from_swarm_stream) = mpsc::channel(1000);
-		test_channels.push((from_swarm_stream, to_worker));
+		test_channels.push((from_swarm_stream, MixnetCommandSink(Box::new(to_worker))));
 		let external_1 = from_external && p == num_peers;
 		let external_2 = from_external && p > num_peers;
 		let mut target_peers = if from_external && p == 0 {

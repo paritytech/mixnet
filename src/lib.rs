@@ -29,8 +29,8 @@ pub use crate::{
 		PACKET_SIZE,
 	},
 	network::{
-		MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels,
-		WorkerCommand, WorkerSink2,
+		MixnetBehaviour, MixnetCommandSink, MixnetWorker, SinkToWorker, StreamFromWorker,
+		WorkerChannels, WorkerCommand, WorkerSink2,
 	},
 };
 

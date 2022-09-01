@@ -35,7 +35,7 @@ use mixnet::{
 		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
 		Topology,
 	},
-	Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions, WorkerCommand,
+	Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions,
 };
 
 impl TopologyConfig for NotDistributed {
@@ -183,35 +183,35 @@ fn test_messages(
 
 	if from_external {
 		// ext 1 can route through peer 0 (only peer acceptiong)
-		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
-			WorkerCommand::RegisterMessage(
+		with_swarm_channels[num_peers]
+			.1
+			.send(
 				Some(nodes[1]), // we are connected to 0, sending to 1
 				source_message.to_vec(),
 				SendOptions { num_hop: None, with_surb },
 			)
-		))
-		.is_ok());
+			.unwrap();
 		// ext 2 cannot
-		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
-			WorkerCommand::RegisterMessage(
+		with_swarm_channels[num_peers]
+			.1
+			.send(
 				Some(nodes[1]), // we are connected to 0, sending to 1
 				source_message.to_vec(),
 				SendOptions { num_hop: None, with_surb },
 			)
-		))
-		.is_ok());
+			.unwrap();
 	} else {
 		for recipient in &nodes[1..num_peers] {
 			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
 			for _ in 0..message_count {
-				assert!(async_std::task::block_on(with_swarm_channels[0].1.send(
-					WorkerCommand::RegisterMessage(
+				with_swarm_channels[0]
+					.1
+					.send(
 						Some(*recipient), // we are connected to 0, sending to 1
 						source_message.to_vec(),
 						SendOptions { num_hop: None, with_surb },
 					)
-				))
-				.is_ok());
+					.unwrap();
 			}
 		}
 	}
@@ -230,9 +230,7 @@ fn test_messages(
 							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
 							assert_eq!(source_message.as_slice(), message.as_slice());
 							if let Some(reply) = kind.surb() {
-								sender
-									.try_send(WorkerCommand::RegisterSurbs(b"pong".to_vec(), reply))
-									.unwrap();
+								sender.surb(b"pong".to_vec(), reply).unwrap();
 							}
 							return Poll::Ready(())
 						},
