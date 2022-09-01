@@ -110,8 +110,7 @@ impl<T: Configuration> MixnetWorker<T> {
 				},
 				Command::AddPeer(peer, inbound, outbound, close_handler) => {
 					if let Some(_con) = self.mixnet.connected_mut(&peer) {
-						// TODO this can happen due to a race.
-						log::error!("Trying to replace an existing connection for {:?}", peer);
+						log::warn!("Trying to replace an existing connection for {:?}", peer);
 					} else {
 						let con = Connection::new(close_handler, inbound, outbound);
 						self.mixnet.insert_connection(peer, con);

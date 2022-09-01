@@ -300,7 +300,7 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			return result
 		} else if let Some(peer_id) = self.mixnet_id {
-			let routing = topology.is_routing(local_id);
+			let routing = topology.can_route(local_id);
 
 			// Forward first.
 			while self.sent_in_window < window.current_packet_limit {

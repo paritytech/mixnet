@@ -58,8 +58,7 @@ pub trait Topology: Sized {
 	) -> Option<(MixPeerId, MixPublicKey)>;
 
 	/// Check if a peer is in topology, do not need to be connected.
-	/// TODO rename can_route
-	fn is_routing(&self, id: &MixPeerId) -> bool;
+	fn can_route(&self, id: &MixPeerId) -> bool;
 
 	/// first hop nodes that may currently allow external node connection.
 	fn first_hop_nodes_external(
@@ -98,9 +97,9 @@ pub trait Topology: Sized {
 	/// On disconnect.
 	fn disconnected(&mut self, id: &MixPeerId);
 
-	/// Utils that should be call when using `check_handshake`.
-	/// TODO remove local_id param
-	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool;
+	/// Is peer allowed to connect to our node.
+	/// Should usually be call by `check_handshake`.
+	fn accept_peer(&self, peer_id: &MixPeerId) -> bool;
 }
 
 /// Handshake on peer connection.
@@ -128,7 +127,7 @@ pub struct NoTopology {
 }
 
 impl Topology for NoTopology {
-	fn is_routing(&self, _id: &MixPeerId) -> bool {
+	fn can_route(&self, _id: &MixPeerId) -> bool {
 		false
 	}
 
@@ -193,10 +192,8 @@ impl Topology for NoTopology {
 		self.connected_peers.remove(id);
 	}
 
-	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
-		self.routing_to(local_id, peer_id) ||
-			self.routing_to(peer_id, local_id) ||
-			self.bandwidth_external(peer_id).is_some()
+	fn accept_peer(&self, _: &MixPeerId) -> bool {
+		true
 	}
 }
 

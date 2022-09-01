@@ -50,9 +50,7 @@ struct ConfigGraph {
 
 #[derive(Clone)]
 struct TopologyGraph {
-	connections: HashMap<MixPeerId, Vec<(MixPeerId, MixPublicKey)>>, /* TODO remove field, peers
-	                                                                  * is
-	                                                                  * enough? */
+	connections: HashMap<MixPeerId, Vec<(MixPeerId, MixPublicKey)>>,
 	peers: Vec<(MixPeerId, MixPublicKey)>,
 	// allow single external
 	external: Option<MixPeerId>,
@@ -113,7 +111,7 @@ impl mixnet::traits::Handshake for ConfigGraph {
 }
 
 impl Topology for TopologyGraph {
-	fn is_routing(&self, id: &MixPeerId) -> bool {
+	fn can_route(&self, id: &MixPeerId) -> bool {
 		self.connections.contains_key(id)
 	}
 
@@ -168,7 +166,7 @@ impl Topology for TopologyGraph {
 			add_start = Some(firsts[n]);
 			firsts[n].0
 		};
-		let recipient = if self.is_routing(recipient_node.0) {
+		let recipient = if self.can_route(recipient_node.0) {
 			*recipient_node.0
 		} else if let Some(query) = last_query_if_surb {
 			// reuse a node that was recently connected.
@@ -192,8 +190,6 @@ impl Topology for TopologyGraph {
 
 		let mut result = Vec::new();
 		while result.len() < count {
-			// TODO path pool could be persisted, but at this point this implementation
-			// is not really targetted.
 			let n: usize = rng.gen_range(0..paths.len());
 			let mut path = paths[n].clone();
 			if let Some((peer, key)) = add_start {
@@ -247,10 +243,14 @@ impl Topology for TopologyGraph {
 		Some((1, 1))
 	}
 
-	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
-		self.routing_to(local_id, peer_id) ||
-			self.routing_to(peer_id, local_id) ||
-			self.bandwidth_external(peer_id).is_some()
+	fn accept_peer(&self, peer_id: &MixPeerId) -> bool {
+		if let Some(local_id) = self.local_id.as_ref() {
+			self.routing_to(local_id, peer_id) ||
+				self.routing_to(peer_id, local_id) ||
+				self.bandwidth_external(peer_id).is_some()
+		} else {
+			false
+		}
 	}
 }
 

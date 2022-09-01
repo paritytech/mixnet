@@ -462,7 +462,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let packet = sphinx::new_surb_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(Error::SphinxError)?;
 		let dest = first_node;
-		if self.topology.is_routing(&self.local_id) {
+		if self.topology.can_route(&self.local_id) {
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(dest, packet, delay, PacketType::Surbs)?;
 		} else {
@@ -527,7 +527,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
 				// See if we can forward the message
 				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
-				let kind = if self.window.stats.is_some() && !self.topology.is_routing(&peer_id) {
+				let kind = if self.window.stats.is_some() && !self.topology.can_route(&peer_id) {
 					PacketType::ForwardExternal
 				} else {
 					PacketType::Forward

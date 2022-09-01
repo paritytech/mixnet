@@ -424,10 +424,10 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 		message.extend_from_slice(&pk[..]);
 		if pub_key.verify(&signature, &message[..]).is_ok() {
 			let pk = MixPublicKey::from(pk);
-			if !self.topo.accept_peer(self.local_id.as_ref().unwrap(), &peer_id) {
+			if !self.topo.accept_peer(&peer_id) {
 				return None
 			}
-			if !self.topo.is_routing(&peer_id) {
+			if !self.topo.can_route(&peer_id) {
 				if self.nb_external == self.max_external {
 					return None
 				} else {
