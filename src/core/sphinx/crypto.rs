@@ -25,6 +25,7 @@ use aes::{
 	Aes128,
 };
 
+use super::{RawKey, KEY_SIZE};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -47,8 +48,6 @@ pub const STREAM_IV_SIZE: usize = 16;
 
 /// the key size of the SPRP in bytes.
 pub const SPRP_KEY_SIZE: usize = lioness::RAW_KEY_SIZE;
-
-pub const KEY_SIZE: usize = 32;
 
 /// the size of the DH group element in bytes.
 pub const GROUP_ELEMENT_SIZE: usize = KEY_SIZE;
@@ -98,7 +97,7 @@ pub struct PacketKeys {
 }
 
 /// `kdf` takes the input key material and returns the Sphinx Packet keys.
-pub fn kdf(input: &[u8; KEY_SIZE]) -> PacketKeys {
+pub fn kdf(input: &RawKey) -> PacketKeys {
 	let output = hkdf_expand(input, String::from(KDF_INFO_STR).into_bytes().as_slice());
 	let (a1, a2, a3, a4, a5) = array_refs![
 		&output,

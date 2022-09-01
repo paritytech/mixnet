@@ -63,12 +63,12 @@ impl TopologyGraph {
 		for i in 0..nodes.len() {
 			let (node, _node_key) = nodes[i];
 			let mut neighbors = Vec::new();
-			for j in 0..nodes.len() {
+			for (j, node) in nodes.iter().enumerate() {
 				if i != j {
-					neighbors.push(nodes[j].clone())
+					neighbors.push(*node)
 				}
 			}
-			connections.insert(node.clone(), neighbors);
+			connections.insert(node, neighbors);
 		}
 
 		Self {
@@ -192,11 +192,11 @@ impl Topology for TopologyGraph {
 		_to: &MixPeerId,
 	) -> Vec<(MixPeerId, MixPublicKey)> {
 		// allow only with peer 0
-		vec![self.peers[0].clone()]
+		vec![self.peers[0]]
 	}
 
 	fn is_first_node(&self, id: &MixPeerId) -> bool {
-		self.peers.iter().find(|(p, _)| p == id).is_some()
+		self.peers.iter().any(|(p, _)| p == id)
 	}
 
 	fn random_recipient(
@@ -208,7 +208,7 @@ impl Topology for TopologyGraph {
 			.iter()
 			.filter(|(k, _v)| k != local_id)
 			.choose(&mut rand::thread_rng())
-			.map(|(k, v)| (k.clone(), v.clone()))
+			.map(|(k, v)| (*k, *v))
 	}
 
 	fn random_path(
@@ -287,8 +287,7 @@ impl Topology for TopologyGraph {
 		}
 		self.connections
 			.get(from)
-			.map(|n| n.iter().find(|(p, _)| p == to))
-			.flatten()
+			.and_then(|n| n.iter().find(|(p, _)| p == to))
 			.is_some()
 	}
 
@@ -392,12 +391,12 @@ fn test_messages(
 	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
 	                      config: &mixnet::Config| {
 		let mut topo = TopologyGraph::new_star(&nodes[..num_peers]);
-		topo.local_id = Some(config.local_id.clone());
-		topo.local_network_id = Some(network_id.clone());
-		let mix_secret_key = secrets[p].1.clone();
+		topo.local_id = Some(config.local_id);
+		topo.local_network_id = Some(network_id);
+		let mix_secret_key = secrets[p].1;
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 		let handshake = SimpleHandshake {
-			local_id: Some(config.local_id.clone()),
+			local_id: Some(config.local_id),
 			local_network_id: Some(network_id),
 			nb_external: 0,
 			max_external: 1,
@@ -440,7 +439,7 @@ fn test_messages(
 		// ext 1 can route through peer 0 (only peer acceptiong)
 		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
 			WorkerCommand::RegisterMessage(
-				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				Some(nodes[1]), // we are connected to 0, sending to 1
 				source_message.to_vec(),
 				SendOptions { num_hop: None, with_surb },
 			)
@@ -449,20 +448,19 @@ fn test_messages(
 		// ext 2 cannot
 		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
 			WorkerCommand::RegisterMessage(
-				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				Some(nodes[1]), // we are connected to 0, sending to 1
 				source_message.to_vec(),
 				SendOptions { num_hop: None, with_surb },
 			)
 		))
 		.is_ok());
 	} else {
-		for np in 1..num_peers {
-			let recipient = nodes[np];
+		for recipient in &nodes[1..num_peers] {
 			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
 			for _ in 0..message_count {
 				assert!(async_std::task::block_on(with_swarm_channels[0].1.send(
 					WorkerCommand::RegisterMessage(
-						Some(recipient.clone()), // we are connected to 0, sending to 1
+						Some(*recipient), // we are connected to 0, sending to 1
 						source_message.to_vec(),
 						SendOptions { num_hop: None, with_surb },
 					)

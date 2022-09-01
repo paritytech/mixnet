@@ -24,7 +24,7 @@
 //! of packet.
 
 use crate::{
-	core::{PacketType, QueuedPacket, WINDOW_MARGIN_PERCENT},
+	core::{PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
 	traits::{Configuration, Connection, Handshake, Topology},
 	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PACKET_SIZE,
 };
@@ -34,7 +34,7 @@ use std::{
 	collections::BinaryHeap,
 	num::Wrapping,
 	task::{Context, Poll},
-	time::{Duration, Instant},
+	time::Duration,
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -274,10 +274,7 @@ impl<C: Connection> ManagedConnection<C> {
 		cx: &mut Context,
 		local_id: &MixPeerId,
 		handshake: &MixPublicKey,
-		current_window: Wrapping<usize>,
-		current_packet_limit: usize,
-		packet_per_window: usize,
-		now: Instant,
+		window: &WindowInfo,
 		topology: &mut impl Configuration,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
@@ -285,9 +282,9 @@ impl<C: Connection> ManagedConnection<C> {
 			let mut result = Poll::Pending;
 			match self.try_recv_handshake(cx, topology) {
 				Poll::Ready(Ok(key)) => {
-					self.current_window = current_window;
-					self.sent_in_window = current_packet_limit;
-					self.recv_in_window = current_packet_limit;
+					self.current_window = window.current;
+					self.sent_in_window = window.current_packet_limit;
+					self.recv_in_window = window.current_packet_limit;
 					result = Poll::Ready(ConnectionEvent::Established(key.0, key.1));
 				},
 				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
@@ -306,7 +303,7 @@ impl<C: Connection> ManagedConnection<C> {
 			let routing = topology.is_routing(local_id);
 
 			// Forward first.
-			while self.sent_in_window < current_packet_limit {
+			while self.sent_in_window < window.current_packet_limit {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
 						// Did send message
@@ -327,10 +324,9 @@ impl<C: Connection> ManagedConnection<C> {
 							}
 							continue
 						}
-						let deadline = self
-							.packet_queue
-							.peek()
-							.map_or(false, |p| p.deadline.map(|d| d <= now).unwrap_or(true));
+						let deadline = self.packet_queue.peek().map_or(false, |p| {
+							p.deadline.map(|d| d <= window.last_now).unwrap_or(true)
+						});
 						if deadline {
 							if let Some(packet) = self.packet_queue.pop() {
 								self.next_packet = Some((packet.data.into_vec(), packet.kind));
@@ -358,13 +354,13 @@ impl<C: Connection> ManagedConnection<C> {
 
 			// Limit reception.
 			let (current, external) = if topology.routing_to(&peer_id, local_id) {
-				(current_packet_limit, false)
+				(window.current_packet_limit, false)
 			} else {
 				let (n, d) = topology.bandwidth_external(&peer_id).unwrap_or((0, 1));
-				((current_packet_limit * n) / d, true)
+				((window.current_packet_limit * n) / d, true)
 			};
 			if self.recv_in_window < current {
-				match self.try_recv_packet(cx, current_window) {
+				match self.try_recv_packet(cx, window.current) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
 						result = Poll::Ready(ConnectionEvent::Received((packet, external)));
@@ -374,13 +370,13 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 			}
 
-			if current_window != self.current_window {
-				if self.current_window + Wrapping(1) != current_window {
-					let skipped = current_window - self.current_window;
+			if window.current != self.current_window {
+				if self.current_window + Wrapping(1) != window.current {
+					let skipped = window.current - self.current_window;
 					log::error!(target: "mixnet", "Window skipped {:?} ignoring report.", skipped);
 				} else if !external {
 					let packet_per_window_less_margin =
-						packet_per_window * (100 - WINDOW_MARGIN_PERCENT) / 100;
+						window.packet_per_window * (100 - WINDOW_MARGIN_PERCENT) / 100;
 					if self.sent_in_window < packet_per_window_less_margin {
 						// sent not enough: dest peer is not receiving enough
 						log::warn!(target: "mixnet", "Low sent in window with {:?}, {:?} / {:?}", self.network_id, self.sent_in_window, packet_per_window_less_margin);
@@ -391,7 +387,7 @@ impl<C: Connection> ManagedConnection<C> {
 					}
 				}
 
-				self.current_window = current_window;
+				self.current_window = window.current;
 				self.sent_in_window = 0;
 				self.recv_in_window = 0;
 			}

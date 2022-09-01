@@ -196,18 +196,18 @@ fn test_messages(
 	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
 	                      config: &mixnet::Config| {
 		let mut topo = TopologyHashTable::new(
-			nodes[p].0.clone(),
-			nodes[p].1.clone(),
+			nodes[p].0,
+			nodes[p].1,
 			config,
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
 		topo.handle_new_routing_set(&nodes[..num_peers], None);
-		let mix_secret_key = secrets[p].1.clone();
+		let mix_secret_key = secrets[p].1;
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 
 		let inner = SimpleHandshake {
-			local_id: Some(config.local_id.clone()),
+			local_id: Some(config.local_id),
 			local_network_id: Some(network_id),
 			nb_external: 0,
 			max_external: 1,
@@ -250,7 +250,7 @@ fn test_messages(
 		// ext 1 can route through peer 0 (only peer acceptiong)
 		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
 			WorkerCommand::RegisterMessage(
-				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				Some(nodes[1]), // we are connected to 0, sending to 1
 				source_message.to_vec(),
 				SendOptions { num_hop: None, with_surb },
 			)
@@ -259,20 +259,19 @@ fn test_messages(
 		// ext 2 cannot
 		assert!(async_std::task::block_on(with_swarm_channels[num_peers].1.send(
 			WorkerCommand::RegisterMessage(
-				Some(nodes[1].clone()), // we are connected to 0, sending to 1
+				Some(nodes[1]), // we are connected to 0, sending to 1
 				source_message.to_vec(),
 				SendOptions { num_hop: None, with_surb },
 			)
 		))
 		.is_ok());
 	} else {
-		for np in 1..num_peers {
-			let recipient = nodes[np];
+		for recipient in &nodes[1..num_peers] {
 			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
 			for _ in 0..message_count {
 				assert!(async_std::task::block_on(with_swarm_channels[0].1.send(
 					WorkerCommand::RegisterMessage(
-						Some(recipient.clone()), // we are connected to 0, sending to 1
+						Some(*recipient), // we are connected to 0, sending to 1
 						source_message.to_vec(),
 						SendOptions { num_hop: None, with_surb },
 					)

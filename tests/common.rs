@@ -66,19 +66,19 @@ fn mk_transport(
 	)
 }
 
+/// New transport and associated elements.
+pub type NewTransport = (
+	NetworkPeerId,
+	transport::Boxed<(NetworkPeerId, StreamMuxerBox)>,
+	SinkToWorker,
+	StreamFromWorker,
+	mpsc::Sender<WorkerCommand>,
+);
+
 fn mk_transports(
 	num_peers: usize,
 	extra_external: usize,
-) -> (
-	Vec<(
-		NetworkPeerId,
-		transport::Boxed<(NetworkPeerId, StreamMuxerBox)>,
-		SinkToWorker,
-		StreamFromWorker,
-		mpsc::Sender<WorkerCommand>,
-	)>,
-	Vec<(NetworkPeerId, WorkerChannels)>,
-) {
+) -> (Vec<NewTransport>, Vec<(NetworkPeerId, WorkerChannels)>) {
 	let mut transports = Vec::<(_, _, SinkToWorker, StreamFromWorker, _)>::new();
 	let mut handles = Vec::<(_, WorkerChannels)>::new();
 	for _ in 0..num_peers + extra_external {
@@ -88,31 +88,25 @@ fn mk_transports(
 
 		let (peer_id, _peer_key, trans) = mk_transport();
 		transports.push((
-			peer_id.clone(),
+			peer_id,
 			trans,
 			Box::new(to_worker_sink),
 			Box::new(from_worker_stream),
 			to_worker_from_test,
 		));
-		handles.push((peer_id.clone(), (Box::new(from_worker_sink), Box::new(to_worker_stream))));
+		handles.push((peer_id, (Box::new(from_worker_sink), Box::new(to_worker_stream))));
 	}
 	(transports, handles)
 }
 
 fn mk_swarms(
-	transports: Vec<(
-		NetworkPeerId,
-		transport::Boxed<(NetworkPeerId, StreamMuxerBox)>,
-		SinkToWorker,
-		StreamFromWorker,
-		mpsc::Sender<WorkerCommand>,
-	)>,
+	transports: Vec<NewTransport>,
 ) -> Vec<(Swarm<MixnetBehaviour>, mpsc::Sender<WorkerCommand>)> {
 	let mut swarms = Vec::with_capacity(transports.len());
 
 	for (peer_id, trans, to_worker_sink, from_worker_stream, to_worker) in transports.into_iter() {
 		let mixnet = mixnet::MixnetBehaviour::new(to_worker_sink, from_worker_stream);
-		let mut swarm = Swarm::new(trans, mixnet, peer_id.clone());
+		let mut swarm = Swarm::new(trans, mixnet, peer_id);
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		swarm.listen_on(addr).unwrap();
 		swarms.push((swarm, to_worker));
@@ -144,7 +138,7 @@ pub fn mk_workers<T: Configuration>(
 		let mix_secret_key: ed25519_zebra::SigningKey = secret_mix.into();
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 		let mix_id: [u8; 32] = mix_public_key.into();
-		nodes.push((mix_id, peer_public_key.clone()));
+		nodes.push((mix_id, peer_public_key));
 		secrets.push((peer_secret_key, mix_secret_key));
 	}
 
@@ -153,8 +147,8 @@ pub fn mk_workers<T: Configuration>(
 		let (id, pub_key) = nodes[i];
 		let cfg = mixnet::Config {
 			secret_key: secrets[i].0.clone(),
-			public_key: pub_key.clone(),
-			local_id: id.clone(),
+			public_key: pub_key,
+			local_id: id,
 			..config_proto.clone()
 		};
 
@@ -189,10 +183,10 @@ pub fn spawn_swarms(
 	let mut to_wait = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
 
 	for p1 in 0..num_peers {
-		for p2 in p1 + 1..num_peers {
+		for to_wait in &mut to_wait[p1 + 1..num_peers] {
 			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
 			to_notify[p1].push(tx);
-			to_wait[p2].push(rx);
+			to_wait.push(rx);
 		}
 		if from_external {
 			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
@@ -277,19 +271,17 @@ pub fn spawn_swarms(
 						log::trace!(target: "mixnet", "{} P2p connected  {}", p, num_connected_p2p);
 						num_connected -= 1;
 						log::trace!(target: "mixnet", "{} connected  {}/{:?}", p, num_connected, target_peers);
-						if count_connected {
-							if !expect_all_connected {
-								handshake_done.insert(peer_id);
+						if count_connected && !expect_all_connected {
+							handshake_done.insert(peer_id);
 
-								if Some(handshake_done.len()) == target_peers {
-									expect_all_connected = false;
-									count_connected = false;
-									from_swarm_sink
-										.send(PeerTestReply::InitialConnectionsCompleted)
-										.await
-										.unwrap();
-									target_peers = None;
-								}
+							if Some(handshake_done.len()) == target_peers {
+								expect_all_connected = false;
+								count_connected = false;
+								from_swarm_sink
+									.send(PeerTestReply::InitialConnectionsCompleted)
+									.await
+									.unwrap();
+								target_peers = None;
 							}
 						}
 					},
@@ -306,7 +298,7 @@ pub fn spawn_swarms(
 		};
 		swarm_futures.push(Box::pin(poll_fn));
 	}
-	let _ = executor
+	executor
 		.spawn(future::poll_fn(move |cx| {
 			let mut swarm_futures = futures::future::select_all(&mut swarm_futures);
 			loop {
@@ -314,7 +306,7 @@ pub fn spawn_swarms(
 				match Pin::new(&mut swarm_futures).poll(cx) {
 					Poll::Ready((_swarm, p, remaining)) => {
 						log::trace!(target: "mixnet", "Swarm {} exited", p);
-						if remaining.len() == 0 {
+						if remaining.is_empty() {
 							log::trace!(target: "mixnet", "All Swarms exited");
 							return Poll::Ready(())
 						}
@@ -348,7 +340,7 @@ pub fn spawn_workers<T: Configuration>(
 
 	let mut workers_futures = Vec::with_capacity(workers.len());
 	for mut worker in workers.into_iter() {
-		nodes.push(worker.local_id().clone());
+		nodes.push(*worker.local_id());
 		let worker = future::poll_fn(move |cx| loop {
 			match worker.poll(cx) {
 				Poll::Ready(false) => {
@@ -365,8 +357,8 @@ pub fn spawn_workers<T: Configuration>(
 			executor.spawn(worker).unwrap();
 		}
 	}
-	if workers_futures.len() > 0 {
-		let _ = executor
+	if !workers_futures.is_empty() {
+		executor
 			.spawn(future::poll_fn(move |cx| {
 				let mut workers_futures = futures::future::select_all(&mut workers_futures);
 				loop {
@@ -374,7 +366,7 @@ pub fn spawn_workers<T: Configuration>(
 					match Pin::new(&mut workers_futures).poll(cx) {
 						Poll::Ready((_swarm, p, remaining)) => {
 							log::trace!(target: "mixnet", "Workers {} exited", p);
-							if remaining.len() == 0 {
+							if remaining.is_empty() {
 								log::trace!(target: "mixnet", "All Workers exited");
 								return Poll::Ready(())
 							}

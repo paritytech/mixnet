@@ -23,6 +23,7 @@ blake2-rfc = { version = "0.2.18", default-features = false }
 curve25519-dalek = "3.2.0"
 dyn-clone = "1.0.5"
 static_assertions = "1.1.0"
+bytemuck = "1.12.1"
 
 #sphinx deps
 x25519-dalek = "1.1.0"

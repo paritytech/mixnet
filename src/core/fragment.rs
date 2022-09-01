@@ -375,7 +375,7 @@ mod test {
 					MessageType::FromSurbs(Some(vec![1]), recipient.clone())
 				)
 				.unwrap(),
-			Some((vec![42], MessageType::FromSurbs(Some(vec![1]), recipient.clone())))
+			Some((vec![42], MessageType::FromSurbs(Some(vec![1]), recipient)))
 		);
 
 		let mut large = Vec::new();

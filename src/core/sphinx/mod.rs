@@ -31,9 +31,10 @@
 ///! Sphinx packet format.
 mod crypto;
 
+use super::TransmitInfo;
 use crate::core::{Packet, ReplayFilter, ReplayTag, SurbsCollection};
 pub use crypto::{hash, HASH_OUTPUT_SIZE};
-use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, KEY_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
+use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
 use rand::{CryptoRng, Rng};
 use std::time::Instant;
 use subtle::ConstantTimeEq;
@@ -43,12 +44,18 @@ pub type PublicKey = x25519_dalek::PublicKey;
 pub type Delay = u32;
 pub type NodeId = [u8; NODE_ID_SIZE];
 
+type Header = [u8; HEADER_SIZE];
+type RawKey = [u8; KEY_SIZE];
+type NewHeader = (Header, TransmitInfo);
+
 /// Maximum hops the packet format supports.
 pub const MAX_HOPS: usize = 5;
 pub const OVERHEAD_SIZE: usize = HEADER_SIZE + PAYLOAD_TAG_SIZE;
 
 /// The node identifier size in bytes.
 const NODE_ID_SIZE: usize = 32;
+
+const KEY_SIZE: usize = 32;
 
 /// Empty node id, last hop.
 const TARGET_ID: NodeId = [0u8; NODE_ID_SIZE];
@@ -100,7 +107,7 @@ pub enum Error {
 	/// Payload authentication mismatch.
 	Payload,
 	/// MAC mismatch.
-	MAC,
+	MACmismatch,
 	/// Payload decryption error.
 	PayloadDecrypt,
 	/// Payload encryption error.
@@ -132,7 +139,7 @@ fn blind(pk: PublicKey, factor: [u8; KEY_SIZE]) -> PublicKey {
 
 #[derive(Clone)]
 struct NextHop {
-	pub id: [u8; NODE_ID_SIZE],
+	pub id: NodeId,
 	pub mac: [u8; MAC_SIZE],
 }
 
@@ -158,9 +165,9 @@ pub struct SurbsPersistance {
 
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct SurbsPayload {
-	pub first_node: [u8; NODE_ID_SIZE],
+	pub first_node: NodeId,
 	pub first_key: SprpKey,
-	pub header: [u8; HEADER_SIZE],
+	pub header: Header,
 }
 
 impl From<Vec<u8>> for SurbsPayload {
@@ -210,7 +217,7 @@ fn create_header<T: Rng + CryptoRng>(
 	path: Vec<PathHop>,
 	surb_header: bool,
 	with_surb: bool,
-) -> Result<([u8; HEADER_SIZE], Vec<SprpKey>, Option<ReplayTag>), Error> {
+) -> Result<NewHeader, Error> {
 	let num_hops = path.len();
 	// Derive the key material for each hop.
 	let mut raw_key: [u8; KEY_SIZE] = Default::default();
@@ -307,7 +314,7 @@ fn create_header<T: Rng + CryptoRng>(
 		sprp_keys.push(k);
 		i += 1
 	}
-	Ok((header, sprp_keys, surb_id))
+	Ok((header, TransmitInfo { sprp_keys, surb_id }))
 }
 
 /// Create a new sphinx packet
@@ -316,15 +323,16 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	path: Vec<PathHop>,
 	payload: Vec<u8>,
 	with_surb: Option<(NodeId, Vec<PathHop>)>,
-) -> Result<(Packet, Option<(Vec<SprpKey>, ReplayTag)>), Error> {
-	let (header, sprp_keys, _) = create_header(&mut rng, path, false, with_surb.is_some())?;
+) -> Result<(Packet, Option<TransmitInfo>), Error> {
+	let (header, TransmitInfo { sprp_keys, .. }) =
+		create_header(&mut rng, path, false, with_surb.is_some())?;
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
 	let surb_key = if let Some((first_node, path)) = with_surb {
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
-		let (header, sprp_keys, surb_id) = create_header(&mut rng, path, true, false)?;
-		let surb_id = surb_id.unwrap();
+		let (header, TransmitInfo { sprp_keys, surb_id }) =
+			create_header(&mut rng, path, true, false)?;
 
 		debug_assert!(header.len() == HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -340,7 +348,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		debug_assert!(
 			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURBS_REPLY_SIZE + payload.len()
 		);
-		Some((sprp_keys, surb_id))
+		Some(TransmitInfo { sprp_keys, surb_id })
 	} else {
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + payload.len());
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -362,7 +370,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 pub fn new_surb_packet(
 	first_key: SprpKey,
 	message: Vec<u8>,
-	surb_header: [u8; HEADER_SIZE],
+	surb_header: Header,
 ) -> Result<Packet, Error> {
 	let mut tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + message.len());
 	tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -414,7 +422,7 @@ pub fn unwrap_packet(
 
 	// compare MAC in constant time
 	if calculated_mac.ct_eq(header_mac).unwrap_u8() == 0 {
-		return Err(Error::MAC)
+		return Err(Error::MACmismatch)
 	}
 
 	// Append padding to preserve length invariance, decrypt the (padded)
@@ -501,7 +509,7 @@ pub fn unwrap_packet(
 #[cfg(test)]
 mod test {
 	use super::{
-		crypto::KEY_SIZE, Delay, NodeId, PathHop, PublicKey, StaticSecret, Unwrapped, MAX_HOPS,
+		Delay, NodeId, PathHop, PublicKey, RawKey, StaticSecret, TransmitInfo, Unwrapped, MAX_HOPS,
 	};
 	use rand::{rngs::OsRng, CryptoRng, RngCore};
 
@@ -513,7 +521,7 @@ mod test {
 	fn new_node<T: RngCore + CryptoRng + Copy>(mut csprng: T) -> NodeParams {
 		let mut id = NodeId::default();
 		csprng.fill_bytes(&mut id);
-		let mut raw_key: [u8; KEY_SIZE] = Default::default();
+		let mut raw_key: RawKey = Default::default();
 		csprng.fill_bytes(&mut raw_key);
 		let private_key = StaticSecret::from(raw_key);
 		NodeParams { id, private_key }
@@ -552,7 +560,7 @@ mod test {
     privacy, but electronic technologies do.";
 
 		let keypair = libp2p_core::identity::Keypair::generate_ed25519();
-		let network_id = keypair.public().clone().into();
+		let network_id = keypair.public().into();
 		let id = crate::core::to_sphinx_id(&network_id).unwrap();
 		let config = crate::Config::new(id);
 		// Generate the "nodes" and path for the forward sphinx packet.
@@ -563,10 +571,8 @@ mod test {
 			let path = _tuple.1;
 			let delays = _tuple.2;
 			let path_c = path.clone();
-			let recipient = (
-				path.last().as_ref().unwrap().id.clone(),
-				path.last().as_ref().unwrap().public_key.clone(),
-			);
+			let recipient =
+				(path.last().as_ref().unwrap().id, path.last().as_ref().unwrap().public_key);
 			let mut surb_collection = super::SurbsCollection::new(&config);
 			let mut replay_filter = super::ReplayFilter::new(&config);
 
@@ -578,7 +584,7 @@ mod test {
 			// Create the packet.
 			let (mut packet, surb_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
-			if let Some((keys, surb_id)) = surb_keys {
+			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
 				let persistance =
 					crate::core::sphinx::SurbsPersistance { keys, query: None, recipient };
 				surb_collection.insert(surb_id, persistance, std::time::Instant::now());

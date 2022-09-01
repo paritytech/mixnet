@@ -1180,13 +1180,13 @@ fn test_fill_paths() {
 	let mut from_to: HashMap<MixPeerId, Vec<MixPeerId>> = Default::default();
 	for p in peers.iter().chain(std::iter::once(&local_id)) {
 		let tos = should_connect_to(p, &authorities, nb_forward);
-		from_to.insert(p.clone(), tos);
+		from_to.insert(*p, tos);
 	}
 	let mut to_from: HashMap<MixPeerId, Vec<MixPeerId>> = Default::default();
 	//	let from_to2: BTreeMap<_, _> = from_to.iter().map(|(k, v)|(k.clone(), v.clone())).collect();
 	for (from, tos) in from_to.iter() {
 		for to in tos.iter() {
-			to_from.entry(to.clone()).or_default().push(from.clone());
+			to_from.entry(*to).or_default().push(*from);
 		}
 	}
 	//		let from_to = from_to.clone();

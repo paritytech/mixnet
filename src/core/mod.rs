@@ -27,7 +27,7 @@ mod fragment;
 mod sphinx;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
-pub use crate::core::sphinx::{hash, SurbsPayload, SurbsPersistance};
+pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection},
@@ -63,6 +63,12 @@ pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET
 pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
 
 pub const WINDOW_MARGIN_PERCENT: usize = 10;
+
+/// Associated information to a packet or header.
+pub struct TransmitInfo {
+	sprp_keys: Vec<SprpKey>,
+	surb_id: Option<ReplayTag>,
+}
 
 /// Sphinx packet struct, goal of this struct
 /// is only to ensure the packet size is right.
@@ -199,20 +205,24 @@ pub struct Mixnet<T, C> {
 	// If true keep original message with surb
 	// and return it with surb reply.
 	persist_surb_query: bool,
-	packet_per_window: usize,
-	current_window_start: Instant,
-	current_window: Wrapping<usize>,
-	current_packet_in_window: usize,
-	last_now: Instant,
 
-	window_delay: Delay,
+	window: WindowInfo,
+}
+
+/// Mixnet window current state.
+pub struct WindowInfo {
+	packet_per_window: usize,
+	current_start: Instant,
+	current: Wrapping<usize>,
+	current_packet_limit: usize,
+	last_now: Instant,
+	delay: Delay,
 	stats: Option<WindowStats>,
 }
 
 impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
-		let window_delay = Delay::new(WINDOW_DELAY);
 		let packet_duration_nanos =
 			(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
 		let average_traffic_delay = Duration::from_nanos(packet_duration_nanos);
@@ -236,13 +246,15 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
 			average_traffic_delay,
-			current_window_start: now,
-			last_now: now,
-			current_window: Wrapping(0),
-			current_packet_in_window: 0,
-			window_delay,
-			packet_per_window,
-			stats,
+			window: WindowInfo {
+				current_start: now,
+				last_now: now,
+				current: Wrapping(0),
+				current_packet_limit: 0,
+				delay: Delay::new(WINDOW_DELAY),
+				packet_per_window,
+				stats,
+			},
 		}
 	}
 
@@ -268,8 +280,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
-		let connection =
-			ManagedConnection::new(peer, connection, self.current_window, self.stats.is_some());
+		let connection = ManagedConnection::new(
+			peer,
+			connection,
+			self.window.current,
+			self.window.stats.is_some(),
+		);
 		self.connected_peers.insert(peer, connection);
 	}
 
@@ -297,10 +313,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			.get(&recipient)
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
-			let deadline = Some(self.last_now + delay);
+			let deadline = Some(self.window.last_now + delay);
 			connection.queue_packet(
 				QueuedPacket { deadline, data, kind },
-				self.packet_per_window,
+				self.window.packet_per_window,
 				&self.local_id,
 				&self.topology,
 				false,
@@ -324,10 +340,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			.get(&recipient)
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
-			let deadline = Some(self.last_now); // TODO remove option for deadline (we don't want to skip other packets
+			let deadline = Some(self.window.last_now); // TODO remove option for deadline (we don't want to skip other packets
 			connection.queue_packet(
 				QueuedPacket { deadline, data, kind },
-				self.packet_per_window,
+				self.window.packet_per_window,
 				&self.local_id,
 				&self.topology,
 				true,
@@ -415,13 +431,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			let (packet, surb_keys) =
 				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(Error::SphinxError)?;
-			if let Some((keys, surb_id)) = surb_keys {
+			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
 				let persistance = SurbsPersistance {
 					keys,
 					query: surb_query.take(),
 					recipient: *paths[n].last().unwrap(),
 				};
-				self.surb.insert(surb_id, persistance, self.last_now);
+				self.surb.insert(surb_id, persistance, self.window.last_now);
 			}
 			packets.push((first_id, packet));
 		}
@@ -523,7 +539,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
 				// See if we can forward the message
 				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
-				let kind = if self.stats.is_some() && !self.topology.is_routing(&peer_id) {
+				let kind = if self.window.stats.is_some() && !self.topology.is_routing(&peer_id) {
 					PacketType::ForwardExternal
 				} else {
 					PacketType::Forward
@@ -582,22 +598,22 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			let now = Instant::now();
-			self.last_now = now;
+			self.window.last_now = now;
 			// if everything is pending, window delay will wake up context switch window,
 			// and log insufficient receive messages.
-			if self.window_delay.poll_unpin(cx).is_ready() {
-				let duration = now - self.current_window_start;
+			if self.window.delay.poll_unpin(cx).is_ready() {
+				let duration = now - self.window.current_start;
 				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
 
-				self.current_window += Wrapping(nb_spent);
+				self.window.current += Wrapping(nb_spent);
 				for _ in 0..nb_spent {
-					self.current_window_start += WINDOW_DELAY;
+					self.window.current_start += WINDOW_DELAY;
 				}
 
-				if let Some(stats) = self.stats.as_mut() {
+				if let Some(stats) = self.window.stats.as_mut() {
 					*stats = Default::default();
-					stats.last_window = self.current_window.0 - nb_spent;
-					stats.window = self.current_window.0;
+					stats.last_window = self.window.current.0 - nb_spent;
+					stats.window = self.window.current.0;
 					stats.number_connected = self.connected_peers.len();
 					for (_, c) in self.connected_peers.iter_mut() {
 						if let Some(stat) = c.connection_stats() {
@@ -609,15 +625,15 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					self.topology.window_stats(stats);
 				}
 
-				self.window_delay.reset(WINDOW_DELAY);
-				while !matches!(self.window_delay.poll_unpin(cx), Poll::Pending) {
-					self.window_delay.reset(WINDOW_DELAY);
+				self.window.delay.reset(WINDOW_DELAY);
+				while !matches!(self.window.delay.poll_unpin(cx), Poll::Pending) {
+					self.window.delay.reset(WINDOW_DELAY);
 				}
 			}
 
-			let duration = now - self.current_window_start;
-			self.current_packet_in_window = ((duration.as_millis() as u64 *
-				self.packet_per_window as u64) /
+			let duration = now - self.window.current_start;
+			self.window.current_packet_limit = ((duration.as_millis() as u64 *
+				self.window.packet_per_window as u64) /
 				WINDOW_DELAY.as_millis() as u64) as usize;
 
 			self.cleanup(now);
@@ -637,10 +653,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				cx,
 				&self.local_id,
 				&self.public,
-				self.current_window,
-				self.current_packet_in_window,
-				self.packet_per_window,
-				self.last_now,
+				&self.window,
 				&mut self.topology,
 			) {
 				Poll::Ready(ConnectionEvent::Established(_id, key)) => {
@@ -677,7 +690,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				// warning this only indicate a peer send wrong packet, but cannot presume
 				// who (can be external).
 				log::trace!(target: "mixnet", "Error importing packet, wrong format.");
-				if let Some(stats) = self.stats.as_mut() {
+				if let Some(stats) = self.window.stats.as_mut() {
 					if external {
 						stats.number_from_external_received_valid += 1;
 					} else {
