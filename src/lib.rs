@@ -29,11 +29,10 @@ pub use crate::{
 		PACKET_SIZE,
 	},
 	network::{
-		MixnetBehaviour, MixnetWorker, MixnetCommandSink, StreamFromWorker, WorkerChannels,
+		MixnetBehaviour, MixnetWorker, SinkToWorker, StreamFromWorker, WorkerChannels,
+		WorkerCommand, WorkerSink2,
 	},
 };
-
-pub(crate) use crate::network::WorkerSink2;
 
 /// Mixnet peer identity.
 pub type MixPeerId = [u8; 32];

@@ -27,48 +27,32 @@ mod handler;
 mod protocol;
 mod worker;
 
-pub(crate) use crate::network::worker::{WorkerSink as WorkerSink2};
+pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
 use crate::{
-	MixnetEvent, MixPeerId,
+	core::{self, SurbsPayload},
+	traits::ClonableSink,
+	MixPeerId, MixnetEvent, SendOptions,
 };
-use futures::{channel::oneshot::Sender as OneShotSender, Stream, StreamExt, SinkExt};
-use futures::{channel::mpsc::SendError, Sink};
+use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
 	CloseConnection, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction,
-	NotifyHandler, PollParameters, NegotiatedSubstream,
+	NotifyHandler, PollParameters,
 };
 use std::{
 	collections::{HashMap, VecDeque},
 	task::{Context, Poll},
 };
-use crate::{SendOptions, SurbsPayload, Packet};
-use dyn_clone::DynClone;
 pub use worker::MixnetWorker;
 
 pub type StreamFromWorker = Box<dyn Stream<Item = MixnetEvent> + Unpin + Send>;
-type SinkToWorker = Box<dyn ClonableSink>;
-pub struct WorkerChannels(WorkerSink2, worker::WorkerStream);
-
-
-pub(crate) trait ClonableSink: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
-impl<T> ClonableSink for T where T: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
-
-pub(crate) enum WorkerCommand {
-	RegisterMessage(Option<MixPeerId>, Vec<u8>, SendOptions),
-	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),
-	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
-	AddPeerInbound(PeerId, NegotiatedSubstream),
-	RemoveConnectedPeer(PeerId),
-	ImportExternalMessage(MixPeerId, Packet),
-}
+pub type SinkToWorker = Box<dyn ClonableSink>;
+pub type WorkerChannels = (WorkerSink2, worker::WorkerStream);
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct MixnetBehaviour {
-	// Sink prototype for handler.
 	mixnet_worker_sink: SinkToWorker,
-	// Commands from worker
 	mixnet_worker_stream: StreamFromWorker,
 	// avoid two connections from a single peer.
 	connected: HashMap<PeerId, ConnectionId>,
@@ -76,53 +60,51 @@ pub struct MixnetBehaviour {
 	notify_queue: VecDeque<(PeerId, ConnectionId)>,
 }
 
-/// Sink for external command.
-pub struct MixnetCommandSink(SinkToWorker);
-
-impl Clone for MixnetCommandSink {
-	fn clone(&self) -> Self {
-		MixnetCommandSink(dyn_clone::clone_box(&*self.0))
-	}
-}
-
-impl MixnetCommandSink {
-	pub(crate) fn inner_sink(self) -> SinkToWorker {
-		self.0
-	}
-
-	/// Send a new message to the mix network. The message will be split, chunked and sent over
-	/// multiple hops with random delays to the specified recipient.
-	///
-	/// If no recipient, it is send to a random recipient.
-	/// When attaching a surb, it is send using this surbs infos.
-	pub fn send(
-		&mut self,
-		to: Option<MixPeerId>,
-		message: Vec<u8>,
-		send_options: SendOptions,
-		using_surb: Option<Box<SurbsPayload>>,
-	) -> std::result::Result<(), crate::Error> {
-		if let Some(surb) = using_surb {
-		self.0.start_send_unpin(WorkerCommand::RegisterSurbs(message, surb))
-			.map_err(|_| crate::Error::WorkerChannelFull)
-
-		} else {
-		self.0.start_send_unpin(WorkerCommand::RegisterMessage(to, message, send_options))
-			.map_err(|_| crate::Error::WorkerChannelFull)
-		}
-	}
-}
-
-
 impl MixnetBehaviour {
 	/// Creates a new network behaviour for a worker.
-	pub fn new(worker_in: MixnetCommandSink, worker_out: StreamFromWorker) -> Self {
+	pub fn new(worker_in: SinkToWorker, worker_out: StreamFromWorker) -> Self {
 		Self {
-			mixnet_worker_sink: worker_in.inner_sink(),
+			mixnet_worker_sink: worker_in,
 			mixnet_worker_stream: worker_out,
 			notify_queue: Default::default(),
 			connected: Default::default(),
 		}
+	}
+
+	/// Send a new message to the mix network. The message will be split, chunked and sent over
+	/// multiple hops with random delays to the specified recipient.
+	pub fn send(
+		&mut self,
+		to: MixPeerId,
+		message: Vec<u8>,
+		send_options: SendOptions,
+	) -> std::result::Result<(), core::Error> {
+		self.mixnet_worker_sink
+			.start_send_unpin(WorkerCommand::RegisterMessage(Some(to), message, send_options))
+			.map_err(|_| core::Error::WorkerChannelFull)
+	}
+
+	/// Send a new message to the mix network. The message will be split, chunked and sent over
+	/// multiple hops with random delays to a random recipient.
+	pub fn send_to_random_recipient(
+		&mut self,
+		message: Vec<u8>,
+		send_options: SendOptions,
+	) -> std::result::Result<(), core::Error> {
+		self.mixnet_worker_sink
+			.start_send_unpin(WorkerCommand::RegisterMessage(None, message, send_options))
+			.map_err(|_| core::Error::WorkerChannelFull)
+	}
+
+	/// Send surb reply in mixnet.
+	pub fn send_surb(
+		&mut self,
+		message: Vec<u8>,
+		surb: Box<SurbsPayload>,
+	) -> std::result::Result<(), core::Error> {
+		self.mixnet_worker_sink
+			.start_send_unpin(WorkerCommand::RegisterSurbs(message, surb))
+			.map_err(|_| core::Error::WorkerChannelFull)
 	}
 }
 

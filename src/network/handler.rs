@@ -121,7 +121,7 @@ enum State {
 
 impl Handler {
 	/// Builds a new `Handler` with the given configuration.
-	pub(crate) fn new(config: Config, mixnet_worker_sink: SinkToWorker) -> Self {
+	pub fn new(config: Config, mixnet_worker_sink: SinkToWorker) -> Self {
 		Handler {
 			config,
 			pending_errors: VecDeque::with_capacity(2),
