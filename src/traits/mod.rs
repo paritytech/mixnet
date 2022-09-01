@@ -128,8 +128,8 @@ pub struct NoTopology {
 }
 
 impl Topology for NoTopology {
-	fn is_routing(&self, id: &MixPeerId) -> bool {
-		self.neighbors(id).is_some()
+	fn is_routing(&self, _id: &MixPeerId) -> bool {
+		false
 	}
 
 	fn random_recipient(

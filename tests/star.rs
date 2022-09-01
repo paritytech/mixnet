@@ -114,11 +114,7 @@ impl mixnet::traits::Handshake for ConfigGraph {
 
 impl Topology for TopologyGraph {
 	fn is_routing(&self, id: &MixPeerId) -> bool {
-		self.neighbors(id).is_some()
-	}
-
-	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-		self.connections.get(id).cloned()
+		self.connections.contains_key(id)
 	}
 
 	fn first_hop_nodes_external(
@@ -258,15 +254,15 @@ impl Topology for TopologyGraph {
 	}
 }
 
-fn gen_paths<T: Topology>(
-	topology: &T,
+fn gen_paths(
+	topology: &TopologyGraph,
 	partial: &mut Vec<(MixPeerId, MixPublicKey)>,
 	paths: &mut Vec<Vec<(MixPeerId, MixPublicKey)>>,
 	last: &MixPeerId,
 	target: &MixPeerId,
 	num_hops: usize,
 ) {
-	let neighbors = topology.neighbors(last).unwrap_or_default();
+	let neighbors = topology.connections.get(last).cloned().unwrap_or_default();
 	for (id, key) in neighbors {
 		if partial.len() < num_hops - 1 {
 			partial.push((id, key));
