@@ -24,15 +24,10 @@ pub mod hash_table;
 
 use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, WindowStats};
 use ambassador::delegatable_trait;
-use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
 use std::task::{Context, Poll};
 
-pub use crate::WorkerCommand;
 pub use hash_table::TopologyHashTable;
-
-pub trait ClonableSink: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
-impl<T> ClonableSink for T where T: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
 
 /// Provide Configuration of mixnet.
 pub trait Configuration: Topology + Handshake + Sized + Send + 'static {

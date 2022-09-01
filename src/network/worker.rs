@@ -23,30 +23,21 @@
 
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, Packet, SurbsPayload},
-	network::connection::Connection,
+	network::{WorkerCommand, connection::Connection},
 	traits::Configuration,
 	DecodedMessage, MixnetEvent, SendOptions,
 };
+use futures::{channel::mpsc::SendError, Sink};
 use futures::{
-	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
-	Sink, SinkExt, Stream, StreamExt,
+	channel::{oneshot::Sender as OneShotSender},
+	SinkExt, Stream, StreamExt,
 };
 use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
 
-pub type WorkerStream = Box<dyn Stream<Item = WorkerCommand> + Unpin + Send>;
-pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Send>;
-
-// TODO this got exposed recently, maybe refactor api to just be send_command.
-pub enum WorkerCommand {
-	RegisterMessage(Option<crate::MixPeerId>, Vec<u8>, SendOptions),
-	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),
-	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
-	AddPeerInbound(PeerId, NegotiatedSubstream),
-	RemoveConnectedPeer(PeerId),
-	ImportExternalMessage(crate::MixPeerId, Packet),
-}
+pub(crate) type WorkerStream = Box<dyn Stream<Item = WorkerCommand> + Unpin + Send>;
+pub(crate) type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Send>;
 
 /// Embed mixnet and process queue of instruction.
 pub struct MixnetWorker<T> {
@@ -55,9 +46,11 @@ pub struct MixnetWorker<T> {
 	worker_out: WorkerSink,
 }
 
+pub struct WorkerChannels2(pub(crate) WorkerSink, pub(crate) WorkerStream);
+
 impl<T: Configuration> MixnetWorker<T> {
-	pub fn new(config: Config, topology: T, inner_channels: (WorkerSink, WorkerStream)) -> Self {
-		let (worker_out, worker_in) = inner_channels;
+	pub fn new(config: Config, topology: T, inner_channels: WorkerChannels2) -> Self {
+		let WorkerChannels2(worker_out, worker_in) = inner_channels;
 		let mixnet = crate::core::Mixnet::new(config, topology);
 		MixnetWorker { mixnet, worker_in, worker_out }
 	}
@@ -103,8 +96,7 @@ impl<T: Configuration> MixnetWorker<T> {
 				},
 				WorkerCommand::AddPeer(peer, inbound, outbound, close_handler) => {
 					if let Some(_con) = self.mixnet.connected_mut(&peer) {
-						// TODO this can happen due to a race.
-						log::error!("Trying to replace an existing connection for {:?}", peer);
+						log::warn!("Trying to replace an existing connection for {:?}", peer);
 					} else {
 						let con = Connection::new(close_handler, inbound, outbound);
 						self.mixnet.insert_connection(peer, con);
