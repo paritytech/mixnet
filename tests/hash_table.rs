@@ -22,9 +22,11 @@
 
 mod common;
 
+use ambassador::Delegate;
 use common::{PeerTestReply, SimpleHandshake};
 use futures::prelude::*;
 use libp2p_core::PeerId;
+use mixnet::ambassador_impl_Topology;
 use rand::RngCore;
 use std::{sync::Arc, task::Poll};
 
@@ -54,6 +56,8 @@ impl TopologyConfig for NotDistributed {
 	const DEFAULT_PARAMETERS: Parameters = Parameters { max_external: Some(10) };
 }
 
+#[derive(Delegate)]
+#[delegate(Topology)]
 struct NotDistributed {
 	inner: SimpleHandshake<TopologyHashTable<Self>>,
 }
@@ -81,75 +85,6 @@ impl mixnet::traits::Handshake for NotDistributed {
 
 	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		self.inner.handshake(with, public_key)
-	}
-}
-
-impl Topology for NotDistributed {
-	fn is_routing(&self, id: &MixPeerId) -> bool {
-		self.inner.topo.is_routing(id)
-	}
-
-	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-		self.inner.topo.neighbors(id)
-	}
-
-	fn first_hop_nodes_external(
-		&self,
-		from: &MixPeerId,
-		to: &MixPeerId,
-	) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.inner.topo.first_hop_nodes_external(from, to)
-	}
-
-	fn is_first_node(&self, id: &MixPeerId) -> bool {
-		self.inner.topo.is_first_node(id)
-	}
-
-	fn random_recipient(
-		&mut self,
-		local_id: &MixPeerId,
-		options: &SendOptions,
-	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.topo.random_recipient(local_id, options)
-	}
-
-	fn random_path(
-		&mut self,
-		start_node: (&MixPeerId, Option<&MixPublicKey>),
-		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
-		count: usize,
-		num_hops: usize,
-		max_hops: usize,
-		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
-	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		self.inner.topo.random_path(
-			start_node,
-			recipient_node,
-			count,
-			num_hops,
-			max_hops,
-			last_query_if_surb,
-		)
-	}
-
-	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
-		self.inner.topo.routing_to(from, to)
-	}
-
-	fn connected(&mut self, peer_id: MixPeerId, pub_key: MixPublicKey) {
-		self.inner.topo.connected(peer_id, pub_key)
-	}
-
-	fn disconnected(&mut self, id: &MixPeerId) {
-		self.inner.topo.disconnected(id)
-	}
-
-	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
-		self.inner.topo.bandwidth_external(id)
-	}
-
-	fn accept_peer(&self, local_id: &MixPeerId, peer_id: &MixPeerId) -> bool {
-		self.inner.topo.accept_peer(local_id, peer_id)
 	}
 }
 

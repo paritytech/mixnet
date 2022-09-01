@@ -23,6 +23,7 @@
 pub mod hash_table;
 
 use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, WindowStats};
+use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
 use std::task::{Context, Poll};
@@ -43,6 +44,7 @@ pub trait Configuration: Topology + Handshake + Sized + Send + 'static {
 }
 
 /// Provide network topology information to the mixnet.
+#[delegatable_trait]
 pub trait Topology: Sized {
 	/// Select a random recipient for the message to be delivered. This is
 	/// called when the user sends the message with no recipient specified.

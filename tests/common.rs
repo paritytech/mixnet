@@ -20,6 +20,7 @@
 
 //! Tests utility (simple implementation of mixnet around local libp2p transport).
 
+use ambassador::Delegate;
 use futures::{channel::mpsc, executor::ThreadPool, prelude::*, task::SpawnExt};
 use libp2p_core::{
 	identity,
@@ -32,9 +33,10 @@ use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
+	ambassador_impl_Topology,
 	traits::{Configuration, Topology},
-	Config, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetWorker, SinkToWorker,
-	StreamFromWorker, WorkerChannels, WorkerCommand,
+	Config, Error, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetWorker,
+	SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels, WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
 use std::{collections::HashSet, sync::Arc, task::Poll};
@@ -386,7 +388,8 @@ pub fn spawn_workers<T: Configuration>(
 /// MixPublicKey and a signature of NetworkId peer
 /// concatenated with the mix public key.
 /// Signing key is MixPeerId (we use the publickey as Mixpeerid).
-#[derive(Clone)]
+#[derive(Clone, Delegate)]
+#[delegate(Topology, target = "topo")]
 pub struct SimpleHandshake<T> {
 	pub local_id: Option<MixPeerId>,
 	pub local_network_id: Option<NetworkPeerId>,
