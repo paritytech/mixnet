@@ -21,17 +21,9 @@
 //! Topology where direct peers are resolved
 //! by hashing peers id (so randomly distributed).
 
-use crate::{traits::Topology, Error, MixPeerId, MixPublicKey};
+use crate::{traits::Topology, Error, MixPeerId, MixPublicKey, PeerStats};
 use log::{debug, error, trace};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-
-// TODO make private or remove when all related stat in mixnet crate
-pub enum ConnectedKind {
-	External,
-	RoutingForward,
-	RoutingReceive,
-	RoutingReceiveForward,
-}
 
 /// Configuaration for this hash table.
 /// Allows to use table from external source.
@@ -92,17 +84,12 @@ pub struct TopologyHashTable<C: Configuration> {
 	// true when we are in routing set.
 	routing: bool,
 
-	// TODO put this stats in mixnet stats directly
-	pub nb_connected_forward_routing: usize,
-	pub nb_connected_receive_routing: usize,
-	pub nb_connected_external: usize,
-
 	// TODO put in authorities_tables??
 	// TODO priv
 	routing_table: AuthorityTable<C::Version>,
 
 	// The connected nodes (for first hop use `authorities` joined `connected_nodes`).
-	pub connected_nodes: HashMap<MixPeerId, ConnectedKind>,
+	connected_nodes: HashSet<MixPeerId>,
 
 	// All rooting peers are considered connected (when building message except first hop).
 	// TODO rename potential_routing_peers_set
@@ -188,7 +175,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			.filter(|(id, _key)| from != *id)
 			.filter(|(id, _key)| to != *id)
 			.filter(|(id, _key)| &self.local_id != *id)
-			.filter(|(id, _key)| self.connected_nodes.contains_key(*id))
+			.filter(|(id, _key)| self.connected_nodes.contains(*id))
 			.map(|(k, table)| (*k, table.public_key))
 			.collect()
 	}
@@ -403,31 +390,32 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.add_disconnected_peer(peer_id);
 	}
 
-	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, id: &MixPeerId, peers: &PeerStats) -> Option<(usize, usize)> {
 		if !self.routing && self.can_route(id) {
 			// expect surbs: TODO make it optional??
 			return Some((1, 1))
 		}
 		// TODO can cache this result (Option<Option<(usize, usize))
 
-		// Equal bandwidth amongst connected peers.
-		let nb_forward = self.nb_connected_forward_routing;
-		let nb_receive = self.nb_connected_receive_routing;
-		// TODO add parameter to indicate if for a new peer or an existing one.
-		let nb_external = self.nb_connected_external + 1;
+		let nb_external = peers.nb_connected_external + 1;
 
 		let forward_bandwidth = ((C::EXTERNAL_BANDWIDTH.0 + C::EXTERNAL_BANDWIDTH.1) *
-			nb_forward * self.target_bytes_per_seconds) /
+			peers.nb_connected_forward_routing *
+			self.target_bytes_per_seconds) /
 			C::EXTERNAL_BANDWIDTH.1;
-		let receive_bandwidth = nb_receive * self.target_bytes_per_seconds;
+		let receive_bandwidth = peers.nb_connected_receive_routing * self.target_bytes_per_seconds;
 
-		let available_bandwidth = forward_bandwidth - receive_bandwidth;
+		let available_bandwidth = if forward_bandwidth > receive_bandwidth {
+			forward_bandwidth - receive_bandwidth
+		} else {
+			0
+		};
 		let available_per_external = available_bandwidth / nb_external;
 
 		Some((available_per_external, self.target_bytes_per_seconds))
 	}
 
-	fn accept_peer(&self, peer_id: &MixPeerId) -> bool {
+	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerStats) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			// allow any authorities as it can be any of the should_connect_to in case
 			// there is many disconnected TODO !!!! disco on more prioritary (only for connect_to)
@@ -440,13 +428,13 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			self.routing_to(peer_id, &self.local_id) ||
 				self.routing_to(&self.local_id, peer_id) ||
 				(!self.can_route(peer_id) &&
-					self.nb_connected_external <
+					peers.nb_connected_external <
 						self.params.max_external.unwrap_or(usize::MAX) &&
-					self.bandwidth_external(peer_id).is_some())
+					self.bandwidth_external(peer_id, peers).is_some())
 		} else {
 			// connect as many routing node as possible
 			self.can_route(peer_id) &&
-				self.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
+				peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
 		}
 	}
 }
@@ -469,16 +457,13 @@ impl<C: Configuration> TopologyHashTable<C> {
 		TopologyHashTable {
 			local_id,
 			authorities: BTreeSet::new(),
-			connected_nodes: HashMap::new(),
+			connected_nodes: HashSet::new(),
 			routing: false,
 			authorities_tables: BTreeMap::new(),
 			routing_table,
 			paths: Default::default(),
 			paths_depth: 0,
 			//disconnected_in_routing: Default::default(),
-			nb_connected_forward_routing: 0,
-			nb_connected_receive_routing: 0,
-			nb_connected_external: 0,
 			target_bytes_per_seconds: config.target_bytes_per_second as usize,
 			params,
 			default_num_hop: config.num_hops as usize,
@@ -562,33 +547,10 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 	pub fn add_connected_peer(&mut self, peer_id: MixPeerId) {
 		debug!(target: "mixnet", "Connected to mixnet {:?}", peer_id);
-		if self.connected_nodes.contains_key(&peer_id) {
+		if self.connected_nodes.contains(&peer_id) {
 			return
 		}
-		let kind = if self.can_route(&peer_id) {
-			if !self.routing {
-				self.nb_connected_external += 1;
-				ConnectedKind::External
-			} else if self.routing_to(&self.local_id, &peer_id) {
-				self.nb_connected_forward_routing += 1;
-				if self.routing_to(&peer_id, &self.local_id) {
-					self.nb_connected_receive_routing += 1;
-					ConnectedKind::RoutingReceiveForward
-				} else {
-					ConnectedKind::RoutingForward
-				}
-			} else if self.routing_to(&peer_id, &self.local_id) {
-				self.nb_connected_receive_routing += 1;
-				ConnectedKind::RoutingReceive
-			} else {
-				self.nb_connected_external += 1;
-				ConnectedKind::External
-			}
-		} else {
-			self.nb_connected_external += 1;
-			ConnectedKind::External
-		};
-		self.connected_nodes.insert(peer_id, kind);
+		self.connected_nodes.insert(peer_id);
 
 		if C::DISTRIBUTE_ROUTES {
 			if let Some(info) = self.should_connect_pending.get_mut(&peer_id) {
@@ -602,29 +564,11 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 	fn add_disconnected_peer(&mut self, peer_id: &MixPeerId) {
 		debug!(target: "mixnet", "Disconnected from mixnet {:?}", peer_id);
-		if let Some(kind) = self.connected_nodes.remove(peer_id) {
-			match kind {
-				ConnectedKind::External => {
-					self.nb_connected_external -= 1;
-				},
-				ConnectedKind::RoutingReceive => {
-					self.nb_connected_receive_routing -= 1;
-				},
-				ConnectedKind::RoutingForward => {
-					self.nb_connected_forward_routing -= 1;
-				},
-				ConnectedKind::RoutingReceiveForward => {
-					self.nb_connected_forward_routing -= 1;
-					self.nb_connected_receive_routing -= 1;
-				},
-			}
-
-			if C::DISTRIBUTE_ROUTES {
-				if let Some(info) = self.should_connect_pending.get_mut(peer_id) {
-					if !info.1 {
-						info.1 = true;
-						self.refresh_self_routing_table();
-					}
+		if self.connected_nodes.remove(peer_id) && C::DISTRIBUTE_ROUTES {
+			if let Some(info) = self.should_connect_pending.get_mut(peer_id) {
+				if !info.1 {
+					info.1 = true;
+					self.refresh_self_routing_table();
 				}
 			}
 		}
@@ -660,11 +604,8 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 	fn handle_new_routing_set_end(&mut self) {
 		let connected = std::mem::take(&mut self.connected_nodes);
-		self.nb_connected_forward_routing = 0;
-		self.nb_connected_receive_routing = 0;
-		self.nb_connected_external = 0;
 		for peer_id in connected.into_iter() {
-			self.add_connected_peer(peer_id.0);
+			self.add_connected_peer(peer_id);
 		}
 	}
 

@@ -35,7 +35,7 @@ use mixnet::{
 		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
 		Topology,
 	},
-	Error, MixPeerId, MixPublicKey, MixSecretKey, SendOptions,
+	Error, MixPeerId, MixPublicKey, MixSecretKey, PeerStats, SendOptions,
 };
 
 impl TopologyConfig for NotDistributed {
@@ -67,7 +67,9 @@ impl mixnet::traits::Configuration for NotDistributed {
 		true
 	}
 
-	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
+	fn window_stats(&self, _stats: &mixnet::WindowStats, _: &PeerStats) {}
+
+	fn peer_stats(&self, _: &PeerStats) {}
 }
 
 impl mixnet::traits::Handshake for NotDistributed {
@@ -79,8 +81,9 @@ impl mixnet::traits::Handshake for NotDistributed {
 		&mut self,
 		payload: &[u8],
 		from: &PeerId,
+		peers: &PeerStats,
 	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.check_handshake(payload, from)
+		self.inner.check_handshake(payload, from, peers)
 	}
 
 	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {

@@ -22,7 +22,7 @@
 
 pub mod hash_table;
 
-use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, WindowStats};
+use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, PeerStats, SendOptions, WindowStats};
 use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
@@ -40,7 +40,10 @@ pub trait Configuration: Topology + Handshake + Sized + Send + 'static {
 	fn collect_windows_stats(&self) -> bool;
 
 	/// Callback on windows stats.
-	fn window_stats(&self, stats: &WindowStats);
+	fn window_stats(&self, stats: &WindowStats, connection: &PeerStats);
+
+	/// Callback on connection stats.
+	fn peer_stats(&self, stats: &PeerStats);
 }
 
 /// Provide network topology information to the mixnet.
@@ -72,7 +75,7 @@ pub trait Topology: Sized {
 
 	/// If external is allowed, it returns a ratio of
 	/// routing node bandwidth to use.
-	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)>;
+	fn bandwidth_external(&self, _id: &MixPeerId, peers: &PeerStats) -> Option<(usize, usize)>;
 
 	/// Check node links.
 	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool;
@@ -99,7 +102,7 @@ pub trait Topology: Sized {
 
 	/// Is peer allowed to connect to our node.
 	/// Should usually be call by `check_handshake`.
-	fn accept_peer(&self, peer_id: &MixPeerId) -> bool;
+	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerStats) -> bool;
 }
 
 /// Handshake on peer connection.
@@ -113,6 +116,7 @@ pub trait Handshake {
 		&mut self,
 		payload: &[u8],
 		from: &NetworkPeerId,
+		peers: &PeerStats,
 	) -> Option<(MixPeerId, MixPublicKey)>;
 
 	/// On handshake, return handshake payload.
@@ -146,7 +150,7 @@ impl Topology for NoTopology {
 			.map(|(k, v)| (*k, *v))
 	}
 
-	fn bandwidth_external(&self, _id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, _id: &MixPeerId, _: &PeerStats) -> Option<(usize, usize)> {
 		Some((1, 1))
 	}
 
@@ -192,7 +196,7 @@ impl Topology for NoTopology {
 		self.connected_peers.remove(id);
 	}
 
-	fn accept_peer(&self, _: &MixPeerId) -> bool {
+	fn accept_peer(&self, _: &MixPeerId, _: &PeerStats) -> bool {
 		true
 	}
 }
@@ -202,7 +206,9 @@ impl Configuration for NoTopology {
 		false
 	}
 
-	fn window_stats(&self, _: &WindowStats) {}
+	fn window_stats(&self, _: &WindowStats, _: &PeerStats) {}
+
+	fn peer_stats(&self, _: &PeerStats) {}
 }
 
 impl Handshake for NoTopology {
@@ -214,6 +220,7 @@ impl Handshake for NoTopology {
 		&mut self,
 		payload: &[u8],
 		from: &NetworkPeerId,
+		_peers: &PeerStats,
 	) -> Option<(MixPeerId, MixPublicKey)> {
 		let peer_id = crate::core::to_sphinx_id(from).ok()?;
 		let mut pk = [0u8; crate::core::PUBLIC_KEY_LEN];

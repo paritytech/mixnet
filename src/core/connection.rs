@@ -26,7 +26,7 @@
 use crate::{
 	core::{PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
 	traits::{Configuration, Connection, Handshake, Topology},
-	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PACKET_SIZE,
+	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerStats, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -175,6 +175,7 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		cx: &mut Context,
 		topology: &mut impl Handshake,
+		peers: &PeerStats,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
 		if self.handshake_received() {
 			// ignore
@@ -185,7 +186,7 @@ impl<C: Connection> ManagedConnection<C> {
 				self.read_timeout.reset(READ_TIMEOUT);
 				log::trace!(target: "mixnet", "Handshake message from {:?}", self.network_id);
 				if let Some((peer_id, pk)) =
-					topology.check_handshake(handshake.as_slice(), &self.network_id)
+					topology.check_handshake(handshake.as_slice(), &self.network_id, peers)
 				{
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
@@ -195,7 +196,7 @@ impl<C: Connection> ManagedConnection<C> {
 					Poll::Ready(Err(()))
 				}
 			},
-			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology),
+			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology, peers),
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error receiving handshake from peer, closing: {:?}", self.network_id);
 				Poll::Ready(Err(()))
@@ -238,6 +239,7 @@ impl<C: Connection> ManagedConnection<C> {
 		packet_per_window: usize,
 		local_id: &MixPeerId,
 		topology: &impl Topology,
+		peers: &PeerStats,
 		external: bool,
 	) -> Result<(), crate::Error> {
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
@@ -248,7 +250,7 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			if !external &&
 				!topology.routing_to(local_id, peer_id) &&
-				topology.bandwidth_external(peer_id).is_none()
+				topology.bandwidth_external(peer_id, peers).is_none()
 			{
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
 				return Err(crate::Error::NoPath(Some(*peer_id)))
@@ -276,11 +278,12 @@ impl<C: Connection> ManagedConnection<C> {
 		handshake: &MixPublicKey,
 		window: &WindowInfo,
 		topology: &mut impl Configuration,
+		peers: &PeerStats,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
 			let mut result = Poll::Pending;
-			match self.try_recv_handshake(cx, topology) {
+			match self.try_recv_handshake(cx, topology, peers) {
 				Poll::Ready(Ok(key)) => {
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
@@ -357,7 +360,7 @@ impl<C: Connection> ManagedConnection<C> {
 			let (current, external) = if topology.routing_to(&peer_id, local_id) {
 				(window.current_packet_limit, false)
 			} else {
-				let (n, d) = topology.bandwidth_external(&peer_id).unwrap_or((0, 1));
+				let (n, d) = topology.bandwidth_external(&peer_id, peers).unwrap_or((0, 1));
 				((window.current_packet_limit * n) / d, true)
 			};
 			if self.recv_in_window < current {

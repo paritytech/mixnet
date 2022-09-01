@@ -38,7 +38,7 @@ use std::{
 use ambassador::Delegate;
 use mixnet::{
 	ambassador_impl_Topology, traits::Topology, Error, MixPeerId, MixPublicKey, MixSecretKey,
-	SendOptions,
+	PeerStats, SendOptions,
 };
 
 #[derive(Delegate)]
@@ -89,7 +89,9 @@ impl mixnet::traits::Configuration for ConfigGraph {
 		true
 	}
 
-	fn window_stats(&self, _stats: &mixnet::WindowStats) {}
+	fn window_stats(&self, _stats: &mixnet::WindowStats, _: &PeerStats) {}
+
+	fn peer_stats(&self, _: &PeerStats) {}
 }
 
 impl mixnet::traits::Handshake for ConfigGraph {
@@ -101,8 +103,9 @@ impl mixnet::traits::Handshake for ConfigGraph {
 		&mut self,
 		payload: &[u8],
 		from: &PeerId,
+		peers: &PeerStats,
 	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.check_handshake(payload, from)
+		self.inner.check_handshake(payload, from, peers)
 	}
 
 	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
@@ -233,7 +236,7 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn bandwidth_external(&self, id: &MixPeerId) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, id: &MixPeerId, _peers: &PeerStats) -> Option<(usize, usize)> {
 		if self.external.as_ref() == Some(id) {
 			return Some((1, 1))
 		}
@@ -243,11 +246,11 @@ impl Topology for TopologyGraph {
 		Some((1, 1))
 	}
 
-	fn accept_peer(&self, peer_id: &MixPeerId) -> bool {
+	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerStats) -> bool {
 		if let Some(local_id) = self.local_id.as_ref() {
 			self.routing_to(local_id, peer_id) ||
 				self.routing_to(peer_id, local_id) ||
-				self.bandwidth_external(peer_id).is_some()
+				self.bandwidth_external(peer_id, peers).is_some()
 		} else {
 			false
 		}

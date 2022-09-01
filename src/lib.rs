@@ -25,8 +25,8 @@ pub mod traits;
 pub use crate::{
 	core::{
 		connection::ConnectionStats, generate_new_keys, public_from_ed25519, secret_from_ed25519,
-		to_sphinx_id, Config, Error, MixPublicKey, MixSecretKey, Packet, SurbsPayload, WindowStats,
-		PACKET_SIZE,
+		to_sphinx_id, Config, ConnectedKind, Error, MixPublicKey, MixSecretKey, Packet, PeerStats,
+		SurbsPayload, WindowStats, PACKET_SIZE,
 	},
 	network::{
 		MixnetBehaviour, MixnetCommandSink, MixnetWorker, SinkToWorker, StreamFromWorker,
