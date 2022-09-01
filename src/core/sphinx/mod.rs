@@ -128,7 +128,8 @@ pub struct PathHop {
 }
 
 /// SprpKey is a struct that contains a SPRP (Strong Pseudo-Random Permutation) key.
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+#[repr(transparent)]
 pub struct SprpKey {
 	pub key: [u8; SPRP_KEY_SIZE],
 }
@@ -163,19 +164,30 @@ pub struct SurbsPersistance {
 	pub recipient: (crate::MixPeerId, crate::MixPublicKey),
 }
 
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+#[repr(C)]
 pub struct SurbsPayload {
 	pub first_node: NodeId,
 	pub first_key: SprpKey,
 	pub header: Header,
 }
 
+unsafe impl bytemuck::Zeroable for SurbsPayload{ }
+unsafe impl bytemuck::Pod for SurbsPayload { }
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct SurbsReply([u8; SURBS_REPLY_SIZE]);
+
+unsafe impl bytemuck::Zeroable for SurbsReply{ }
+unsafe impl bytemuck::Pod for SurbsReply { }
+
 impl From<Vec<u8>> for SurbsPayload {
-	fn from(mut encoded: Vec<u8>) -> Self {
-		let buf = array_mut_ref![encoded, 0, SURBS_REPLY_SIZE];
-		let (id, first_key, header) =
-			mut_array_refs![buf, NODE_ID_SIZE, SPRP_KEY_SIZE, HEADER_SIZE];
-		SurbsPayload { first_node: *id, first_key: SprpKey { key: *first_key }, header: *header }
+	fn from(encoded: Vec<u8>) -> Self {
+		let buf: &[u8; SURBS_REPLY_SIZE] = unsafe {
+			&*(encoded.as_slice().as_ptr() as *const [u8; SURBS_REPLY_SIZE])
+		};
+		bytemuck::cast(SurbsReply(*buf))
 	}
 }
 
@@ -393,14 +405,16 @@ pub fn unwrap_packet(
 	// Split into mutable references and validate the AD
 	let (header, payload) = packet.as_mut().split_at_mut(HEADER_SIZE);
 	let (authed_header, header_mac) = header.split_at_mut(MAC_OFFSET);
-	let (ad, _after_ad) = authed_header.split_at_mut(AD_SIZE);
-	let after_ad = array_mut_ref![_after_ad, 0, GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE];
-	let (group_element_bytes, routing_info) =
-		mut_array_refs![after_ad, GROUP_ELEMENT_SIZE, ROUTING_INFO_SIZE];
+	let (ad, after_ad) = authed_header.split_at_mut(AD_SIZE);
+	let (group_element_bytes, routing_info) = after_ad.split_at_mut(GROUP_ELEMENT_SIZE);
 
 	if ad.ct_eq(&V0_AD).unwrap_u8() == 0 {
 		return Err(Error::InvalidPacket)
 	}
+
+	let group_element_bytes: &mut [u8; GROUP_ELEMENT_SIZE] = unsafe {
+		&mut *(group_element_bytes.as_ptr() as *mut [u8; GROUP_ELEMENT_SIZE])
+	};
 
 	// Calculate the hop's shared secret, and replay_tag.
 	let mut group_element = PublicKey::from(*group_element_bytes);

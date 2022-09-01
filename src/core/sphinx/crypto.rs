@@ -20,12 +20,11 @@
 
 //! Sphinx crypto primitives
 
+use super::{RawKey, KEY_SIZE};
 use aes::{
 	cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher as AesStreamCipher},
 	Aes128,
 };
-
-use super::{RawKey, KEY_SIZE};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -88,6 +87,8 @@ impl StreamCipher {
 
 /// PacketKeys are the per-hop Sphinx Packet Keys, derived from the blinded
 /// DH key exchange.
+#[derive(Copy, Clone)]
+#[repr(C)]
 pub struct PacketKeys {
 	pub header_mac: [u8; MAC_KEY_SIZE],
 	pub header_encryption: [u8; STREAM_KEY_SIZE],
@@ -96,24 +97,22 @@ pub struct PacketKeys {
 	pub blinding_factor: [u8; KEY_SIZE],
 }
 
+unsafe impl bytemuck::Zeroable for PacketKeys {}
+
+unsafe impl bytemuck::Pod for PacketKeys {}
+
+unsafe impl bytemuck::Zeroable for KdfOutput {}
+
+unsafe impl bytemuck::Pod for KdfOutput {}
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+struct KdfOutput([u8; KDF_OUTPUT_SIZE]);
+
 /// `kdf` takes the input key material and returns the Sphinx Packet keys.
 pub fn kdf(input: &RawKey) -> PacketKeys {
 	let output = hkdf_expand(input, String::from(KDF_INFO_STR).into_bytes().as_slice());
-	let (a1, a2, a3, a4, a5) = array_refs![
-		&output,
-		MAC_KEY_SIZE,
-		STREAM_KEY_SIZE,
-		STREAM_IV_SIZE,
-		SPRP_KEY_SIZE,
-		KEY_SIZE
-	];
-	PacketKeys {
-		header_mac: *a1,
-		header_encryption: *a2,
-		header_encryption_iv: *a3,
-		payload_encryption: *a4,
-		blinding_factor: *a5,
-	}
+	bytemuck::cast(KdfOutput(output))
 }
 
 pub fn hkdf_expand(prk: &[u8], info: &[u8]) -> [u8; KDF_OUTPUT_SIZE] {
