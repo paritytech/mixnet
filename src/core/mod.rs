@@ -164,7 +164,7 @@ enum PacketType {
 #[derive(PartialEq, Eq)]
 /// A real traffic message that we need to forward.
 pub(crate) struct QueuedPacket {
-	deadline: Option<Instant>,
+	deadline: Instant,
 	kind: PacketType,
 	pub data: Packet,
 }
@@ -313,7 +313,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			.get(&recipient)
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
-			let deadline = Some(self.window.last_now + delay);
+			let deadline = self.window.last_now + delay;
 			connection.queue_packet(
 				QueuedPacket { deadline, data, kind },
 				self.window.packet_per_window,
@@ -340,7 +340,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			.get(&recipient)
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
-			let deadline = Some(self.window.last_now); // TODO remove option for deadline (we don't want to skip other packets
+			let deadline = self.window.last_now;
 			connection.queue_packet(
 				QueuedPacket { deadline, data, kind },
 				self.window.packet_per_window,

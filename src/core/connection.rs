@@ -325,7 +325,7 @@ impl<C: Connection> ManagedConnection<C> {
 							continue
 						}
 						let deadline = self.packet_queue.peek().map_or(false, |p| {
-							p.deadline.map(|d| d <= window.last_now).unwrap_or(true)
+							p.deadline <= window.last_now
 						});
 						if deadline {
 							if let Some(packet) = self.packet_queue.pop() {
