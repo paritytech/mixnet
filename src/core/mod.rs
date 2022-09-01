@@ -350,13 +350,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			)?;
 		} else {
 			return Err(Error::Unreachable(data))
-			// TODO if in topology, try dial and add to local size restricted heap
-			/*		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
-						return Err(Error::QueueFull)
-					}
-					let deadline = Some(Instant::now() + delay);
-					self.packet_queue.push(QueuedPacket { deadline, data, recipient });
-			*/
 		}
 		Ok(())
 	}
@@ -469,15 +462,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let packet = sphinx::new_surb_packet(first_key, chunks.remove(0).into_vec(), header)
 			.map_err(Error::SphinxError)?;
 		let dest = first_node;
-		if self.topology.neighbors(&self.local_id).is_some() {
-			// TODO is routing function
+		if self.topology.is_routing(&self.local_id) {
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(dest, packet, delay, PacketType::Surbs)?;
 		} else {
-			// TODO this would need to attempt dial (or just
-			// generate surb passing by same peer as the one we
-			// just received: means surb reply should be done
-			// quickly).
 			self.queue_external_packet(dest, packet, PacketType::Surbs)?;
 		}
 		Ok(())

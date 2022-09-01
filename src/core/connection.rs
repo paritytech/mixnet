@@ -324,9 +324,10 @@ impl<C: Connection> ManagedConnection<C> {
 							}
 							continue
 						}
-						let deadline = self.packet_queue.peek().map_or(false, |p| {
-							p.deadline <= window.last_now
-						});
+						let deadline = self
+							.packet_queue
+							.peek()
+							.map_or(false, |p| p.deadline <= window.last_now);
 						if deadline {
 							if let Some(packet) = self.packet_queue.pop() {
 								self.next_packet = Some((packet.data.into_vec(), packet.kind));

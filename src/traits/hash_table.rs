@@ -251,28 +251,6 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		}
 	}
 
-	/// For a given peer return a list of peers it is supposed to be connected to.
-	/// Return `None` if peer is unknown to the topology.
-	fn neighbors(&self, from: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-		if !self.is_routing(from) {
-			return None
-		}
-		if from == &self.local_id {
-			Some(
-				self.routing_table
-					.connected_to
-					.iter()
-					.filter_map(|k| {
-						self.authorities_tables.get(k).map(|table| (*k, table.public_key))
-					})
-					.collect(),
-			)
-		} else {
-			// unused, random_paths directly implemented.
-			unimplemented!()
-		}
-	}
-
 	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
 		if &self.local_id == from {
 			if self.routing {

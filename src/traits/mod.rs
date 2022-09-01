@@ -57,10 +57,6 @@ pub trait Topology: Sized {
 		send_options: &SendOptions,
 	) -> Option<(MixPeerId, MixPublicKey)>;
 
-	/// For a given peer return a list of peers it is supposed to be connected to.
-	/// Return `None` if peer is not routing.
-	fn neighbors(&self, id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>>;
-
 	/// Check if a peer is in topology, do not need to be connected.
 	/// TODO rename can_route
 	fn is_routing(&self, id: &MixPeerId) -> bool;
@@ -170,11 +166,6 @@ impl Topology for NoTopology {
 			Some(key) => Ok(vec![vec![(*recipient.0, *key)]; count]),
 			_ => Err(Error::NoPath(Some(*recipient.0))),
 		}
-	}
-
-	// TODO consider remplacing with `my_connected_neighbors` or removing
-	fn neighbors(&self, _id: &MixPeerId) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-		None
 	}
 
 	// first hop that allow external node connection.
