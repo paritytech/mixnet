@@ -50,7 +50,7 @@ pub(crate) struct ManagedConnection<C> {
 	connection: C,
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
-	handshake_sent: bool,
+	handshake_sent: bool, // TODO put in ConnectedKind
 	kind: ConnectedKind,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
 	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
@@ -168,7 +168,8 @@ impl<C: Connection> ManagedConnection<C> {
 
 	// return packet if already sending one.
 	pub fn try_queue_send_packet(&mut self, packet: Vec<u8>) -> Option<Vec<u8>> {
-		if !self.is_ready() {
+		if !self.kind.is_mixnet_connected() {
+			// TODO queue if pending handshak!!
 			log::error!(target: "mixnet", "Peer {:?} not ready, dropping a packet", self.network_id);
 			return None
 		}
@@ -181,7 +182,7 @@ impl<C: Connection> ManagedConnection<C> {
 		topology: &mut impl Handshake,
 		peers: &PeerCount,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
-		if self.handshake_received() {
+		if !self.handshake_sent {
 			// ignore
 			return Poll::Pending
 		}
@@ -194,6 +195,7 @@ impl<C: Connection> ManagedConnection<C> {
 				{
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
+					self.handshake_sent = false;
 					Poll::Ready(Ok((peer_id, pk)))
 				} else {
 					log::trace!(target: "mixnet", "Invalid handshake from peer, closing: {:?}", self.network_id);
@@ -214,7 +216,7 @@ impl<C: Connection> ManagedConnection<C> {
 		cx: &mut Context,
 		current_window: Wrapping<usize>,
 	) -> Poll<Result<Packet, ()>> {
-		if !self.is_ready() {
+		if !self.kind.is_mixnet_connected() {
 			// this is actually unreachable but ignore it.
 			return Poll::Pending
 		}
@@ -295,7 +297,7 @@ impl<C: Connection> ManagedConnection<C> {
 		peers: &mut PeerCount,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
-		if !self.is_ready() {
+		if !self.kind.is_mixnet_connected() {
 			let mut result = Poll::Pending;
 			match self.try_recv_handshake(cx, topology, peers) {
 				Poll::Ready(Ok(key)) => {
@@ -318,10 +320,8 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			return result
 		} else if let Some(peer_id) = self.mixnet_id {
-			// TODO this could be a poll on channel.
-			if matches!(self.kind, ConnectedKind::PendingHandshake) ||
-				topology.changed_routing(&peer_id)
-			{
+			// TODO this could be a poll on a channel.
+			if self.kind == ConnectedKind::PendingHandshake || topology.changed_routing(&peer_id) {
 				let old_kind = self.kind;
 				self.kind = peers.add_peer(local_id, &peer_id, topology);
 				peers.remove_peer(old_kind);
@@ -361,7 +361,7 @@ impl<C: Connection> ManagedConnection<C> {
 								self.next_packet = Some((packet.data.into_vec(), packet.kind));
 							}
 						} else if let Some(key) = self.public_key {
-							if routing && topology.routing_to(local_id, &peer_id) {
+							if routing && self.kind.routing_forward() {
 								self.next_packet = crate::core::cover_message_to(&peer_id, key)
 									.map(|p| (p.into_vec(), PacketType::Cover));
 								if self.next_packet.is_none() {
@@ -382,9 +382,11 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 
 			// Limit reception.
-			let (current, external) = if topology.routing_to(&peer_id, local_id) {
+			let (current, external) = if self.kind.routing_receive() {
 				(window.current_packet_limit, false)
 			} else {
+				// TODO should cache topology with kind (and recalc when one new external,
+				// not only when changed_routing)
 				let (n, d) = topology.bandwidth_external(&peer_id, peers).unwrap_or((0, 1));
 				((window.current_packet_limit * n) / d, true)
 			};

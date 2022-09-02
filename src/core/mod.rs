@@ -71,7 +71,7 @@ pub struct TransmitInfo {
 }
 
 /// TODO not pub when stored in connection and not in topo
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum ConnectedKind {
 	PendingHandshake,
 	Consumer,
@@ -80,6 +80,29 @@ pub enum ConnectedKind {
 	RoutingReceive,
 	RoutingReceiveForward,
 	Disconnected,
+}
+
+impl ConnectedKind {
+	fn is_mixnet_connected(&self) -> bool {
+		match self {
+			ConnectedKind::PendingHandshake | ConnectedKind::Disconnected => false,
+			_ => true,
+		}
+	}
+
+	fn routing_forward(&self) -> bool {
+		match self {
+			ConnectedKind::RoutingForward | ConnectedKind::RoutingReceiveForward => true,
+			_ => false,
+		}
+	}
+
+	fn routing_receive(&self) -> bool {
+		match self {
+			ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward => true,
+			_ => false,
+		}
+	}
 }
 
 /// Sphinx packet struct, goal of this struct
