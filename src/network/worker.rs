@@ -29,8 +29,7 @@ use crate::{
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
-	future::{poll_fn, Either},
-	FutureExt, Sink, SinkExt, Stream, StreamExt,
+	Sink, SinkExt, Stream, StreamExt,
 };
 use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
@@ -88,20 +87,11 @@ impl<T: Configuration> MixnetWorker<T> {
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
-		let mixnet = &mut self.mixnet;
-		let worker_in = &mut self.worker_in;
-		let mixnet_future = poll_fn(|cx| mixnet.poll(cx, &mut self.worker_out));
-		let commands_future = poll_fn(|cx| worker_in.poll_next_unpin(cx));
-		if let Poll::Ready(either) =
-			futures::future::select(mixnet_future, commands_future).poll_unpin(cx)
-		{
-			Poll::Ready(match either {
-				Either::Left((mixnet, _)) => self.on_mixnet(mixnet),
-				Either::Right((command, _)) => self.on_command(command),
-			})
-		} else {
-			Poll::Pending
+		if let Poll::Ready(event) = self.worker_in.poll_next_unpin(cx) {
+			// consumming worker command first TODO select version makes all slower
+			return Poll::Ready(self.on_command(event));
 		}
+		self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet))
 	}
 
 	fn on_mixnet(&mut self, result: MixEvent) -> bool {
