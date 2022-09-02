@@ -29,7 +29,8 @@ use crate::{
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
-	Sink, SinkExt, Stream, StreamExt,
+	future::{poll_fn, Either},
+	FutureExt, Sink, SinkExt, Stream, StreamExt,
 };
 use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
@@ -87,9 +88,40 @@ impl<T: Configuration> MixnetWorker<T> {
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
-		let mut result = Poll::Pending;
-		match self.worker_in.poll_next_unpin(cx) {
-			Poll::Ready(Some(message)) => match message.0 {
+		let mixnet = &mut self.mixnet;
+		let worker_in = &mut self.worker_in;
+		let mixnet_future = poll_fn(|cx| mixnet.poll(cx, &mut self.worker_out));
+		let commands_future = poll_fn(|cx| worker_in.poll_next_unpin(cx));
+		if let Poll::Ready(either) =
+			futures::future::select(mixnet_future, commands_future).poll_unpin(cx)
+		{
+			Poll::Ready(match either {
+				Either::Left((mixnet, _)) => self.on_mixnet(mixnet),
+				Either::Right((command, _)) => self.on_command(command),
+			})
+		} else {
+			Poll::Pending
+		}
+	}
+
+	fn on_mixnet(&mut self, result: MixEvent) -> bool {
+		match result {
+			MixEvent::None => (),
+			MixEvent::Disconnected(peers) =>
+				for peer in peers.into_iter() {
+					if let Err(e) =
+						self.worker_out.start_send_unpin(MixnetEvent::Disconnected(peer))
+					{
+						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+					}
+				},
+		}
+		true
+	}
+
+	fn on_command(&mut self, result: Option<WorkerCommand>) -> bool {
+		match result {
+			Some(message) => match message.0 {
 				Command::RegisterMessage(peer_id, message, send_options) => {
 					match self.mixnet.register_message(peer_id, None, message, send_options) {
 						Ok(()) => (),
@@ -97,7 +129,7 @@ impl<T: Configuration> MixnetWorker<T> {
 							log::error!(target: "mixnet", "Error registering message: {:?}", e);
 						},
 					}
-					return Poll::Ready(true)
+					true
 				},
 				Command::RegisterSurbs(message, surb) => {
 					match self.mixnet.register_surb(message, *surb) {
@@ -106,7 +138,7 @@ impl<T: Configuration> MixnetWorker<T> {
 							log::error!(target: "mixnet", "Error registering surb: {:?}", e);
 						},
 					}
-					return Poll::Ready(true)
+					true
 				},
 				Command::AddPeer(peer, inbound, outbound, close_handler) => {
 					if let Some(_con) = self.mixnet.connected_mut(&peer) {
@@ -116,46 +148,28 @@ impl<T: Configuration> MixnetWorker<T> {
 						self.mixnet.insert_connection(peer, con);
 					}
 					log::trace!(target: "mixnet", "added peer out: {:?}", peer);
+					true
 				},
 				Command::AddPeerInbound(peer, inbound) => {
 					if let Some(con) = self.mixnet.connected_mut(&peer) {
 						log::trace!(target: "mixnet", "Added inbound to peer: {:?}", peer);
 						con.set_inbound(inbound);
-						// connection may have been turn pending waiting on this stream,
-						// ensure is processed next.
-						cx.waker().wake_by_ref();
 					} else {
 						log::warn!(target: "mixnet", "Received inbound for dropped peer: {:?}", peer);
 					}
+					true
 				},
 				Command::RemoveConnectedPeer(peer) => {
 					self.disconnect_peer(&peer);
+					true
 				},
 			},
-			Poll::Ready(None) => {
+			None => {
 				// handler dropped, shutting down.
 				log::debug!(target: "mixnet", "Worker input closed, shutting down.");
-				return Poll::Ready(false)
+				false
 			},
-			_ => (),
 		}
-
-		if let Poll::Ready(e) = self.mixnet.poll(cx, &mut self.worker_out) {
-			result = Poll::Ready(true);
-			match e {
-				MixEvent::None => (),
-				MixEvent::Disconnected(peers) =>
-					for peer in peers.into_iter() {
-						if let Err(e) =
-							self.worker_out.start_send_unpin(MixnetEvent::Disconnected(peer))
-						{
-							log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-						}
-					},
-			}
-		}
-
-		result
 	}
 
 	fn disconnect_peer(&mut self, peer: &PeerId) {

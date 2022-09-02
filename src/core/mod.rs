@@ -83,25 +83,16 @@ pub enum ConnectedKind {
 }
 
 impl ConnectedKind {
-	fn is_mixnet_connected(&self) -> bool {
-		match self {
-			ConnectedKind::PendingHandshake | ConnectedKind::Disconnected => false,
-			_ => true,
-		}
+	fn is_mixnet_connected(self) -> bool {
+		!matches!(self, ConnectedKind::PendingHandshake | ConnectedKind::Disconnected)
 	}
 
-	fn routing_forward(&self) -> bool {
-		match self {
-			ConnectedKind::RoutingForward | ConnectedKind::RoutingReceiveForward => true,
-			_ => false,
-		}
+	fn routing_forward(self) -> bool {
+		matches!(self, ConnectedKind::RoutingForward | ConnectedKind::RoutingReceiveForward)
 	}
 
-	fn routing_receive(&self) -> bool {
-		match self {
-			ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward => true,
-			_ => false,
-		}
+	fn routing_receive(self) -> bool {
+		matches!(self, ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward)
 	}
 }
 
