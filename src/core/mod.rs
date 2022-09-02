@@ -1002,24 +1002,28 @@ impl PeerCount {
 	}
 
 	fn remove_peer(&mut self, kind: ConnectedKind) {
-		self.nb_connected -= 1;
 		match kind {
 			ConnectedKind::PendingHandshake => {
 				self.nb_pending_handshake -= 1;
 			},
 			ConnectedKind::Consumer => {
+				self.nb_connected -= 1;
 				self.nb_connected_consumer -= 1;
 			},
 			ConnectedKind::External => {
+				self.nb_connected -= 1;
 				self.nb_connected_external -= 1;
 			},
 			ConnectedKind::RoutingReceive => {
+				self.nb_connected -= 1;
 				self.nb_connected_receive_routing -= 1;
 			},
 			ConnectedKind::RoutingForward => {
+				self.nb_connected -= 1;
 				self.nb_connected_forward_routing -= 1;
 			},
 			ConnectedKind::RoutingReceiveForward => {
+				self.nb_connected -= 1;
 				self.nb_connected_forward_routing -= 1;
 				self.nb_connected_receive_routing -= 1;
 			},
