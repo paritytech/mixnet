@@ -24,9 +24,9 @@
 //! of packet.
 
 use crate::{
-	core::{PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
+	core::{ConnectedKind, PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
 	traits::{Configuration, Connection, Handshake, Topology},
-	ConnectedKind, MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
+	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -443,7 +443,7 @@ impl<C: Connection> ManagedConnection<C> {
 		})
 	}
 
-	pub fn disconnected_kind(&mut self) -> ConnectedKind {
+	pub(super) fn disconnected_kind(&mut self) -> ConnectedKind {
 		let kind = self.kind;
 		self.handshake_sent = false;
 		self.handshake_received = false;

@@ -70,9 +70,8 @@ pub struct TransmitInfo {
 	surb_id: Option<ReplayTag>,
 }
 
-/// TODO not pub when stored in connection and not in topo
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub enum ConnectedKind {
+enum ConnectedKind {
 	PendingHandshake,
 	Consumer,
 	External,
