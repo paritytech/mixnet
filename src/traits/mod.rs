@@ -100,6 +100,12 @@ pub trait Topology: Sized {
 	/// On disconnect.
 	fn disconnected(&mut self, id: &MixPeerId);
 
+	/// Check (cost should be low) if established connection with peer did change.
+	///
+	/// For instance on a change of allowed routing set.
+	/// If a change occurs, only return true on first call.
+	fn changed_routing(&mut self, with: &MixPeerId) -> bool;
+
 	/// Is peer allowed to connect to our node.
 	/// Should usually be call by `check_handshake`.
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool;
@@ -132,6 +138,10 @@ pub struct NoTopology {
 
 impl Topology for NoTopology {
 	fn can_route(&self, _id: &MixPeerId) -> bool {
+		false
+	}
+
+	fn changed_routing(&mut self, _with: &MixPeerId) -> bool {
 		false
 	}
 

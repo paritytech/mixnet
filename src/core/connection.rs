@@ -26,7 +26,7 @@
 use crate::{
 	core::{PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
 	traits::{Configuration, Connection, Handshake, Topology},
-	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
+	ConnectedKind, MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -51,6 +51,7 @@ pub(crate) struct ManagedConnection<C> {
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
 	handshake_sent: bool,
+	kind: ConnectedKind,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
 	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
 	packet_queue: BinaryHeap<QueuedPacket>,
@@ -69,11 +70,14 @@ impl<C: Connection> ManagedConnection<C> {
 		connection: C,
 		current_window: Wrapping<usize>,
 		with_stats: bool,
+		peers: &mut PeerCount,
 	) -> Self {
+		peers.nb_pending_handshake += 1;
 		Self {
 			connection,
 			mixnet_id: None,
 			network_id,
+			kind: ConnectedKind::PendingHandshake,
 			read_timeout: Delay::new(READ_TIMEOUT),
 			next_packet: None,
 			current_window,
@@ -271,6 +275,16 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
+	fn broken_connection(
+		&mut self,
+		topology: &mut impl Configuration,
+		peers: &mut PeerCount,
+	) -> Poll<ConnectionEvent> {
+		peers.remove_peer(self.disconnected_kind());
+		topology.peer_stats(peers);
+		Poll::Ready(ConnectionEvent::Broken)
+	}
+
 	pub(crate) fn poll(
 		&mut self,
 		cx: &mut Context,
@@ -278,7 +292,7 @@ impl<C: Connection> ManagedConnection<C> {
 		handshake: &MixPublicKey,
 		window: &WindowInfo,
 		topology: &mut impl Configuration,
-		peers: &PeerCount,
+		peers: &mut PeerCount,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {
@@ -288,9 +302,10 @@ impl<C: Connection> ManagedConnection<C> {
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
+					// TODO nb_pending_handshake change here
 					result = Poll::Ready(ConnectionEvent::Established(key.0, key.1));
 				},
-				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
+				Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
 				Poll::Pending => (),
 			}
 			match self.try_send_handshake(cx, handshake, topology) {
@@ -298,11 +313,21 @@ impl<C: Connection> ManagedConnection<C> {
 					if matches!(result, Poll::Pending) {
 						result = Poll::Ready(ConnectionEvent::None);
 					},
-				Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
+				Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
 				Poll::Pending => (),
 			}
 			return result
 		} else if let Some(peer_id) = self.mixnet_id {
+			// TODO this could be a poll on channel.
+			if matches!(self.kind, ConnectedKind::PendingHandshake) ||
+				topology.changed_routing(&peer_id)
+			{
+				let old_kind = self.kind;
+				self.kind = peers.add_peer(local_id, &peer_id, topology);
+				peers.remove_peer(old_kind);
+				topology.peer_stats(peers);
+			}
+
 			let routing = topology.can_route(local_id);
 
 			// Forward first.
@@ -351,7 +376,7 @@ impl<C: Connection> ManagedConnection<C> {
 							}
 						}
 					},
-					Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
+					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
 					Poll::Pending => break,
 				}
 			}
@@ -369,7 +394,7 @@ impl<C: Connection> ManagedConnection<C> {
 						self.recv_in_window += 1;
 						result = Poll::Ready(ConnectionEvent::Received((packet, external)));
 					},
-					Poll::Ready(Err(())) => return Poll::Ready(ConnectionEvent::Broken),
+					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
 					Poll::Pending => (),
 				}
 			}
@@ -403,7 +428,7 @@ impl<C: Connection> ManagedConnection<C> {
 		match self.read_timeout.poll_unpin(cx) {
 			Poll::Ready(()) => {
 				log::trace!(target: "mixnet", "Peer, nothing received for too long.");
-				return Poll::Ready(ConnectionEvent::Broken)
+				return self.broken_connection(topology, peers)
 			},
 			Poll::Pending => (),
 		}
@@ -419,6 +444,12 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 			&mut stats.0
 		})
+	}
+
+	pub fn disconnected_kind(&mut self) -> ConnectedKind {
+		let kind = self.kind;
+		self.kind = ConnectedKind::Disconnected;
+		kind
 	}
 }
 

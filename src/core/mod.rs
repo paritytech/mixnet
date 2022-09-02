@@ -71,12 +71,15 @@ pub struct TransmitInfo {
 }
 
 /// TODO not pub when stored in connection and not in topo
+#[derive(Clone, Copy)]
 pub enum ConnectedKind {
+	PendingHandshake,
 	Consumer,
 	External,
 	RoutingForward,
 	RoutingReceive,
 	RoutingReceiveForward,
+	Disconnected,
 }
 
 /// Sphinx packet struct, goal of this struct
@@ -198,8 +201,8 @@ pub struct Mixnet<T, C> {
 	secret: MixSecretKey,
 	local_id: MixPeerId,
 	connected_peers: HashMap<NetworkPeerId, ManagedConnection<C>>,
-	peers_stats: PeerCount,
-	handshaken_peers: HashMap<MixPeerId, (NetworkPeerId, ConnectedKind)>,
+	peer_stats: PeerCount,
+	handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
 	// Message waiting for surb.
@@ -252,7 +255,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			local_id: config.local_id,
 			fragments: MessageCollection::new(),
 			connected_peers: Default::default(),
-			peers_stats: Default::default(),
+			peer_stats: Default::default(),
 			handshaken_peers: Default::default(),
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
@@ -282,14 +285,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			self.secret = priv_key;
 		}
 		// disconnect all (need a new handshake).
-		for (_mix_id, connection) in std::mem::take(&mut self.connected_peers).into_iter() {
+		for (_mix_id, mut connection) in std::mem::take(&mut self.connected_peers).into_iter() {
+			self.peer_stats.remove_peer(connection.disconnected_kind());
 			if let Some(mix_id) = connection.mixnet_id() {
-				if let Some((_, kind)) = self.handshaken_peers.remove(mix_id) {
-					self.peers_stats.remove_peer(kind, &self.topology);
-				}
+				self.handshaken_peers.remove(mix_id);
 				self.topology.disconnected(mix_id);
 			}
 		}
+		self.topology.peer_stats(&self.peer_stats);
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
@@ -298,10 +301,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			connection,
 			self.window.current,
 			self.window.stats.is_some(),
+			&mut self.peer_stats,
 		);
 		self.connected_peers.insert(peer, connection);
-		self.peers_stats.nb_pending_handshake += 1;
-		self.topology.peer_stats(&self.peers_stats);
+		self.topology.peer_stats(&self.peer_stats);
 	}
 
 	pub fn connected_mut(&mut self, peer: &NetworkPeerId) -> Option<&mut C> {
@@ -326,7 +329,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		if let Some(connection) = self
 			.handshaken_peers
 			.get(&recipient)
-			.and_then(|r| self.connected_peers.get_mut(&r.0))
+			.and_then(|r| self.connected_peers.get_mut(r))
 		{
 			let deadline = self.window.last_now + delay;
 			connection.queue_packet(
@@ -334,7 +337,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				self.window.packet_per_window,
 				&self.local_id,
 				&self.topology,
-				&self.peers_stats,
+				&self.peer_stats,
 				false,
 			)?;
 		} else {
@@ -354,7 +357,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		if let Some(connection) = self
 			.handshaken_peers
 			.get(&recipient)
-			.and_then(|r| self.connected_peers.get_mut(&r.0))
+			.and_then(|r| self.connected_peers.get_mut(r))
 		{
 			let deadline = self.window.last_now;
 			connection.queue_packet(
@@ -362,7 +365,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				self.window.packet_per_window,
 				&self.local_id,
 				&self.topology,
-				&self.peers_stats,
+				&self.peer_stats,
 				true,
 			)?;
 		} else {
@@ -557,15 +560,11 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	/// Should be called when a peer is disconnected.
 	pub fn remove_connected_peer(&mut self, id: &NetworkPeerId) {
-		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|c| c.mixnet_id().cloned()) {
-			if let Some((_, kind)) = self.handshaken_peers.remove(&mix_id) {
-				self.peers_stats.remove_peer(kind, &self.topology);
-			} else {
-				if self.peers_stats.nb_pending_handshake > 0 {
-					self.peers_stats.nb_pending_handshake -= 1;
-				}
-				self.topology.peer_stats(&self.peers_stats);
-			}
+		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|mut c| {
+			self.peer_stats.remove_peer(c.disconnected_kind());
+			c.mixnet_id().cloned()
+		}) {
+			self.handshaken_peers.remove(&mix_id);
 			self.topology.disconnected(&mix_id);
 		}
 	}
@@ -634,7 +633,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						}
 					}
 
-					self.topology.window_stats(stats, &self.peers_stats);
+					self.topology.window_stats(stats, &self.peer_stats);
 				}
 
 				self.window.delay.reset(WINDOW_DELAY);
@@ -667,18 +666,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				&self.public,
 				&self.window,
 				&mut self.topology,
-				&self.peers_stats,
+				&mut self.peer_stats,
 			) {
-				Poll::Ready(ConnectionEvent::Established(peer_id, key)) => {
+				Poll::Ready(ConnectionEvent::Established(_peer_id, key)) => {
 					all_pending = false;
 					if let Some(sphinx_id) = connection.mixnet_id() {
-						if self.peers_stats.nb_pending_handshake > 0 {
-							self.peers_stats.nb_pending_handshake -= 1;
-						}
 						self.topology.connected(*sphinx_id, key);
-						let kind =
-							self.peers_stats.add_peer(&self.local_id, &peer_id, &self.topology);
-						self.handshaken_peers.insert(*sphinx_id, (connection.network_id(), kind));
+						self.topology.peer_stats(&self.peer_stats);
+						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
 					}
 					if let Err(e) = results
 						.start_send_unpin(MixnetEvent::Connected(connection.network_id(), key))
@@ -723,7 +718,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 				self.remove_connected_peer(peer);
 			}
-
 			return Poll::Ready(MixEvent::Disconnected(disconnected))
 		}
 
@@ -982,7 +976,7 @@ impl PeerCount {
 		topology: &T,
 	) -> ConnectedKind {
 		self.nb_connected += 1;
-		let kind = if topology.can_route(peer) {
+		if topology.can_route(peer) {
 			if !topology.can_route(local_id) {
 				self.nb_connected_consumer += 1;
 				ConnectedKind::Consumer
@@ -1004,14 +998,15 @@ impl PeerCount {
 		} else {
 			self.nb_connected_external += 1;
 			ConnectedKind::External
-		};
-		topology.peer_stats(self);
-		kind
+		}
 	}
 
-	fn remove_peer<T: Configuration>(&mut self, kind: ConnectedKind, topology: &T) {
+	fn remove_peer(&mut self, kind: ConnectedKind) {
 		self.nb_connected -= 1;
 		match kind {
+			ConnectedKind::PendingHandshake => {
+				self.nb_pending_handshake -= 1;
+			},
 			ConnectedKind::Consumer => {
 				self.nb_connected_consumer -= 1;
 			},
@@ -1028,8 +1023,8 @@ impl PeerCount {
 				self.nb_connected_forward_routing -= 1;
 				self.nb_connected_receive_routing -= 1;
 			},
+			ConnectedKind::Disconnected => (),
 		}
-		topology.peer_stats(self);
 	}
 }
 

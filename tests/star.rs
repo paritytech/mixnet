@@ -246,6 +246,11 @@ impl Topology for TopologyGraph {
 		Some((1, 1))
 	}
 
+	fn changed_routing(&mut self, _with: &MixPeerId) -> bool {
+		// fix topo
+		false
+	}
+
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool {
 		if let Some(local_id) = self.local_id.as_ref() {
 			self.routing_to(local_id, peer_id) ||

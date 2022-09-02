@@ -95,6 +95,8 @@ pub struct TopologyHashTable<C: Configuration> {
 	// TODO rename potential_routing_peers_set
 	authorities: BTreeSet<MixPeerId>,
 
+	changed_routing: BTreeSet<MixPeerId>,
+
 	// TODO rename routing_peers
 	// This is only routing authorities we got info for.
 	authorities_tables: BTreeMap<MixPeerId, AuthorityTable<C::Version>>,
@@ -164,6 +166,10 @@ pub struct AuthorityTable<V> {
 }
 
 impl<C: Configuration> Topology for TopologyHashTable<C> {
+	fn changed_routing(&mut self, with: &MixPeerId) -> bool {
+		self.changed_routing.remove(with)
+	}
+
 	fn first_hop_nodes_external(
 		&self,
 		from: &MixPeerId,
@@ -458,6 +464,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			local_id,
 			authorities: BTreeSet::new(),
 			connected_nodes: HashSet::new(),
+			changed_routing: BTreeSet::new(),
 			routing: false,
 			authorities_tables: BTreeMap::new(),
 			routing_table,
@@ -589,12 +596,15 @@ impl<C: Configuration> TopologyHashTable<C> {
 			}
 		}
 
-		self.authorities.clear();
+		let mut prev =
+			std::mem::replace(&mut self.changed_routing, std::mem::take(&mut self.authorities));
+		self.changed_routing.append(&mut prev);
 		self.authorities_tables.clear();
 		self.routing = false;
 
 		for peer_id in set {
 			self.authorities.insert(*peer_id);
+			self.changed_routing.insert(*peer_id);
 			if &self.local_id == peer_id {
 				debug!(target: "mixnet", "In new routing set, routing.");
 				self.routing = true;
@@ -664,6 +674,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			// peer neighbors (at least from the connected one we know)...
 			// TODO number of non connected neighbor that should be.
 			self.authorities_tables.insert(with, new_table);
+			self.changed_routing.insert(with);
 			self.paths.clear();
 			self.paths_depth = 0;
 			log::debug!(target: "mixnet", "current routes: {:?}", self.authorities_tables);
