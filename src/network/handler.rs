@@ -21,7 +21,6 @@
 // libp2p connection handler for the mixnet protocol.
 
 use crate::network::{protocol, Command, SinkToWorker};
-use crate::SphinxConstants;
 use futures::prelude::*;
 use libp2p_core::{upgrade::NegotiationError, PeerId, UpgradeError};
 use libp2p_swarm::{
@@ -81,7 +80,7 @@ impl Error for Failure {
 }
 
 /// Protocol handler that handles dispatching messages.
-pub struct Handler<S: SphinxConstants> {
+pub struct Handler {
 	/// Configuration options.
 	config: Config,
 	/// Failures that are pending to be processed by `poll()`.
@@ -91,7 +90,7 @@ pub struct Handler<S: SphinxConstants> {
 	/// Tracks the state of our handler.
 	state: State,
 	/// Send connection infos and streams to worker.
-	mixnet_worker_sink: SinkToWorker<S>,
+	mixnet_worker_sink: SinkToWorker,
 	/// Receive connection close event when the connection sent to mixnet is dropped.
 	connection_closed: Option<futures::channel::oneshot::Receiver<()>>,
 

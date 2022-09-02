@@ -27,7 +27,7 @@ mod fragment;
 mod sphinx;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
-pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance, SphinxConstants};
+pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection},
@@ -55,6 +55,9 @@ pub type MixSecretKey = sphinx::StaticSecret;
 
 /// Length of `MixPublicKey`
 pub const PUBLIC_KEY_LEN: usize = 32;
+
+/// Size of a mixnet packet.
+pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
 /// Size of the polling window in time.
 pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
@@ -98,9 +101,9 @@ impl ConnectedKind {
 pub struct Packet(Vec<u8>);
 
 impl Packet {
-	fn new<S: SphinxConstants>(header: &[u8], payload: &[u8]) -> Result<Self, SphinxError> {
-		let mut packet = Vec::with_capacity(S::PACKET_SIZE);
-		if header.len() != S::HEADER_SIZE {
+	fn new(header: &[u8], payload: &[u8]) -> Result<Self, SphinxError> {
+		let mut packet = Vec::with_capacity(PACKET_SIZE);
+		if header.len() != sphinx::HEADER_SIZE {
 			return Err(SphinxError::InvalidPacket)
 		}
 		packet.extend_from_slice(header);
@@ -108,8 +111,8 @@ impl Packet {
 		Self::from_vec(packet)
 	}
 
-	pub fn from_vec<S: SphinxConstants>(data: Vec<u8>) -> Result<Self, SphinxError> {
-		if data.len() == S::PACKET_SIZE {
+	pub fn from_vec(data: Vec<u8>) -> Result<Self, SphinxError> {
+		if data.len() == PACKET_SIZE {
 			Ok(Packet(data))
 		} else {
 			Err(SphinxError::InvalidPacket)
@@ -246,7 +249,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
 		let packet_duration_nanos =
-			(T::PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
+			(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
 		let average_traffic_delay = Duration::from_nanos(packet_duration_nanos);
 		let packet_per_window = (WINDOW_DELAY.as_nanos() / packet_duration_nanos as u128) as usize;
 		debug_assert!(packet_per_window > 0);
@@ -541,7 +544,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				}
 			},
 			Ok(Unwrapped::SurbsQuery(encoded_surb, payload)) => {
-				debug_assert!(encoded_surb.len() == T::SURBS_REPLY_SIZE);
+				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
 				if let Some(m) = self.fragments.insert_fragment(
 					payload,
 					MessageType::WithSurbs(Box::new(encoded_surb.into())),
@@ -592,7 +595,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		};
 
 		let num_hops = num_hops.unwrap_or(self.num_hops);
-		if num_hops > T::MAX_HOPS {
+		if num_hops > sphinx::MAX_HOPS {
 			return Err(Error::TooManyHops)
 		}
 
@@ -602,7 +605,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			recipient,
 			count,
 			num_hops,
-			T::MAX_HOPS,
+			sphinx::MAX_HOPS,
 			last_query_if_surb,
 		)
 	}

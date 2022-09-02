@@ -26,7 +26,7 @@
 use crate::{
 	core::{ConnectedKind, PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
 	traits::{Configuration, Connection, Handshake, Topology},
-	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, SphinxConstants,
+	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -205,7 +205,7 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
-	fn try_recv_packet<S: SphinxConstants>(
+	fn try_recv_packet(
 		&mut self,
 		cx: &mut Context,
 		current_window: Wrapping<usize>,
@@ -214,7 +214,7 @@ impl<C: Connection> ManagedConnection<C> {
 			// this is actually unreachable but ignore it.
 			return Poll::Pending
 		}
-		match self.connection.try_recv(cx, S::PACKET_SIZE) {
+		match self.connection.try_recv(cx, PACKET_SIZE) {
 			Poll::Ready(Ok(Some(packet))) => {
 				self.read_timeout.reset(READ_TIMEOUT);
 				log::trace!(target: "mixnet", "Packet received from {:?}", self.network_id);

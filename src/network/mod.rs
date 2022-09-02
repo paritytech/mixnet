@@ -29,7 +29,7 @@ mod worker;
 
 pub(crate) use crate::network::worker::Command;
 pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
-use crate::{core::SurbsPayload, traits::ClonableSink, MixPeerId, MixnetEvent, SendOptions, SphinxConstants};
+use crate::{core::SurbsPayload, traits::ClonableSink, MixPeerId, MixnetEvent, SendOptions};
 use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -44,7 +44,7 @@ use std::{
 pub use worker::MixnetWorker;
 
 pub type StreamFromWorker = Box<dyn Stream<Item = MixnetEvent> + Unpin + Send>;
-pub type SinkToWorker<S: SphinxConstants> = Box<dyn ClonableSink<S>>;
+pub type SinkToWorker = Box<dyn ClonableSink>;
 pub type WorkerChannels = (WorkerSink2, worker::WorkerStream);
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
