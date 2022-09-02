@@ -242,7 +242,6 @@ pub struct WindowInfo {
 	current: Wrapping<usize>,
 	current_packet_limit: usize,
 	last_now: Instant,
-	delay: Delay,
 	stats: Option<WindowStats>,
 }
 
@@ -278,7 +277,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				last_now: now,
 				current: Wrapping(0),
 				current_packet_limit: 0,
-				delay: Delay::new(WINDOW_DELAY),
 				packet_per_window,
 				stats,
 			},
@@ -623,10 +621,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			let now = Instant::now();
 			self.window.last_now = now;
-			// if everything is pending, window delay will wake up context switch window,
-			// and log insufficient receive messages.
-			if self.window.delay.poll_unpin(cx).is_ready() {
-				let duration = now - self.window.current_start;
+			let duration = now - self.window.current_start;
+			if duration > WINDOW_DELAY {
 				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
 
 				self.window.current += Wrapping(nb_spent);
@@ -647,11 +643,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					}
 
 					self.topology.window_stats(stats, &self.peer_stats);
-				}
-
-				self.window.delay.reset(WINDOW_DELAY);
-				while !matches!(self.window.delay.poll_unpin(cx), Poll::Pending) {
-					self.window.delay.reset(WINDOW_DELAY);
 				}
 			}
 
