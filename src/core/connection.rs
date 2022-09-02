@@ -50,8 +50,9 @@ pub(crate) struct ManagedConnection<C> {
 	connection: C,
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
-	handshake_sent: bool, // TODO put in ConnectedKind
 	kind: ConnectedKind,
+	handshake_sent: bool,
+	handshake_received: bool,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
 	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
 	packet_queue: BinaryHeap<QueuedPacket>,
@@ -83,19 +84,12 @@ impl<C: Connection> ManagedConnection<C> {
 			current_window,
 			public_key: None,
 			handshake_sent: false,
+			handshake_received: false,
 			sent_in_window: 0,
 			recv_in_window: 0,
 			packet_queue: Default::default(),
 			stats: with_stats.then(Default::default),
 		}
-	}
-
-	fn handshake_received(&self) -> bool {
-		self.public_key.is_some() && self.mixnet_id.is_some()
-	}
-
-	fn is_ready(&self) -> bool {
-		self.handshake_sent && self.handshake_received()
 	}
 
 	pub fn connection_mut(&mut self) -> &mut C {
@@ -169,7 +163,7 @@ impl<C: Connection> ManagedConnection<C> {
 	// return packet if already sending one.
 	pub fn try_queue_send_packet(&mut self, packet: Vec<u8>) -> Option<Vec<u8>> {
 		if !self.kind.is_mixnet_connected() {
-			// TODO queue if pending handshak!!
+			// TODO queue if pending handshake or a given number if trying reco!!
 			log::error!(target: "mixnet", "Peer {:?} not ready, dropping a packet", self.network_id);
 			return None
 		}
@@ -182,7 +176,7 @@ impl<C: Connection> ManagedConnection<C> {
 		topology: &mut impl Handshake,
 		peers: &PeerCount,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
-		if !self.handshake_sent {
+		if self.handshake_received {
 			// ignore
 			return Poll::Pending
 		}
@@ -195,7 +189,7 @@ impl<C: Connection> ManagedConnection<C> {
 				{
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
-					self.handshake_sent = false;
+					self.handshake_received = true;
 					Poll::Ready(Ok((peer_id, pk)))
 				} else {
 					log::trace!(target: "mixnet", "Invalid handshake from peer, closing: {:?}", self.network_id);
@@ -297,7 +291,8 @@ impl<C: Connection> ManagedConnection<C> {
 		peers: &mut PeerCount,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
-		if !self.kind.is_mixnet_connected() {
+		// TODO add a state where we wait peer accept before sending cover?
+		if !(self.handshake_sent && self.handshake_received) {
 			let mut result = Poll::Pending;
 			match self.try_recv_handshake(cx, topology, peers) {
 				Poll::Ready(Ok(key)) => {
@@ -450,6 +445,8 @@ impl<C: Connection> ManagedConnection<C> {
 
 	pub fn disconnected_kind(&mut self) -> ConnectedKind {
 		let kind = self.kind;
+		self.handshake_sent = false;
+		self.handshake_received = false;
 		self.kind = ConnectedKind::Disconnected;
 		kind
 	}
