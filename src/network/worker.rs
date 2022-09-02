@@ -89,7 +89,7 @@ impl<T: Configuration> MixnetWorker<T> {
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		if let Poll::Ready(event) = self.worker_in.poll_next_unpin(cx) {
 			// consumming worker command first TODO select version makes all slower
-			return Poll::Ready(self.on_command(event));
+			return Poll::Ready(self.on_command(event))
 		}
 		self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet))
 	}

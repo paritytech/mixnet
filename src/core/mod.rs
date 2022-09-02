@@ -662,7 +662,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let mut disconnected = Vec::new();
 		let mut recv_packets = Vec::new();
 
-		// TODO shuffled iterator?
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
 			match connection.poll(
 				cx,
