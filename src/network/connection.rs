@@ -20,34 +20,33 @@
 
 //! Network connection.
 
-use crate::PACKET_SIZE;
 use futures::{channel::oneshot::Sender as OneShotSender, AsyncRead, AsyncWrite};
 use std::{
 	pin::Pin,
 	task::{Context, Poll},
 };
-
+use crate::SphinxConstants;
 use crate::traits::Connection as ConnectionT;
 use libp2p_swarm::NegotiatedSubstream;
 
 /// Internal information tracked for an established connection.
-pub struct Connection {
+pub struct Connection<S: SphinxConstants> {
 	inbound: Option<Pin<Box<NegotiatedSubstream>>>,
 	outbound: Pin<Box<NegotiatedSubstream>>,
 	outbound_buffer: Option<(Vec<u8>, usize)>,
 	outbound_flushing: bool,
-	inbound_buffer: (Box<[u8; PACKET_SIZE]>, usize),
+	inbound_buffer: (Box<S::Packet>, usize),
 	// Inform connection handler when connection is dropped.
 	close_handler: Option<OneShotSender<()>>,
 }
 
-impl Drop for Connection {
+impl<S: SphinxConstants> Drop for Connection<S> {
 	fn drop(&mut self) {
 		self.close_handler.take().map(|s| s.send(()));
 	}
 }
 
-impl ConnectionT for Connection {
+impl<S: SphinxConstants> ConnectionT for Connection<S> {
 	fn try_queue_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>> {
 		if self.outbound_buffer.is_some() || self.outbound_flushing {
 			Some(message)
@@ -97,7 +96,7 @@ impl ConnectionT for Connection {
 	}
 
 	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>> {
-		if size > PACKET_SIZE {
+		if size > S::PACKET_SIZE {
 			return Poll::Ready(Err(()))
 		}
 		match self.inbound.as_mut().map(|inbound| {
@@ -135,7 +134,7 @@ impl ConnectionT for Connection {
 	}
 }
 
-impl Connection {
+impl<S: SphinxConstants> Connection<S> {
 	pub fn new(
 		close_handler: OneShotSender<()>,
 		inbound: Option<NegotiatedSubstream>,
@@ -145,7 +144,7 @@ impl Connection {
 			inbound: inbound.map(Box::pin),
 			outbound: Box::pin(outbound),
 			outbound_buffer: None,
-			inbound_buffer: (Box::new([0u8; PACKET_SIZE]), 0),
+			inbound_buffer: (Box::new([0u8; S::PACKET_SIZE]), 0),
 			outbound_flushing: false,
 			close_handler: Some(close_handler),
 		}

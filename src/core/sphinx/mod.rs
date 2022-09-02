@@ -44,13 +44,82 @@ pub type PublicKey = x25519_dalek::PublicKey;
 pub type Delay = u32;
 pub type NodeId = [u8; NODE_ID_SIZE];
 
-type Header = [u8; HEADER_SIZE];
-type RawKey = [u8; KEY_SIZE];
-type NewHeader = (Header, TransmitInfo);
+/// Type for specifying packet maximum number of hop.
+/// It contains associated constant and types, please
+/// only change `MAX_HOPS`.
+///
+/// TODO a macro to instantiate for a given type and a given num_hops
+/// TODO rename to something short (is everywhere in crate)
+pub trait SphinxConstants {
+	/// Maximum hops the packet format supports.
+	const MAX_HOPS: usize;
 
-/// Maximum hops the packet format supports.
-pub const MAX_HOPS: usize = 5;
-pub const OVERHEAD_SIZE: usize = HEADER_SIZE + PAYLOAD_TAG_SIZE;
+	/// The size in bytes of the routing info section of the packet
+	/// header.
+	const ROUTING_INFO_SIZE: usize; // = PER_HOP_ROUTING_INFO_SIZE * Self::MAX_HOPS;
+
+	const HEADER_SIZE: usize; // = AD_SIZE + GROUP_ELEMENT_SIZE + Self::ROUTING_INFO_SIZE + MAC_SIZE;
+
+	const OVERHEAD_SIZE: usize; // = Self::HEADER_SIZE + PAYLOAD_TAG_SIZE;
+
+	/// Size of the surb definition in payload.
+	const SURBS_REPLY_SIZE: usize; // = NODE_ID_SIZE + SPRP_KEY_SIZE + Self::HEADER_SIZE;
+
+	/// Size of a mixnet packet.
+	const PACKET_SIZE: usize; // = sphinx::OVERHEAD_SIZE + crate::core::fragment::FRAGMENT_PACKET_SIZE;
+
+	const MAC_OFFSET: usize; // = ROUTING_INFO_OFFSET + ROUTING_INFO_SIZE;
+	type Header; // [u8; Self::HEADER_SIZE];
+	type SurbsReply; //[u8; SURBS_REPLY_SIZE]
+	type RoutingA; //[u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE]
+	type Packet; //[u8; PACKET_SIZE]
+}
+
+mod size_5 {
+	use super::*;
+	pub struct ConstantsSize5;
+
+	const MAX_HOPS: usize = 5;
+
+	const ROUTING_INFO_SIZE: usize = PER_HOP_ROUTING_INFO_SIZE * MAX_HOPS;
+
+	const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
+
+	const OVERHEAD_SIZE: usize = HEADER_SIZE + PAYLOAD_TAG_SIZE;
+
+	const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
+
+	const PACKET_SIZE: usize = OVERHEAD_SIZE + crate::core::fragment::FRAGMENT_PACKET_SIZE;
+
+	const MAC_OFFSET: usize = ROUTING_INFO_OFFSET + ROUTING_INFO_SIZE;
+
+	impl SphinxConstants for ConstantsSize5 {
+		const MAX_HOPS: usize = MAX_HOPS;
+
+		const ROUTING_INFO_SIZE: usize = ROUTING_INFO_SIZE;
+
+		const HEADER_SIZE: usize = HEADER_SIZE;
+
+		const OVERHEAD_SIZE: usize = OVERHEAD_SIZE;
+
+		const SURBS_REPLY_SIZE: usize = SURBS_REPLY_SIZE;
+		
+		const PACKET_SIZE: usize = PACKET_SIZE;
+
+		const MAC_OFFSET: usize = MAC_OFFSET;
+
+		type Header = [u8; Self::HEADER_SIZE];
+
+		type SurbsReply = [u8; SURBS_REPLY_SIZE];
+
+		type RoutingA = [u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
+
+		type Packet = [u8; PACKET_SIZE];
+	}
+}
+
+type RawKey = [u8; KEY_SIZE];
+type NewHeader<S: SphinxConstants> = (S::Header, TransmitInfo);
 
 /// The node identifier size in bytes.
 const NODE_ID_SIZE: usize = 32;
@@ -82,21 +151,12 @@ const PAYLOAD_TAG_SIZE: usize = 16;
 const PAYLOAD_TAG: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
 
 /// The size of the Sphinx packet header in bytes.
-pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
-
-/// Size of the surb definition in payload.
-pub(crate) const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
 
 /// The size in bytes of each routing info slot.
 const PER_HOP_ROUTING_INFO_SIZE: usize = NODE_ID_SIZE + MAC_SIZE;
 
-/// The size in bytes of the routing info section of the packet
-/// header.
-const ROUTING_INFO_SIZE: usize = PER_HOP_ROUTING_INFO_SIZE * MAX_HOPS;
-
 const GROUP_ELEMENT_OFFSET: usize = AD_SIZE;
 const ROUTING_INFO_OFFSET: usize = GROUP_ELEMENT_OFFSET + GROUP_ELEMENT_SIZE;
-const MAC_OFFSET: usize = ROUTING_INFO_OFFSET + ROUTING_INFO_SIZE;
 
 const NEXT_HOP_MAC_OFFSET: usize = NODE_ID_SIZE;
 
@@ -166,31 +226,31 @@ pub struct SurbsPersistance {
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
 #[repr(C)]
-pub struct SurbsPayload {
+pub struct SurbsPayload<S: SphinxConstants> {
 	pub first_node: NodeId,
 	pub first_key: SprpKey,
-	pub header: Header,
+	pub header: S::Header,
 }
 
-unsafe impl bytemuck::Zeroable for SurbsPayload {}
-unsafe impl bytemuck::Pod for SurbsPayload {}
+unsafe impl<S: SphinxConstants> bytemuck::Zeroable for SurbsPayload<S> {}
+unsafe impl<S: SphinxConstants> bytemuck::Pod for SurbsPayload<S> {}
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-struct SurbsReply([u8; SURBS_REPLY_SIZE]);
+struct SurbsReply<S: SphinxConstants>(S::SurbsReply);
 
-unsafe impl bytemuck::Zeroable for SurbsReply {}
-unsafe impl bytemuck::Pod for SurbsReply {}
+unsafe impl<S: SphinxConstants> bytemuck::Zeroable for SurbsReply<S> {}
+unsafe impl<S: SphinxConstants> bytemuck::Pod for SurbsReply<S> {}
 
-impl From<Vec<u8>> for SurbsPayload {
+impl<S: SphinxConstants> From<Vec<u8>> for SurbsPayload<S> {
 	fn from(encoded: Vec<u8>) -> Self {
-		let buf: &[u8; SURBS_REPLY_SIZE] =
-			unsafe { &*(encoded.as_slice().as_ptr() as *const [u8; SURBS_REPLY_SIZE]) };
+		let buf: &S::SurbsReply =
+			unsafe { &*(encoded.as_slice().as_ptr() as *const S::SurbsReply) };
 		bytemuck::cast(SurbsReply(*buf))
 	}
 }
 
-impl SurbsPayload {
+impl<S: SphinxConstants> SurbsPayload<S> {
 	fn append(&self, dest: &mut Vec<u8>) {
 		dest.extend_from_slice(&self.first_node[..]);
 		dest.extend_from_slice(&self.first_key.key[..]);
@@ -223,7 +283,7 @@ impl<'a> EncodedHop<'a> {
 	}
 }
 
-fn create_header<T: Rng + CryptoRng>(
+fn create_header<T: Rng + CryptoRng, S: SphinxConstants>(
 	rng: &mut T,
 	path: Vec<PathHop>,
 	surb_header: bool,
@@ -242,7 +302,7 @@ fn create_header<T: Rng + CryptoRng>(
 	let mut group_element = PublicKey::from(&secret_key);
 	group_elements.push(group_element);
 
-	let mut header = [0u8; HEADER_SIZE];
+	let mut header = [0u8; S::HEADER_SIZE];
 	header[0..AD_SIZE].copy_from_slice(&V0_AD);
 
 	for i in 1..num_hops {
@@ -266,7 +326,7 @@ fn create_header<T: Rng + CryptoRng>(
 	for i in 0..num_hops {
 		let mut steam_cipher =
 			StreamCipher::new(&keys[i].header_encryption, &keys[i].header_encryption_iv);
-		let stream = steam_cipher.generate(ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE); // Extra hop for padding
+		let stream = steam_cipher.generate(S::ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE); // Extra hop for padding
 		let ks_len = stream.len() - ((i + 1) * PER_HOP_ROUTING_INFO_SIZE);
 		ri_keystream.push(stream[..ks_len].to_vec());
 		ri_padding.push(stream[ks_len..].to_vec());
@@ -278,12 +338,12 @@ fn create_header<T: Rng + CryptoRng>(
 	}
 
 	// Create the routing_information block.
-	let routing_info = &mut header[ROUTING_INFO_OFFSET..ROUTING_INFO_OFFSET + ROUTING_INFO_SIZE];
+	let routing_info = &mut header[ROUTING_INFO_OFFSET..ROUTING_INFO_OFFSET + S::ROUTING_INFO_SIZE];
 	let mut mac = [0u8; MAC_SIZE];
 
-	let skipped_hops = MAX_HOPS - num_hops;
+	let skipped_hops = S::MAX_HOPS - num_hops;
 	if skipped_hops > 0 {
-		rng.fill_bytes(&mut routing_info[(MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]);
+		rng.fill_bytes(&mut routing_info[(S::MAX_HOPS - skipped_hops) * PER_HOP_ROUTING_INFO_SIZE..]);
 	}
 	if with_surb {
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE;
@@ -316,7 +376,7 @@ fn create_header<T: Rng + CryptoRng>(
 	// SPRP key vector.
 	header[GROUP_ELEMENT_OFFSET..GROUP_ELEMENT_OFFSET + GROUP_ELEMENT_SIZE]
 		.copy_from_slice(group_elements[0].as_bytes());
-	header[MAC_OFFSET..].copy_from_slice(&mac);
+	header[S::MAC_OFFSET..].copy_from_slice(&mac);
 
 	let mut sprp_keys = vec![];
 	let mut i = 0;
@@ -329,7 +389,7 @@ fn create_header<T: Rng + CryptoRng>(
 }
 
 /// Create a new sphinx packet
-pub fn new_packet<T: Rng + CryptoRng>(
+pub fn new_packet<T: Rng + CryptoRng, S: SphinxConstants>(
 	mut rng: T,
 	path: Vec<PathHop>,
 	payload: Vec<u8>,
@@ -341,23 +401,23 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
 	let surb_key = if let Some((first_node, path)) = with_surb {
-		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
+		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + S::SURBS_REPLY_SIZE + payload.len());
 		let (header, TransmitInfo { sprp_keys, surb_id }) =
 			create_header(&mut rng, path, true, false)?;
 
-		debug_assert!(header.len() == HEADER_SIZE);
+		debug_assert!(header.len() == S::HEADER_SIZE);
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
 		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key };
 		let encoded = SurbsPayload { first_node, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
 		encoded.append(&mut tagged_payload);
 		debug_assert!(
-			tagged_payload.len() == SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE,
+			tagged_payload.len() == S::SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE,
 			"{:?}",
-			(tagged_payload.len(), SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE)
+			(tagged_payload.len(), S::SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE)
 		);
 		debug_assert!(
-			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURBS_REPLY_SIZE + payload.len()
+			crate::core::fragment::FRAGMENT_PACKET_SIZE == S::SURBS_REPLY_SIZE + payload.len()
 		);
 		Some(TransmitInfo { sprp_keys, surb_id })
 	} else {
@@ -378,10 +438,10 @@ pub fn new_packet<T: Rng + CryptoRng>(
 }
 
 /// Create a new sphinx packet from a surb header.
-pub fn new_surb_packet(
+pub fn new_surb_packet<S: SphinxConstants>(
 	first_key: SprpKey,
 	message: Vec<u8>,
-	surb_header: Header,
+	surb_header: S::Header,
 ) -> Result<Packet, Error> {
 	let mut tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + message.len());
 	tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -394,7 +454,7 @@ pub fn new_surb_packet(
 }
 
 /// Unwrap one layer of encryption and return next layer information or the final payload.
-pub fn unwrap_packet(
+pub fn unwrap_packet<S: SphinxConstants>(
 	private_key: &StaticSecret,
 	mut packet: Packet,
 	surb: &mut SurbsCollection,
@@ -402,8 +462,8 @@ pub fn unwrap_packet(
 	next_delay: impl FnOnce() -> u32,
 ) -> Result<Unwrapped, Error> {
 	// Split into mutable references and validate the AD
-	let (header, payload) = packet.as_mut().split_at_mut(HEADER_SIZE);
-	let (authed_header, header_mac) = header.split_at_mut(MAC_OFFSET);
+	let (header, payload) = packet.as_mut().split_at_mut(S::HEADER_SIZE);
+	let (authed_header, header_mac) = header.split_at_mut(S::MAC_OFFSET);
 	let (ad, after_ad) = authed_header.split_at_mut(AD_SIZE);
 	let (group_element_bytes, routing_info) = after_ad.split_at_mut(GROUP_ELEMENT_SIZE);
 
@@ -440,9 +500,9 @@ pub fn unwrap_packet(
 	// Append padding to preserve length invariance, decrypt the (padded)
 	// routing_info block, and extract the section for the current hop.
 	let mut stream_cipher = StreamCipher::new(&keys.header_encryption, &keys.header_encryption_iv);
-	let mut a = [0u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
-	let mut b = [0u8; ROUTING_INFO_SIZE + PER_HOP_ROUTING_INFO_SIZE];
-	a[..ROUTING_INFO_SIZE].clone_from_slice(routing_info);
+	let mut a = S::RoutingA;
+	let mut b = S::RoutingA;
+	a[..S::ROUTING_INFO_SIZE].clone_from_slice(routing_info);
 	stream_cipher.xor_key_stream(&mut b, &a);
 	let (cmd_buf, new_routing_info) = b.split_at_mut(PER_HOP_ROUTING_INFO_SIZE);
 
@@ -488,7 +548,7 @@ pub fn unwrap_packet(
 				return Err(Error::Payload)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
+			let payload = decrypted_payload.split_off(S::SURBS_REPLY_SIZE);
 			filter.insert(replay_tag, Instant::now());
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},

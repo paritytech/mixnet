@@ -26,7 +26,7 @@ pub use crate::{
 	core::{
 		connection::ConnectionStats, generate_new_keys, public_from_ed25519, secret_from_ed25519,
 		to_sphinx_id, Config, Error, MixPublicKey, MixSecretKey, Packet, PeerCount, SurbsPayload,
-		WindowStats, PACKET_SIZE,
+		WindowStats, SphinxConstants,
 	},
 	network::{
 		MixnetBehaviour, MixnetCommandSink, MixnetWorker, SinkToWorker, StreamFromWorker,

@@ -24,7 +24,7 @@
 use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsPayload},
 	network::connection::Connection,
-	traits::Configuration,
+	traits::Configuration, SphinxConstants,
 	MixnetEvent, SendOptions,
 };
 use futures::{
@@ -35,15 +35,15 @@ use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
 
-pub type WorkerStream = Box<dyn Stream<Item = WorkerCommand> + Unpin + Send>;
+pub type WorkerStream<S: SphinxConstants> = Box<dyn Stream<Item = WorkerCommand<S>> + Unpin + Send>;
 pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Send>;
 
 /// Opaque worker command.
-pub struct WorkerCommand(pub(crate) Command);
+pub struct WorkerCommand<S: SphinxConstants>(pub(crate) Command<S>);
 
-pub(crate) enum Command {
+pub(crate) enum Command<S: SphinxConstants> {
 	RegisterMessage(Option<crate::MixPeerId>, Vec<u8>, SendOptions),
-	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),
+	RegisterSurbs(Vec<u8>, Box<SurbsPayload<S>>),
 	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
 	AddPeerInbound(PeerId, NegotiatedSubstream),
 	RemoveConnectedPeer(PeerId),

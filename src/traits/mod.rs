@@ -28,14 +28,14 @@ use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
 use std::task::{Context, Poll};
 
-pub use crate::WorkerCommand;
+pub use crate::{WorkerCommand, SphinxConstants};
 pub use hash_table::TopologyHashTable;
 
-pub trait ClonableSink: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
-impl<T> ClonableSink for T where T: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
+pub trait ClonableSink<S: SphinxConstants>: Sink<WorkerCommand<S>, Error = SendError> + DynClone + Unpin + Send {}
+impl<T, S: SphinxConstants> ClonableSink<S> for T where T: Sink<WorkerCommand<S>, Error = SendError> + DynClone + Unpin + Send {}
 
 /// Provide Configuration of mixnet.
-pub trait Configuration: Topology + Handshake + Sized + Send + 'static {
+pub trait Configuration: Topology + Handshake + SphinxConstants + Sized + Send + 'static {
 	/// Do we need stats for each windows.
 	fn collect_windows_stats(&self) -> bool;
 
