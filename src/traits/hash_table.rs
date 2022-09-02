@@ -21,7 +21,7 @@
 //! Topology where direct peers are resolved
 //! by hashing peers id (so randomly distributed).
 
-use crate::{traits::Topology, Error, MixPeerId, MixPublicKey, PeerStats};
+use crate::{traits::Topology, Error, MixPeerId, MixPublicKey, PeerCount};
 use log::{debug, error, trace};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -390,7 +390,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.add_disconnected_peer(peer_id);
 	}
 
-	fn bandwidth_external(&self, id: &MixPeerId, peers: &PeerStats) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, id: &MixPeerId, peers: &PeerCount) -> Option<(usize, usize)> {
 		if !self.routing && self.can_route(id) {
 			// expect surbs: TODO make it optional??
 			return Some((1, 1))
@@ -415,7 +415,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		Some((available_per_external, self.target_bytes_per_seconds))
 	}
 
-	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerStats) -> bool {
+	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			// allow any authorities as it can be any of the should_connect_to in case
 			// there is many disconnected TODO !!!! disco on more prioritary (only for connect_to)

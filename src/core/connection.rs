@@ -26,7 +26,7 @@
 use crate::{
 	core::{PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
 	traits::{Configuration, Connection, Handshake, Topology},
-	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerStats, PACKET_SIZE,
+	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -175,7 +175,7 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		cx: &mut Context,
 		topology: &mut impl Handshake,
-		peers: &PeerStats,
+		peers: &PeerCount,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
 		if self.handshake_received() {
 			// ignore
@@ -239,7 +239,7 @@ impl<C: Connection> ManagedConnection<C> {
 		packet_per_window: usize,
 		local_id: &MixPeerId,
 		topology: &impl Topology,
-		peers: &PeerStats,
+		peers: &PeerCount,
 		external: bool,
 	) -> Result<(), crate::Error> {
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
@@ -278,7 +278,7 @@ impl<C: Connection> ManagedConnection<C> {
 		handshake: &MixPublicKey,
 		window: &WindowInfo,
 		topology: &mut impl Configuration,
-		peers: &PeerStats,
+		peers: &PeerCount,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
 		if !self.is_ready() {

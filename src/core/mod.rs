@@ -198,7 +198,7 @@ pub struct Mixnet<T, C> {
 	secret: MixSecretKey,
 	local_id: MixPeerId,
 	connected_peers: HashMap<NetworkPeerId, ManagedConnection<C>>,
-	peers_stats: PeerStats,
+	peers_stats: PeerCount,
 	handshaken_peers: HashMap<MixPeerId, (NetworkPeerId, ConnectedKind)>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
@@ -953,7 +953,7 @@ pub struct WindowStats {
 
 /// Current number of connected peers for the mixnet.
 #[derive(Default, Debug)]
-pub struct PeerStats {
+pub struct PeerCount {
 	/// Total number of nodes connected but
 	/// not already accepted.
 	pub nb_pending_handshake: usize,
@@ -974,7 +974,7 @@ pub struct PeerStats {
 	pub nb_connected_consumer: usize,
 }
 
-impl PeerStats {
+impl PeerCount {
 	fn add_peer<T: Configuration>(
 		&mut self,
 		local_id: &MixPeerId,

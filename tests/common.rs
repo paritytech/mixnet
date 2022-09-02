@@ -36,7 +36,7 @@ use mixnet::{
 	ambassador_impl_Topology,
 	traits::{Configuration, Topology},
 	Config, Error, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetCommandSink,
-	MixnetWorker, PeerStats, SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels,
+	MixnetWorker, PeerCount, SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels,
 	WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
@@ -411,7 +411,7 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 		&mut self,
 		payload: &[u8],
 		_from: &NetworkPeerId,
-		peers: &PeerStats,
+		peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)> {
 		let mut peer_id = [0u8; 32];
 		peer_id.copy_from_slice(&payload[0..32]);

@@ -38,7 +38,7 @@ use std::{
 use ambassador::Delegate;
 use mixnet::{
 	ambassador_impl_Topology, traits::Topology, Error, MixPeerId, MixPublicKey, MixSecretKey,
-	PeerStats, SendOptions,
+	PeerCount, SendOptions,
 };
 
 #[derive(Delegate)]
@@ -89,9 +89,9 @@ impl mixnet::traits::Configuration for ConfigGraph {
 		true
 	}
 
-	fn window_stats(&self, _stats: &mixnet::WindowStats, _: &PeerStats) {}
+	fn window_stats(&self, _stats: &mixnet::WindowStats, _: &PeerCount) {}
 
-	fn peer_stats(&self, _: &PeerStats) {}
+	fn peer_stats(&self, _: &PeerCount) {}
 }
 
 impl mixnet::traits::Handshake for ConfigGraph {
@@ -103,7 +103,7 @@ impl mixnet::traits::Handshake for ConfigGraph {
 		&mut self,
 		payload: &[u8],
 		from: &PeerId,
-		peers: &PeerStats,
+		peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)> {
 		self.inner.check_handshake(payload, from, peers)
 	}
@@ -236,7 +236,7 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn bandwidth_external(&self, id: &MixPeerId, _peers: &PeerStats) -> Option<(usize, usize)> {
+	fn bandwidth_external(&self, id: &MixPeerId, _peers: &PeerCount) -> Option<(usize, usize)> {
 		if self.external.as_ref() == Some(id) {
 			return Some((1, 1))
 		}
@@ -246,7 +246,7 @@ impl Topology for TopologyGraph {
 		Some((1, 1))
 	}
 
-	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerStats) -> bool {
+	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool {
 		if let Some(local_id) = self.local_id.as_ref() {
 			self.routing_to(local_id, peer_id) ||
 				self.routing_to(peer_id, local_id) ||
