@@ -56,6 +56,14 @@ pub(crate) struct ManagedConnection<C> {
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
 	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
 	packet_queue: BinaryHeap<QueuedPacket>,
+	// Packet queue of manually set messages.
+	// Messages manually set are lower priority than the `packet_queue` one
+	// and will only replace cover messages.
+	// Warning this queue do not have a size limit, we trust.
+	// TODO add stat to substrate branches.
+	// TODO have a safe mode that error on too big (but then
+	// need a mechanism to rollback other message chunk in other connections).
+	packet_queue_inject: BinaryHeap<QueuedPacket>,
 	next_packet: Option<(Vec<u8>, PacketType)>,
 	// If we did not receive for a while, close connection.
 	read_timeout: Delay,
@@ -88,6 +96,7 @@ impl<C: Connection> ManagedConnection<C> {
 			sent_in_window: 0,
 			recv_in_window: 0,
 			packet_queue: Default::default(),
+			packet_queue_inject: Default::default(),
 			stats: with_stats.then(Default::default),
 		}
 	}
@@ -237,19 +246,34 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		packet: QueuedPacket,
 		packet_per_window: usize,
-		local_id: &MixPeerId,
 		topology: &impl Topology,
 		peers: &PeerCount,
-		external: bool,
 	) -> Result<(), crate::Error> {
+		let external = self.kind.is_consumer();
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
+			if packet.injected_packet() {
+				if !external && !self.kind.routing_forward() {
+					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop.");
+					return Err(crate::Error::NoPath(Some(*peer_id)))
+				}
+				self.packet_queue_inject.push(packet);
+				if let Some((stats, _)) = self.stats.as_mut() {
+					let len = self.packet_queue_inject.len();
+					if len > stats.max_peer_paquet_inject_queue_size {
+						stats.max_peer_paquet_inject_queue_size = len;
+					}
+				}
+
+				return Ok(())
+			}
 			let packet_per_window = packet_per_window * (100 + WINDOW_MARGIN_PERCENT) / 100;
 			if self.packet_queue.len() > packet_per_window {
 				log::error!(target: "mixnet", "Dropping packet, queue full: {:?}", self.network_id);
 				return Err(crate::Error::QueueFull)
 			}
+
 			if !external &&
-				!topology.routing_to(local_id, peer_id) &&
+				!self.kind.routing_forward() &&
 				topology.bandwidth_external(peer_id, peers).is_none()
 			{
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
@@ -323,8 +347,6 @@ impl<C: Connection> ManagedConnection<C> {
 				topology.peer_stats(peers);
 			}
 
-			let routing = topology.can_route(local_id);
-
 			// Forward first.
 			while self.sent_in_window < window.current_packet_limit {
 				match self.try_send_flushed(cx) {
@@ -356,7 +378,16 @@ impl<C: Connection> ManagedConnection<C> {
 								self.next_packet = Some((packet.data.into_vec(), packet.kind));
 							}
 						} else if let Some(key) = self.public_key {
-							if routing && self.kind.routing_forward() {
+							let deadline = self
+								.packet_queue_inject
+								.peek()
+								.map_or(false, |p| p.deadline <= window.last_now);
+							if deadline {
+								if let Some(packet) = self.packet_queue_inject.pop() {
+									self.next_packet = Some((packet.data.into_vec(), packet.kind));
+								}
+							}
+							if self.next_packet.is_none() && self.kind.routing_forward() {
 								self.next_packet = crate::core::cover_message_to(&peer_id, key)
 									.map(|p| (p.into_vec(), PacketType::Cover));
 								if self.next_packet.is_none() {
@@ -439,6 +470,8 @@ impl<C: Connection> ManagedConnection<C> {
 			if self.next_packet.is_some() {
 				stats.0.peer_paquet_queue_size += 1;
 			}
+			stats.0.peer_paquet_inject_queue_size = self.packet_queue_inject.len();
+
 			&mut stats.0
 		})
 	}
@@ -459,6 +492,9 @@ impl<C> Drop for ManagedConnection<C> {
 				stats.failure_packet(Some(packet.1))
 			}
 			for packet in self.packet_queue.iter() {
+				stats.failure_packet(Some(packet.kind))
+			}
+			for packet in self.packet_queue_inject.iter() {
 				stats.failure_packet(Some(packet.kind))
 			}
 		}
@@ -484,8 +520,10 @@ pub struct ConnectionStats {
 	pub number_cover_send_failed: usize,
 
 	pub max_peer_paquet_queue_size: usize,
-
 	pub peer_paquet_queue_size: usize,
+
+	pub max_peer_paquet_inject_queue_size: usize,
+	pub peer_paquet_inject_queue_size: usize,
 }
 
 impl ConnectionStats {
@@ -507,8 +545,13 @@ impl ConnectionStats {
 
 		self.max_peer_paquet_queue_size =
 			std::cmp::max(self.max_peer_paquet_queue_size, other.max_peer_paquet_queue_size);
-
 		self.peer_paquet_queue_size += other.peer_paquet_queue_size;
+
+		self.max_peer_paquet_inject_queue_size = std::cmp::max(
+			self.max_peer_paquet_inject_queue_size,
+			other.max_peer_paquet_inject_queue_size,
+		);
+		self.peer_paquet_inject_queue_size += other.peer_paquet_inject_queue_size;
 	}
 
 	fn success_packet(&mut self, kind: Option<PacketType>) {

@@ -465,6 +465,7 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 #[derive(Clone, Copy)]
 pub struct TestConfig {
 	pub num_peers: usize,
+	pub num_hops: u32,
 	pub message_count: usize,
 	pub message_size: usize,
 	pub with_surb: bool,

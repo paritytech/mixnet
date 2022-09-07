@@ -93,6 +93,10 @@ impl ConnectedKind {
 	fn routing_receive(self) -> bool {
 		matches!(self, ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward)
 	}
+
+	fn is_consumer(self) -> bool {
+		matches!(self, ConnectedKind::Consumer)
+	}
 }
 
 /// Sphinx packet struct, goal of this struct
@@ -203,6 +207,12 @@ impl std::cmp::PartialOrd for QueuedPacket {
 impl std::cmp::Ord for QueuedPacket {
 	fn cmp(&self, other: &Self) -> Ordering {
 		self.deadline.cmp(&other.deadline).reverse()
+	}
+}
+
+impl QueuedPacket {
+	pub fn injected_packet(&self) -> bool {
+		matches!(self.kind, PacketType::SendFromSelf | PacketType::Surbs)
 	}
 }
 
@@ -346,10 +356,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			connection.queue_packet(
 				QueuedPacket { deadline, data, kind },
 				self.window.packet_per_window,
-				&self.local_id,
 				&self.topology,
 				&self.peer_stats,
-				false,
 			)?;
 		} else {
 			return Err(Error::Unreachable(data))
@@ -374,10 +382,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			connection.queue_packet(
 				QueuedPacket { deadline, data, kind },
 				self.window.packet_per_window,
-				&self.local_id,
 				&self.topology,
 				&self.peer_stats,
-				true,
 			)?;
 		} else {
 			return Err(Error::Unreachable(data))
@@ -385,9 +391,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		Ok(())
 	}
 
-	/// Send a new message to the network. Message is split int multiple fragments and each fragment
-	/// is sent over and individual path to the recipient. If no recipient is specified, a random
-	/// recipient is selected.
+	/// Send a new message to the network. Message is split into multiple fragments and each
+	/// fragment is sent over an individual path to the recipient. If no recipient is specified, a
+	/// random recipient is selected.
 	pub fn register_message(
 		&mut self,
 		peer_id: Option<MixPeerId>,
@@ -423,7 +429,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		)?;
 
 		let mut surb = if send_options.with_surb {
-			//let ours = (MixPeerId, MixPublicKey);
 			let paths = self
 				.random_paths(
 					&peer_id,
@@ -466,8 +471,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			packets.push((first_id, packet));
 		}
 
-		if self.topology.is_first_node(&self.local_id) {
+		if self.topology.can_route(&self.local_id) {
 			for (peer_id, packet) in packets {
+				// TODO delay may not be useful here (since secondary
+				// queue used).
 				let delay = exp_delay(&mut rng, self.average_hop_delay);
 				self.queue_packet(peer_id, packet, delay, PacketType::SendFromSelf)?;
 			}

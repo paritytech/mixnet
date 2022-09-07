@@ -302,7 +302,7 @@ fn test_messages(conf: TestConfig) {
 		local_id: Default::default(),
 		target_bytes_per_second: 512 * 1024,
 		timeout_ms: 10000,
-		num_hops: 3,
+		num_hops: conf.num_hops,
 		average_message_delay_ms: 50,
 		persist_surb_query: false,
 		replay_ttl_ms: 100_000,
@@ -367,6 +367,7 @@ fn test_messages(conf: TestConfig) {
 fn message_exchange_no_surb() {
 	test_messages(TestConfig {
 		num_peers: 5,
+		num_hops: 3,
 		message_count: 10,
 		message_size: 1,
 		with_surb: false,
@@ -378,6 +379,7 @@ fn message_exchange_no_surb() {
 fn fragmented_messages_no_surb() {
 	test_messages(TestConfig {
 		num_peers: 2,
+		num_hops: 3,
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: false,
@@ -389,6 +391,7 @@ fn fragmented_messages_no_surb() {
 fn message_exchange_with_surb() {
 	test_messages(TestConfig {
 		num_peers: 5,
+		num_hops: 3,
 		message_count: 10,
 		message_size: 1,
 		with_surb: true,
@@ -400,6 +403,7 @@ fn message_exchange_with_surb() {
 fn fragmented_messages_with_surb() {
 	test_messages(TestConfig {
 		num_peers: 2,
+		num_hops: 3,
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: true,
@@ -411,6 +415,7 @@ fn fragmented_messages_with_surb() {
 fn from_external_with_surb() {
 	test_messages(TestConfig {
 		num_peers: 5,
+		num_hops: 3,
 		message_count: 1,
 		message_size: 100,
 		with_surb: true,
@@ -422,6 +427,7 @@ fn from_external_with_surb() {
 fn from_external_no_surb() {
 	test_messages(TestConfig {
 		num_peers: 5,
+		num_hops: 3,
 		message_count: 1,
 		message_size: 4 * 1024,
 		with_surb: false,

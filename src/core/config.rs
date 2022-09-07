@@ -43,7 +43,7 @@ pub struct Config {
 	/// Default umber of hops for the outgoing messages to traverse. If no topology provide is
 	/// specified this setting is ignored and only one hop is used.
 	pub num_hops: u32,
-	/// Average number of seconds to delay each each message fragment at each hop.
+	/// Average number of seconds to delay each message fragment at each hop.
 	pub average_message_delay_ms: u32,
 	/// Retention time until we drop surb query.
 	pub surb_ttl_ms: u64,
