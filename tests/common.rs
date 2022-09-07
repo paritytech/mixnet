@@ -40,7 +40,11 @@ use mixnet::{
 	WorkerCommand,
 };
 use rand::{rngs::SmallRng, RngCore};
-use std::{collections::HashSet, sync::Arc, task::Poll};
+use std::{
+	collections::{HashMap, HashSet},
+	sync::Arc,
+	task::Poll,
+};
 
 /// Message that test peer replies with.
 pub enum PeerTestReply {
@@ -455,5 +459,138 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 			return None
 		}
 		Some(result)
+	}
+}
+
+#[derive(Clone, Copy)]
+pub struct TestConfig {
+	pub num_peers: usize,
+	pub message_count: usize,
+	pub message_size: usize,
+	pub with_surb: bool,
+	pub from_external: bool,
+}
+
+pub fn wait_on_connections(conf: &TestConfig, with_swarm_channels: &mut [TestChannels]) {
+	let TestConfig { num_peers, from_external, .. } = *conf;
+
+	let nb_conn = if from_external { num_peers + 1 } else { num_peers };
+	let mut connected_futures: Vec<_> = with_swarm_channels[..nb_conn]
+		.iter_mut()
+		.map(|(receiver, _)| {
+			future::poll_fn(move |cx| loop {
+				match receiver.poll_next_unpin(cx) {
+					Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) =>
+						return Poll::Ready(()),
+					Poll::Ready(Some(PeerTestReply::ReceiveMessage(_))) => (),
+					Poll::Ready(None) => (),
+					Poll::Pending => return Poll::Pending,
+				}
+			})
+		})
+		.collect();
+	while !connected_futures.is_empty() {
+		let (_, p, remaining) =
+			async_std::task::block_on(futures::future::select_all(connected_futures));
+		log::trace!(target: "mixnet", "Connecting {} completed", p);
+		connected_futures = remaining;
+	}
+}
+
+#[derive(Clone)]
+pub struct SendConf {
+	pub from: usize,
+	pub to: usize,
+	pub message: Vec<u8>,
+}
+
+pub fn send_messages(
+	conf: &TestConfig,
+	send: impl Iterator<Item = SendConf>,
+	nodes: &[MixPeerId],
+	with_swarm_channels: &mut [TestChannels],
+) {
+	let TestConfig { message_count, with_surb, .. } = *conf;
+
+	for send_conf in send {
+		let recipient = &nodes[send_conf.to];
+		log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
+		for _ in 0..message_count {
+			with_swarm_channels[send_conf.from]
+				.1
+				.send(
+					Some(*recipient),
+					send_conf.message.clone(),
+					SendOptions { num_hop: None, with_surb },
+				)
+				.unwrap();
+		}
+	}
+}
+
+pub fn wait_on_messages(
+	conf: &TestConfig,
+	sent: impl Iterator<Item = SendConf>,
+	with_swarm_channels: &mut [TestChannels],
+	surb_reply: &[u8],
+) {
+	let TestConfig { message_count, with_surb, .. } = *conf;
+
+	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
+
+	for sent in sent {
+		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
+		nb.0 += message_count;
+		if with_surb {
+			let nb = expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
+			nb.1 += message_count;
+		}
+	}
+
+	let mut received_messages: Vec<_> = with_swarm_channels
+		.iter_mut()
+		.enumerate()
+		.filter_map(|(at, (receiver, sender))| {
+			expect.remove(&at).map(|mut messages| {
+				future::poll_fn(move |cx| loop {
+					match receiver.poll_next_unpin(cx) {
+						Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
+						Poll::Ready(Some(PeerTestReply::ReceiveMessage(
+							mixnet::DecodedMessage { peer, message, mut kind },
+						))) => {
+							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
+							let nb = messages.remove(&message).map(|mut nb| {
+								if let Some(_o_query) = kind.extract_surb_query() {
+									nb.1 -= 1;
+								} else {
+									nb.0 -= 1;
+								}
+								nb
+							});
+							assert!(nb.is_some());
+							if nb != Some((0, 0)) {
+								messages.insert(message, nb.unwrap());
+							}
+							if let Some(reply) = kind.surb() {
+								sender.surb(surb_reply.to_vec(), reply).unwrap();
+							}
+							if messages.is_empty() {
+								return Poll::Ready(messages.is_empty())
+							}
+						},
+						Poll::Ready(None) => {
+							log::error!("Loop on None, consider failure here");
+						},
+						Poll::Pending => return Poll::Pending,
+					}
+				})
+			})
+		})
+		.collect();
+	while !received_messages.is_empty() {
+		let (_, p, remaining) =
+			async_std::task::block_on(futures::future::select_all(received_messages));
+		log::trace!(target: "mixnet", "Connecting {} completed", p);
+		received_messages = remaining;
 	}
 }

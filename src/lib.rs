@@ -78,6 +78,14 @@ impl MessageType {
 			_ => None,
 		}
 	}
+
+	/// Extract surb query if stored.
+	pub fn extract_surb_query(&mut self) -> Option<Option<Vec<u8>>> {
+		match self {
+			MessageType::FromSurbs(surb, _) => Some(surb.take()),
+			_ => None,
+		}
+	}
 }
 
 /// A full mixnet message that has reached its recipient.

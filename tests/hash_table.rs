@@ -23,12 +23,13 @@
 mod common;
 
 use ambassador::Delegate;
-use common::{PeerTestReply, SimpleHandshake};
-use futures::prelude::*;
+use common::{
+	send_messages, wait_on_connections, wait_on_messages, SendConf, SimpleHandshake, TestConfig,
+};
 use libp2p_core::PeerId;
 use mixnet::ambassador_impl_Topology;
 use rand::RngCore;
-use std::{sync::Arc, task::Poll};
+use std::sync::Arc;
 
 use mixnet::{
 	traits::{
@@ -94,13 +95,9 @@ impl mixnet::traits::Handshake for NotDistributed {
 // TODO extract part of test_messages in common:
 // - send message(from: usize, to: usize)
 // - wait_on_message(expected: Vec<Messages>)
-fn test_messages(
-	num_peers: usize,
-	message_count: usize,
-	message_size: usize,
-	with_surb: bool,
-	from_external: bool,
-) {
+fn test_messages(conf: TestConfig) {
+	let TestConfig { num_peers, message_size, from_external, .. } = conf;
+
 	let seed: u64 = 0;
 	let single_thread = false;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
@@ -162,151 +159,83 @@ fn test_messages(
 		&executor,
 		single_thread,
 	);
-	let nb_conn = if from_external { num_peers + 1 } else { num_peers };
-	let mut connected_futures: Vec<_> = with_swarm_channels[..nb_conn]
-		.iter_mut()
-		.map(|(receiver, _)| {
-			future::poll_fn(move |cx| loop {
-				match receiver.poll_next_unpin(cx) {
-					Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) =>
-						return Poll::Ready(()),
-					Poll::Ready(Some(PeerTestReply::ReceiveMessage(_))) => (),
-					Poll::Ready(None) => (),
-					Poll::Pending => return Poll::Pending,
-				}
-			})
-		})
-		.collect();
-	while !connected_futures.is_empty() {
-		let (_, p, remaining) =
-			async_std::task::block_on(futures::future::select_all(connected_futures));
-		log::trace!(target: "mixnet", "Connecting {} completed", p);
-		connected_futures = remaining;
-	}
 
-	if from_external {
-		// ext 1 can route through peer 0 (only peer acceptiong)
-		with_swarm_channels[num_peers]
-			.1
-			.send(
-				Some(nodes[1]), // we are connected to 0, sending to 1
-				source_message.to_vec(),
-				SendOptions { num_hop: None, with_surb },
-			)
-			.unwrap();
-		// ext 2 cannot
-		with_swarm_channels[num_peers]
-			.1
-			.send(
-				Some(nodes[1]), // we are connected to 0, sending to 1
-				source_message.to_vec(),
-				SendOptions { num_hop: None, with_surb },
-			)
-			.unwrap();
+	wait_on_connections(&conf, with_swarm_channels.as_mut());
+
+	let send = if from_external {
+		// ext 1 can route through peer 0 (only peer accepting ext)
+		vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
 	} else {
-		for recipient in &nodes[1..num_peers] {
-			log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
-			for _ in 0..message_count {
-				with_swarm_channels[0]
-					.1
-					.send(
-						Some(*recipient), // we are connected to 0, sending to 1
-						source_message.to_vec(),
-						SendOptions { num_hop: None, with_surb },
-					)
-					.unwrap();
-			}
-		}
-	}
-
-	let range = if from_external { 1..2 } else { 1..num_peers };
-	let mut received_messages: Vec<_> =
-		with_swarm_channels[range]
-			.iter_mut()
-			.map(|(receiver, sender)| {
-				future::poll_fn(move |cx| loop {
-					match receiver.poll_next_unpin(cx) {
-						Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
-						Poll::Ready(Some(PeerTestReply::ReceiveMessage(
-							mixnet::DecodedMessage { peer, message, kind },
-						))) => {
-							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
-							assert_eq!(source_message.as_slice(), message.as_slice());
-							if let Some(reply) = kind.surb() {
-								sender.surb(b"pong".to_vec(), reply).unwrap();
-							}
-							return Poll::Ready(())
-						},
-						Poll::Ready(None) => (),
-						Poll::Pending => return Poll::Pending,
-					}
-				})
-			})
-			.collect();
-	while !received_messages.is_empty() {
-		let (_, p, remaining) =
-			async_std::task::block_on(futures::future::select_all(received_messages));
-		log::trace!(target: "mixnet", "Connecting {} completed", p);
-		received_messages = remaining;
-	}
-
-	if !with_surb {
-		return
-	}
-
-	let (from, mut expected_surb) = if from_external { (num_peers, 1) } else { (0, num_peers - 1) };
-	let expected_surb = &mut expected_surb;
-
-	let (receiver, _sender) = &mut with_swarm_channels[from];
-	let poll_fn = future::poll_fn(move |cx| loop {
-		match receiver.poll_next_unpin(cx) {
-			Poll::Ready(Some(PeerTestReply::InitialConnectionsCompleted)) => (),
-			Poll::Ready(Some(PeerTestReply::ReceiveMessage(mixnet::DecodedMessage {
-				peer,
-				message,
-				kind,
-			}))) => {
-				log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
-				assert_eq!(b"pong", message.as_slice());
-				assert!(kind.surb().is_none());
-				*expected_surb -= 1;
-				if *expected_surb == 0 {
-					return Poll::Ready(())
-				}
-			},
-			Poll::Ready(None) => (),
-			Poll::Pending => return Poll::Pending,
-		}
-	});
-	async_std::task::block_on(poll_fn);
+		(1..num_peers)
+			.map(|to| SendConf { from: 0, to, message: source_message.clone() })
+			.collect()
+	};
+	send_messages(&conf, send.clone().into_iter(), &nodes, &mut with_swarm_channels);
+	wait_on_messages(&conf, send.into_iter(), &mut with_swarm_channels, b"pong");
 }
 
 #[test]
 fn message_exchange_no_surb() {
-	test_messages(6, 10, 1, false, false);
+	test_messages(TestConfig {
+		num_peers: 6,
+		message_count: 10,
+		message_size: 1,
+		with_surb: false,
+		from_external: false,
+	})
 }
 
 #[test]
 fn fragmented_messages_no_surb() {
-	test_messages(6, 1, 8 * 1024, false, false);
+	test_messages(TestConfig {
+		num_peers: 6,
+		message_count: 1,
+		message_size: 8 * 1024,
+		with_surb: false,
+		from_external: false,
+	})
 }
 
 #[test]
 fn message_exchange_with_surb() {
-	test_messages(6, 10, 1, true, false);
+	test_messages(TestConfig {
+		num_peers: 6,
+		message_count: 10,
+		message_size: 1,
+		with_surb: true,
+		from_external: false,
+	})
 }
 
 #[test]
 fn fragmented_messages_with_surb() {
-	test_messages(6, 1, 8 * 1024, true, false);
+	test_messages(TestConfig {
+		num_peers: 6,
+		message_count: 1,
+		message_size: 8 * 1024,
+		with_surb: true,
+		from_external: false,
+	})
 }
 
 #[test]
 fn from_external_with_surb() {
-	test_messages(6, 1, 100, true, true);
+	test_messages(TestConfig {
+		num_peers: 6,
+		message_count: 1,
+		message_size: 100,
+		with_surb: true,
+		from_external: true,
+	})
 }
 
 #[test]
 fn from_external_no_surb() {
-	test_messages(6, 1, 4 * 1024, false, true);
+	test_messages(TestConfig {
+		num_peers: 6,
+		message_count: 1,
+		message_size: 4 * 1024,
+		with_surb: false,
+		from_external: true,
+	})
 }
