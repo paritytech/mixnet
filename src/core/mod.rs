@@ -259,9 +259,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
 		let packet_duration_nanos =
-			(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
+			PACKET_SIZE as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
 		let average_traffic_delay = Duration::from_nanos(packet_duration_nanos);
 		let packet_per_window = (WINDOW_DELAY.as_nanos() / packet_duration_nanos as u128) as usize;
+		if packet_per_window == 0 {
+			// TODO this is part of protocol, we should force bigger window.
+			log::warn!("Mixnet bandwidth too low, forcing it at one packet per window.");
+		}
 		debug_assert!(packet_per_window > 0);
 
 		let now = Instant::now();
