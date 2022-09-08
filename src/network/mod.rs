@@ -55,16 +55,26 @@ pub struct MixnetBehaviour {
 	connected: HashMap<PeerId, ConnectionId>,
 	// connection handler notify queue
 	notify_queue: VecDeque<(PeerId, ConnectionId)>,
+	// if true when mixnet do not accept a peer we do not
+	// cut the swarm connection: can make sense in case it
+	// is multiplexed. Then it disconnect depending on ttl
+	// or can be disconnected manually.
+	keep_connection_alive: bool,
 }
 
 impl MixnetBehaviour {
 	/// Creates a new network behaviour for a worker.
-	pub fn new(worker_in: SinkToWorker, worker_out: StreamFromWorker) -> Self {
+	pub fn new(
+		worker_in: SinkToWorker,
+		worker_out: StreamFromWorker,
+		keep_connection_alive: bool,
+	) -> Self {
 		Self {
 			mixnet_worker_sink: worker_in,
 			mixnet_worker_stream: worker_out,
 			notify_queue: Default::default(),
 			connected: Default::default(),
+			keep_connection_alive,
 		}
 	}
 }
@@ -179,16 +189,17 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 		match self.mixnet_worker_stream.poll_next_unpin(cx) {
 			Poll::Ready(Some(out)) => match out {
-				MixnetEvent::Disconnected(peer_id) => {
-					if let Some(con_id) = self.connected.remove(&peer_id) {
+				MixnetEvent::Disconnected(peer_id) =>
+					if self.keep_connection_alive {
+						Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::Disconnected(peer_id)))
+					} else if let Some(con_id) = self.connected.remove(&peer_id) {
 						Poll::Ready(NetworkBehaviourAction::CloseConnection {
 							peer_id,
 							connection: CloseConnection::One(con_id),
 						})
 					} else {
 						self.poll(cx, params)
-					}
-				},
+					},
 				e => Poll::Ready(NetworkBehaviourAction::GenerateEvent(e)),
 			},
 			Poll::Ready(None) =>

@@ -108,11 +108,13 @@ fn mk_transports(
 
 fn mk_swarms(
 	transports: Vec<NewTransport>,
+	keep_connection_alive: bool,
 ) -> Vec<(Swarm<MixnetBehaviour>, mpsc::Sender<WorkerCommand>)> {
 	let mut swarms = Vec::with_capacity(transports.len());
 
 	for (peer_id, trans, to_worker_sink, from_worker_stream, to_worker) in transports.into_iter() {
-		let mixnet = mixnet::MixnetBehaviour::new(to_worker_sink, from_worker_stream);
+		let mixnet =
+			mixnet::MixnetBehaviour::new(to_worker_sink, from_worker_stream, keep_connection_alive);
 		let mut swarm = Swarm::new(trans, mixnet, peer_id);
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		swarm.listen_on(addr).unwrap();
@@ -172,6 +174,7 @@ pub fn spawn_swarms(
 	from_external: bool,
 	executor: &ThreadPool,
 	expect_all_connected: bool,
+	keep_connection_alive: bool,
 ) -> (Vec<(NetworkPeerId, WorkerChannels)>, Vec<TestChannels>) {
 	let extra_external = if from_external {
 		2 // 2 external node at ix num_peers and num_peers + 1
@@ -180,7 +183,7 @@ pub fn spawn_swarms(
 	};
 
 	let (transports, handles) = mk_transports(num_peers, extra_external);
-	let swarms = mk_swarms(transports);
+	let swarms = mk_swarms(transports, keep_connection_alive);
 
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
 	// This should be remove or optional if mixnet got non connected use case.
@@ -260,8 +263,25 @@ pub fn spawn_swarms(
 							}
 						}
 					},
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(_)) => {
-						unreachable!("This event generate `ConnectionClosed`")
+					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(peer_id)) => {
+						// when keep_connection_alive is true TODO factor the decrease and increase code
+						num_connected -= 1;
+						log::trace!(target: "mixnet", "{} connected  {}/{:?}", p, num_connected, target_peers);
+						if count_connected && !expect_all_connected {
+							// non expected connection will disconnect peer, count it
+							// as negotiated connection.
+							handshake_done.insert(peer_id);
+
+							if Some(handshake_done.len()) == target_peers {
+								expect_all_connected = false;
+								count_connected = false;
+								from_swarm_sink
+									.send(PeerTestReply::InitialConnectionsCompleted)
+									.await
+									.unwrap();
+								target_peers = None;
+							}
+						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
 						from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await.unwrap();

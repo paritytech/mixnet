@@ -200,7 +200,7 @@ fn test_messages(conf: TestConfig) {
 	let TestConfig { num_peers, message_size, from_external, .. } = conf;
 
 	let seed: u64 = 0;
-	let single_thread = false;
+	let single_thread = true;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
 	let config_proto = mixnet::Config {
 		secret_key,
@@ -227,8 +227,15 @@ fn test_messages(conf: TestConfig) {
 
 	let executor = futures::executor::ThreadPool::new().unwrap();
 	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
-	let (handles, mut with_swarm_channels) =
-		common::spawn_swarms(num_peers, from_external, &executor, false);
+	let keep_connection_alive = false;
+	let expect_all_connected = false;
+	let (handles, mut with_swarm_channels) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		expect_all_connected,
+		keep_connection_alive,
+	);
 
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
@@ -391,8 +398,15 @@ fn test_change_routing_set(conf: TestConfig) {
 	let source_message = &source_message;
 
 	let executor = futures::executor::ThreadPool::new().unwrap();
-	let (handles, mut with_swarm_channels) =
-		common::spawn_swarms(num_peers, from_external, &executor, false);
+	let keep_connection_alive = true;
+	let expect_all_connected = false;
+	let (handles, mut with_swarm_channels) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		expect_all_connected,
+		keep_connection_alive,
+	);
 
 	let set_topo = set_1.clone();
 	let mut handle_topos = Vec::new();

@@ -248,7 +248,11 @@ impl ConnectionHandler for Handler {
 				Poll::Pending => (),
 				_ => {
 					log::trace!(target: "mixnet", "Connection closed, closing handler.");
-					return Poll::Ready(ConnectionHandlerEvent::Close(Failure::Unsupported))
+					if !self.keep_connection_alive {
+						return Poll::Ready(ConnectionHandlerEvent::Close(Failure::Unsupported))
+					} else {
+						self.state = State::Inactive { reported: false };
+					}
 				},
 			}
 		}
@@ -257,7 +261,9 @@ impl ConnectionHandler for Handler {
 				return Poll::Pending // nothing to do on this connection
 			},
 			State::Inactive { reported: false } => {
-				log::trace!(target: "mixnet", "Network error: {}", Failure::Unsupported);
+				log::trace!(target: "mixnet", "Keeping handler alive for disconnected mixnet.");
+				// TODO switch to ActiveNotSent when topo allow us to connect again.
+				self.connection_closed = None;
 				self.state = State::Inactive { reported: true };
 			},
 			State::Active => {},

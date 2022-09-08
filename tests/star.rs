@@ -318,9 +318,15 @@ fn test_messages(conf: TestConfig) {
 	let source_message = &source_message;
 
 	let executor = futures::executor::ThreadPool::new().unwrap();
-	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
-	let (handles, mut with_swarm_channels) =
-		common::spawn_swarms(num_peers, from_external, &executor, true);
+	let keep_connection_alive = false;
+	let expect_all_connected = true;
+	let (handles, mut with_swarm_channels) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		expect_all_connected,
+		keep_connection_alive,
+	);
 
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
