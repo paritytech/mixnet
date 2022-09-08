@@ -59,9 +59,6 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 /// Size of a mixnet packet.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
-/// Size of the polling window in time.
-pub const WINDOW_DELAY: Duration = Duration::from_secs(2);
-
 pub const WINDOW_MARGIN_PERCENT: usize = 10;
 
 /// Associated information to a packet or header.
@@ -243,6 +240,8 @@ pub struct Mixnet<T, C> {
 	persist_surb_query: bool,
 
 	window: WindowInfo,
+
+	window_size: Duration,
 }
 
 /// Mixnet window current state.
@@ -258,13 +257,19 @@ pub struct WindowInfo {
 impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Create a new instance with given config.
 	pub fn new(config: Config, topology: T) -> Self {
+		let mut window_size = Duration::from_millis(config.window_size_ms);
 		let packet_duration_nanos =
 			PACKET_SIZE as u64 * 1_000_000_000 / config.target_bytes_per_second as u64;
 		let average_traffic_delay = Duration::from_nanos(packet_duration_nanos);
-		let packet_per_window = (WINDOW_DELAY.as_nanos() / packet_duration_nanos as u128) as usize;
+		let mut packet_per_window =
+			(window_size.as_nanos() / packet_duration_nanos as u128) as usize;
 		if packet_per_window == 0 {
-			// TODO this is part of protocol, we should force bigger window.
-			log::warn!("Mixnet bandwidth too low, forcing it at one packet per window.");
+			packet_per_window = 1;
+			window_size = Duration::from_nanos(packet_duration_nanos);
+			// TODO should round to upper millis or 10 / 100 millis
+			// TODO apply same rule put to ensure minimum number of packet in window (window of 1
+			// packet does not make much sense).
+			log::warn!("Mixnet bandwidth too low, forcing it at one packet per window, forcing window size to {:?}", window_size);
 		}
 		debug_assert!(packet_per_window > 0);
 
@@ -286,6 +291,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
 			average_traffic_delay,
+			window_size,
 			window: WindowInfo {
 				current_start: now,
 				last_now: now,
@@ -633,8 +639,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			let now = Instant::now();
 			self.window.last_now = now;
 			let duration = now - self.window.current_start;
-			if duration > WINDOW_DELAY {
-				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
+			if duration > self.window_size {
+				let nb_spent = (duration.as_millis() / self.window_size.as_millis()) as usize;
 
 				if nb_spent > 1 {
 					// TODO in a sane system this should disconnect (but only make sense
@@ -644,7 +650,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 				self.window.current += Wrapping(nb_spent);
 				for _ in 0..nb_spent {
-					self.window.current_start += WINDOW_DELAY;
+					self.window.current_start += self.window_size;
 				}
 
 				if let Some(stats) = self.window.stats.as_mut() {
@@ -666,7 +672,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			let duration = now - self.window.current_start;
 			self.window.current_packet_limit = ((duration.as_millis() as u64 *
 				self.window.packet_per_window as u64) /
-				WINDOW_DELAY.as_millis() as u64) as usize;
+				self.window_size.as_millis() as u64) as usize;
 
 			// force at least one packet per window at start.
 			self.window.current_packet_limit += 1;

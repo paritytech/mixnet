@@ -21,10 +21,14 @@
 //! Mixnet configuration.
 
 use crate::{MixPeerId, MixPublicKey, MixSecretKey};
+use std::time::Duration;
 
 /// Default bandwidth to maintain for each connection.
 /// In number of bytes per seconds
 const DEFAULT_PEER_CONNECTION: u32 = 128 * 1024;
+
+/// Size of the polling window in time.
+pub const DEFAULT_WINDOW_SIZE: Duration = Duration::from_secs(2);
 
 /// Configuration data for the mixnet protocol.
 #[derive(Clone)]
@@ -51,6 +55,9 @@ pub struct Config {
 	pub replay_ttl_ms: u64,
 	/// Do we keep trace of query with the surb keys.
 	pub persist_surb_query: bool,
+	/// Size of window for reporting stat and ensuring
+	/// bandwidth expectation. In millis seconds.
+	pub window_size_ms: u64,
 }
 
 impl Config {
@@ -75,6 +82,10 @@ impl Config {
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 			persist_surb_query: true,
+			window_size_ms: DEFAULT_WINDOW_SIZE
+				.as_millis()
+				.try_into()
+				.expect("Window duration too big"),
 		}
 	}
 }
