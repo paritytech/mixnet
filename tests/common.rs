@@ -224,8 +224,8 @@ pub fn spawn_swarms(
 		let mut to_notify = std::mem::take(&mut to_notify[p]);
 		let mut to_wait = std::mem::take(&mut to_wait[p]);
 		let poll_fn = async move {
-			let mut num_connected = 0;
-			let mut num_connected_p2p = 0;
+			let mut num_connected = 0isize;
+			let mut num_connected_p2p = 0isize;
 			let mut handshake_done = HashSet::new();
 			let mut expect_all_connected = expect_all_connected && target_peers.is_some();
 			let mut count_connected = true;
@@ -246,7 +246,7 @@ pub fn spawn_swarms(
 							if !expect_all_connected {
 								handshake_done.insert(peer);
 							}
-							if Some(num_connected) == target_peers ||
+							if num_connected.try_into().ok() == target_peers ||
 								Some(handshake_done.len()) == target_peers
 							{
 								expect_all_connected = false;

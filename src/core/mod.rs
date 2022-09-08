@@ -632,6 +632,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			if duration > WINDOW_DELAY {
 				let nb_spent = (duration.as_millis() / WINDOW_DELAY.as_millis()) as usize;
 
+				if nb_spent > 1 {
+					// TODO in a sane system this should disconnect (but only make sense
+					// if we transmit connection tables).
+					log::warn!("Skipping bandwidth of {} windows", nb_spent);
+				}
+
 				self.window.current += Wrapping(nb_spent);
 				for _ in 0..nb_spent {
 					self.window.current_start += WINDOW_DELAY;
@@ -657,6 +663,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			self.window.current_packet_limit = ((duration.as_millis() as u64 *
 				self.window.packet_per_window as u64) /
 				WINDOW_DELAY.as_millis() as u64) as usize;
+
+			// force at least one packet per window at start.
+			self.window.current_packet_limit += 1;
 
 			self.cleanup(now);
 			let next_delay = self.average_traffic_delay;

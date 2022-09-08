@@ -102,7 +102,7 @@ fn test_messages(conf: TestConfig) {
 		secret_key,
 		public_key,
 		local_id: Default::default(),
-		target_bytes_per_second: 512 * 1024,
+		target_bytes_per_second: 16 * 1024, // best while testing 512 * 1024
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
 		average_message_delay_ms: 50,
@@ -242,15 +242,15 @@ fn from_external_no_surb() {
 		from_external: true,
 	})
 }
-/*
+
 #[test]
 fn testing_mess() {
 	test_messages(TestConfig {
 		num_peers: 5,
 		num_hops: 3,
 		message_count: 1,
-		message_size: 256 * 1024,
+		message_size: 4 * 1024, // max 256 * 1024
 		with_surb: false,
 		from_external: false,
 	})
-}*/
+}
