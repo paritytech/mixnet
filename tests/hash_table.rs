@@ -102,10 +102,10 @@ fn test_messages(conf: TestConfig) {
 		secret_key,
 		public_key,
 		local_id: Default::default(),
-		target_bytes_per_second: 1024 * 1024, // for release 64 * 1024
+		target_bytes_per_second: 16 * 1024, // for release 64 * 1024
 		// usually only need to be low value for high bandwidth in debug mode and not in single
 		// thread
-		no_yield_budget: 2,
+		no_yield_budget: 32,
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
 		average_message_delay_ms: 50,
