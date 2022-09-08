@@ -64,7 +64,7 @@ pub struct MixnetWorker<T> {
 	// without yielding, possibly keeping thread.
 	// This counter ensure we yield from time to time.
 	// When testing in debug, lowering budget can be
-	// good, 
+	// good,
 	hits: usize,
 	budget: usize,
 }
@@ -98,14 +98,15 @@ impl<T: Configuration> MixnetWorker<T> {
 		if self.hits == 0 {
 			self.hits = self.budget;
 			cx.waker().wake_by_ref();
-			return Poll::Pending;
+			return Poll::Pending
 		}
 
 		if let Poll::Ready(event) = self.worker_in.poll_next_unpin(cx) {
 			// consumming worker command first TODO select version makes all slower
 			return Poll::Ready(self.on_command(event))
 		}
-		let result = self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet));
+		let result =
+			self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet));
 
 		if result == Poll::Ready(true) {
 			self.hits -= 1;

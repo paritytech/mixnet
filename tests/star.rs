@@ -301,7 +301,7 @@ fn test_messages(conf: TestConfig) {
 		public_key,
 		local_id: Default::default(),
 		target_bytes_per_second: 16 * 1024, // 64 for release is fine
-		no_yield_budget: 128, // not needed for low bandwidth
+		no_yield_budget: 128,               // not needed for low bandwidth
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
 		average_message_delay_ms: 50,

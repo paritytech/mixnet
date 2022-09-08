@@ -152,7 +152,9 @@ pub fn to_sphinx_id(id: &NetworkPeerId) -> Result<MixPeerId, Error> {
 
 fn exp_delay<R: Rng + CryptoRng + ?Sized>(rng: &mut R, target: Duration) -> Duration {
 	let exp = rand_distr::Exp::new(1.0 / target.as_nanos() as f64).unwrap();
-	Duration::from_nanos(exp.sample(rng).round() as u64)
+	let delay = Duration::from_nanos(exp.sample(rng).round() as u64);
+	log::trace!(target: "mixnet", "delay {:?} for {:?}", delay, target);
+	delay
 }
 
 /// Construct a Montgomery curve25519 private key from an Ed25519 secret key.
