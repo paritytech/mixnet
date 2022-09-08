@@ -60,13 +60,21 @@ pub struct MixnetWorker<T> {
 	mixnet: Mixnet<T, Connection>,
 	worker_in: WorkerStream,
 	worker_out: WorkerSink,
+	// on heavy bandwidth, the worker may keep sending
+	// without yielding, possibly keeping thread.
+	// This counter ensure we yield from time to time.
+	// When testing in debug, lowering budget can be
+	// good, 
+	hits: usize,
+	budget: usize,
 }
 
 impl<T: Configuration> MixnetWorker<T> {
 	pub fn new(config: Config, topology: T, inner_channels: (WorkerSink, WorkerStream)) -> Self {
 		let (worker_out, worker_in) = inner_channels;
+		let budget = config.no_yield_budget;
 		let mixnet = crate::core::Mixnet::new(config, topology);
-		MixnetWorker { mixnet, worker_in, worker_out }
+		MixnetWorker { mixnet, worker_in, worker_out, hits: budget, budget }
 	}
 
 	pub fn restart(
@@ -87,11 +95,24 @@ impl<T: Configuration> MixnetWorker<T> {
 
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
+		if self.hits == 0 {
+			self.hits = self.budget;
+			cx.waker().wake_by_ref();
+			return Poll::Pending;
+		}
+
 		if let Poll::Ready(event) = self.worker_in.poll_next_unpin(cx) {
 			// consumming worker command first TODO select version makes all slower
 			return Poll::Ready(self.on_command(event))
 		}
-		self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet))
+		let result = self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet));
+
+		if result == Poll::Ready(true) {
+			self.hits -= 1;
+		} else {
+			self.hits = self.budget;
+		}
+		result
 	}
 
 	fn on_mixnet(&mut self, result: MixEvent) -> bool {

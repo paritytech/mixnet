@@ -245,6 +245,7 @@ pub fn spawn_swarms(
 						if count_connected {
 							if !expect_all_connected {
 								handshake_done.insert(peer);
+								log::trace!(target: "mixnet", "{} done {}", p, handshake_done.len());
 							}
 							if num_connected.try_into().ok() == target_peers ||
 								Some(handshake_done.len()) == target_peers
@@ -279,6 +280,8 @@ pub fn spawn_swarms(
 						num_connected -= 1;
 						log::trace!(target: "mixnet", "{} connected  {}/{:?}", p, num_connected, target_peers);
 						if count_connected && !expect_all_connected {
+							// non expected connection will disconnect peer, count it
+							// as negotiated connection.
 							handshake_done.insert(peer_id);
 
 							if Some(handshake_done.len()) == target_peers {

@@ -704,6 +704,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						self.topology.peer_stats(&self.peer_stats);
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
 					}
+
 					if let Err(e) = results
 						.start_send_unpin(MixnetEvent::Connected(connection.network_id(), key))
 					{

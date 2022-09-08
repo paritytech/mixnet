@@ -30,6 +30,8 @@ const DEFAULT_PEER_CONNECTION: u32 = 128 * 1024;
 /// Size of the polling window in time.
 pub const DEFAULT_WINDOW_SIZE: Duration = Duration::from_secs(2);
 
+const DEFAULT_NO_YIELD_BUDGET: usize = 128;
+
 /// Configuration data for the mixnet protocol.
 #[derive(Clone)]
 pub struct Config {
@@ -58,6 +60,9 @@ pub struct Config {
 	/// Size of window for reporting stat and ensuring
 	/// bandwidth expectation. In millis seconds.
 	pub window_size_ms: u64,
+	/// Mixnet will yield if it did not for that many
+	/// consecutive poll calls.
+	pub no_yield_budget: usize,
 }
 
 impl Config {
@@ -82,6 +87,7 @@ impl Config {
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 			persist_surb_query: true,
+			no_yield_budget: DEFAULT_NO_YIELD_BUDGET,
 			window_size_ms: DEFAULT_WINDOW_SIZE
 				.as_millis()
 				.try_into()

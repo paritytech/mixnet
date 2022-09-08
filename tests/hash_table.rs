@@ -102,7 +102,10 @@ fn test_messages(conf: TestConfig) {
 		secret_key,
 		public_key,
 		local_id: Default::default(),
-		target_bytes_per_second: 16 * 1024, // for release 64 * 1024
+		target_bytes_per_second: 1024 * 1024, // for release 64 * 1024
+		// usually only need to be low value for high bandwidth in debug mode and not in single
+		// thread
+		no_yield_budget: 2,
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
 		average_message_delay_ms: 50,
@@ -158,8 +161,10 @@ fn test_messages(conf: TestConfig) {
 		single_thread,
 	);
 
+	log::trace!(target: "mixnet_test", "before waiting connections");
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
+	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {
 		// ext 1 can route through peer 0 (only peer accepting ext)
 		vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
@@ -168,7 +173,9 @@ fn test_messages(conf: TestConfig) {
 			.map(|to| SendConf { from: 0, to, message: source_message.clone() })
 			.collect()
 	};
+	log::trace!(target: "mixnet_test", "before sending messages");
 	send_messages(&conf, send.clone().into_iter(), &nodes, &mut with_swarm_channels);
+	log::trace!(target: "mixnet_test", "after sending messages");
 	wait_on_messages(&conf, send.into_iter(), &mut with_swarm_channels, b"pong");
 }
 
@@ -250,7 +257,7 @@ fn testing_mess() {
 		num_peers: 5,
 		num_hops: 3,
 		message_count: 1,
-		message_size: 4 * 1024, // max 256 * 1024
+		message_size: 1, // max 256 * 1024
 		with_surb: false,
 		from_external: false,
 	})
