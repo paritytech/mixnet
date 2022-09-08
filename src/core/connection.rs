@@ -343,6 +343,10 @@ impl<C: Connection> ManagedConnection<C> {
 			if self.kind == ConnectedKind::PendingHandshake || topology.changed_routing(&peer_id) {
 				let old_kind = self.kind;
 				self.kind = peers.add_peer(local_id, &peer_id, topology);
+				// TODO on new kind external apply topology accept_peers and
+				// possibly revert. TODO probably need a kind to keep conn
+				// open for a while to finish messaging (half bandwidth use, same for
+				// new topo).
 				peers.remove_peer(old_kind);
 				topology.peer_stats(peers);
 			}

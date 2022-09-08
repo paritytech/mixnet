@@ -443,11 +443,12 @@ fn test_change_routing_set(conf: TestConfig) {
 		// ext 1 can route through peer 0 (only peer accepting ext)
 		vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
 	} else {
+		let start = set_1.start;
 		let end = set_1.end;
 		(set_1)
 			.map(|from| SendConf {
 				from,
-				to: if from + 1 == end { 0 } else { from + 1 },
+				to: if from + 1 == end { start } else { from + 1 },
 				message: source_message.clone(),
 			})
 			.collect()
@@ -461,7 +462,7 @@ fn test_change_routing_set(conf: TestConfig) {
 		.iter()
 		.map(|topo| {
 			let topo = topo.read();
-			(topo.topo.local_id().clone(), topo.topo.local_routing_table().public_key.clone())
+			(*topo.topo.local_id(), topo.topo.local_routing_table().public_key)
 		})
 		.collect();
 	for topo in handle_topos.iter() {
@@ -481,11 +482,12 @@ fn test_change_routing_set(conf: TestConfig) {
 		// vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
 		return
 	} else {
+		let start = set_2.start;
 		let end = set_2.end;
 		(set_2)
 			.map(|from| SendConf {
 				from,
-				to: if from + 1 == end { 0 } else { from + 1 },
+				to: if from + 1 == end { start } else { from + 1 },
 				message: source_message.clone(),
 			})
 			.collect()
