@@ -28,7 +28,7 @@ use common::{
 use libp2p_core::PeerId;
 use rand::{prelude::IteratorRandom, Rng, RngCore};
 use std::{
-	collections::HashMap,
+	collections::{BTreeMap, BTreeSet, HashMap},
 	sync::{
 		atomic::{AtomicUsize, Ordering},
 		Arc,
@@ -38,7 +38,7 @@ use std::{
 use ambassador::Delegate;
 use mixnet::{
 	ambassador_impl_Topology, traits::Topology, Error, MixPeerId, MixPublicKey, MixSecretKey,
-	PeerCount, SendOptions,
+	NetworkPeerId, PeerCount, SendOptions,
 };
 
 #[derive(Delegate)]
@@ -114,6 +114,15 @@ impl mixnet::traits::Handshake for ConfigGraph {
 }
 
 impl Topology for TopologyGraph {
+	fn changed_route(&mut self) -> Option<BTreeSet<MixPeerId>> {
+		// no support for peer set change
+		None
+	}
+
+	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>> {
+		None
+	}
+
 	fn can_route(&self, id: &MixPeerId) -> bool {
 		self.connections.contains_key(id)
 	}
@@ -244,11 +253,6 @@ impl Topology for TopologyGraph {
 			return None
 		}
 		Some((1, 1))
-	}
-
-	fn changed_routing(&mut self, _with: &MixPeerId) -> bool {
-		// fix topo
-		false
 	}
 
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool {

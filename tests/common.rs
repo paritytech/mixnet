@@ -41,7 +41,7 @@ use mixnet::{
 };
 use rand::{rngs::SmallRng, RngCore};
 use std::{
-	collections::{HashMap, HashSet},
+	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
 	sync::Arc,
 	task::Poll,
 };
@@ -264,7 +264,8 @@ pub fn spawn_swarms(
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(peer_id)) => {
-						// when keep_connection_alive is true TODO factor the decrease and increase code
+						// when keep_connection_alive is true TODO factor the decrease and increase
+						// code
 						num_connected -= 1;
 						log::trace!(target: "mixnet", "{} connected  {}/{:?}", p, num_connected, target_peers);
 						if count_connected && !expect_all_connected {

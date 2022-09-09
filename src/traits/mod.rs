@@ -26,7 +26,10 @@ use crate::{Error, MixPeerId, MixPublicKey, NetworkPeerId, PeerCount, SendOption
 use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
-use std::task::{Context, Poll};
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	task::{Context, Poll},
+};
 
 pub use crate::WorkerCommand;
 pub use hash_table::TopologyHashTable;
@@ -100,14 +103,18 @@ pub trait Topology: Sized {
 	/// On disconnect.
 	fn disconnected(&mut self, id: &MixPeerId);
 
-	/// Check (cost should be low) if established connection with peer did change.
-	///
-	/// For instance on a change of allowed routing set.
-	/// If a change occurs, only return true on first call.
-	fn changed_routing(&mut self, with: &MixPeerId) -> bool;
+	/// On topology change, might have existing peer changed, return a list of these peers.
+	/// Call to this function return the new peers only once and should
+	/// be costless when no change occurs.
+	fn changed_route(&mut self) -> Option<BTreeSet<MixPeerId>>;
+
+	/// On topology change, might have new peer to accept.
+	/// Call to this function return the new peers only once and should
+	/// be costless when no change occurs.
+	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>>;
 
 	/// Is peer allowed to connect to our node.
-	/// Should usually be call by `check_handshake`.
+	/// TODO call manually after check_handshake.
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool;
 }
 
@@ -138,10 +145,6 @@ pub struct NoTopology {
 
 impl Topology for NoTopology {
 	fn can_route(&self, _id: &MixPeerId) -> bool {
-		false
-	}
-
-	fn changed_routing(&mut self, _with: &MixPeerId) -> bool {
 		false
 	}
 
@@ -208,6 +211,14 @@ impl Topology for NoTopology {
 
 	fn accept_peer(&self, _: &MixPeerId, _: &PeerCount) -> bool {
 		true
+	}
+
+	fn changed_route(&mut self) -> Option<BTreeSet<MixPeerId>> {
+		None
+	}
+
+	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>> {
+		None
 	}
 }
 

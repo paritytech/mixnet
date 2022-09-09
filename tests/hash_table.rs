@@ -27,17 +27,19 @@ use common::{
 	send_messages, wait_on_connections, wait_on_messages, SendConf, SimpleHandshake, TestConfig,
 };
 use libp2p_core::PeerId;
-use mixnet::ambassador_impl_Topology;
-use parking_lot::RwLock;
-use rand::RngCore;
-use std::sync::Arc;
-
 use mixnet::{
+	ambassador_impl_Topology,
 	traits::{
 		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
 		Topology,
 	},
-	Error, MixPeerId, MixPublicKey, MixSecretKey, PeerCount, SendOptions,
+	Error, MixPeerId, MixPublicKey, MixSecretKey, NetworkPeerId, PeerCount, SendOptions,
+};
+use parking_lot::RwLock;
+use rand::RngCore;
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	sync::Arc,
 };
 
 impl TopologyConfig for NotDistributed {
@@ -99,8 +101,12 @@ struct NotDistributedShared {
 }
 
 impl mixnet::traits::Topology for NotDistributedShared {
-	fn changed_routing(&mut self, with: &MixPeerId) -> bool {
-		self.inner.write().changed_routing(with)
+	fn changed_route(&mut self) -> Option<BTreeSet<MixPeerId>> {
+		self.inner.write().changed_route()
+	}
+
+	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>> {
+		self.inner.write().try_connect()
 	}
 
 	fn first_hop_nodes_external(

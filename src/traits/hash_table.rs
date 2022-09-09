@@ -21,7 +21,7 @@
 //! Topology where direct peers are resolved
 //! by hashing peers id (so randomly distributed).
 
-use crate::{traits::Topology, Error, MixPeerId, MixPublicKey, PeerCount};
+use crate::{traits::Topology, Error, MixPeerId, MixPublicKey, NetworkPeerId, PeerCount};
 use log::{debug, error, trace};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -93,6 +93,8 @@ pub struct TopologyHashTable<C: Configuration> {
 
 	changed_routing: BTreeSet<MixPeerId>,
 
+	try_connect: BTreeMap<MixPeerId, Option<NetworkPeerId>>,
+
 	// This is only routing peers we got info for.
 	routing_peers: BTreeMap<MixPeerId, RoutingTable<C::Version>>,
 
@@ -135,8 +137,12 @@ pub struct RoutingTable<V> {
 }
 
 impl<C: Configuration> Topology for TopologyHashTable<C> {
-	fn changed_routing(&mut self, with: &MixPeerId) -> bool {
-		self.changed_routing.remove(with)
+	fn changed_route(&mut self) -> Option<BTreeSet<MixPeerId>> {
+		(!self.changed_routing.is_empty()).then(|| std::mem::take(&mut self.changed_routing))
+	}
+
+	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>> {
+		(!self.try_connect.is_empty()).then(|| std::mem::take(&mut self.try_connect))
 	}
 
 	fn first_hop_nodes_external(
@@ -433,6 +439,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			allowed_routing: BTreeSet::new(),
 			connected_nodes: HashSet::new(),
 			changed_routing: BTreeSet::new(),
+			try_connect: BTreeMap::new(),
 			routing: false,
 			routing_peers: BTreeMap::new(),
 			routing_table,
@@ -563,6 +570,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			}
 		}
 
+		// TODO incorrect: we want
 		let mut prev =
 			std::mem::replace(&mut self.changed_routing, std::mem::take(&mut self.allowed_routing));
 		self.changed_routing.append(&mut prev);

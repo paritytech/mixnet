@@ -38,7 +38,7 @@ pub use crate::{
 pub type MixPeerId = [u8; 32];
 
 /// Mixnet network peer identity.
-type NetworkPeerId = libp2p_core::PeerId;
+pub type NetworkPeerId = libp2p_core::PeerId;
 
 /// Options for sending a message in the mixnet.
 pub struct SendOptions {

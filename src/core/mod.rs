@@ -637,6 +637,53 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
+		if let Some(changed) = self.topology.changed_route() {
+			for peer_id in changed {
+				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
+					if let Some(connection) = self.connected_peers.get_mut(net_id) {
+						connection.set_kind_changed();
+					}
+				}
+			}
+		}
+
+		if let Some(need_conn) = self.topology.try_connect() {
+			for (peer_id, maybe_net_id) in need_conn {
+				if let Some(net_id) = maybe_net_id.as_ref() {
+					if let Some(connection) = self.connected_peers.get_mut(net_id) {
+						if connection.mixnet_id() == Some(&peer_id) {
+							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
+							connection.set_kind_changed();
+							continue
+						} else {
+							// change of peer id for network other peer should have broken
+							// connection already
+							// TODO disconnect and reconnect, but disconnect with the keep alive
+							// mechanism to process last forward.
+							// Aka keep managed connection for a while and build another one.
+							// And drop managed from connected_peers (put in slow_close managed
+							// connection) to be able to renew other another handler and p2p
+							// conn_id. Also new connection all run as half bandwidth during
+							// connection period as long as close connection period in all case.
+						}
+					}
+				}
+				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
+					if let Some(connection) = self.connected_peers.get_mut(net_id) {
+						if maybe_net_id.is_some() && maybe_net_id.as_ref() != Some(net_id) {
+							// existing connection with change of network id.
+							// TODO slow disconnect.
+						} else {
+							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
+							connection.set_kind_changed();
+							continue
+						}
+					}
+				}
+				// TODO send back info to the behaviour to reinit or init connection
+			}
+		}
+
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			let now = Instant::now();
 			self.window.last_now = now;

@@ -100,6 +100,8 @@ pub struct Handler {
 	outbound: Option<NegotiatedSubstream>,
 	/// Peer id kept until we got outbound.
 	peer_id: Option<PeerId>,
+	/// Should we remove handler when mixnet do not manage a connection.
+	keep_connection_alive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +123,11 @@ enum State {
 
 impl Handler {
 	/// Builds a new `Handler` with the given configuration.
-	pub fn new(config: Config, mixnet_worker_sink: SinkToWorker) -> Self {
+	pub fn new(
+		config: Config,
+		mixnet_worker_sink: SinkToWorker,
+		keep_connection_alive: bool,
+	) -> Self {
 		Handler {
 			config,
 			pending_errors: VecDeque::with_capacity(2),
@@ -132,6 +138,7 @@ impl Handler {
 			state: State::ActiveNotSent,
 			mixnet_worker_sink,
 			connection_closed: None,
+			keep_connection_alive,
 		}
 	}
 }
@@ -258,11 +265,11 @@ impl ConnectionHandler for Handler {
 		}
 		match self.state {
 			State::Inactive { reported: true } => {
+				// TODO switch to ActiveNotSent when topo allow us to connect again.
 				return Poll::Pending // nothing to do on this connection
 			},
 			State::Inactive { reported: false } => {
 				log::trace!(target: "mixnet", "Keeping handler alive for disconnected mixnet.");
-				// TODO switch to ActiveNotSent when topo allow us to connect again.
 				self.connection_closed = None;
 				self.state = State::Inactive { reported: true };
 			},

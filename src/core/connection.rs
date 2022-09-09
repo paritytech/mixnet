@@ -51,6 +51,7 @@ pub(crate) struct ManagedConnection<C> {
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
 	kind: ConnectedKind,
+	kind_changed: bool,
 	handshake_sent: bool,
 	handshake_received: bool,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
@@ -87,6 +88,7 @@ impl<C: Connection> ManagedConnection<C> {
 			mixnet_id: None,
 			network_id,
 			kind: ConnectedKind::PendingHandshake,
+			kind_changed: false,
 			read_timeout: Delay::new(READ_TIMEOUT),
 			next_packet: None,
 			current_window,
@@ -99,6 +101,10 @@ impl<C: Connection> ManagedConnection<C> {
 			packet_queue_inject: Default::default(),
 			stats: with_stats.then(Default::default),
 		}
+	}
+
+	pub fn set_kind_changed(&mut self) {
+		self.kind_changed = true;
 	}
 
 	pub fn connection_mut(&mut self) -> &mut C {
@@ -340,9 +346,10 @@ impl<C: Connection> ManagedConnection<C> {
 			return result
 		} else if let Some(peer_id) = self.mixnet_id {
 			// TODO this could be a poll on a channel.
-			if self.kind == ConnectedKind::PendingHandshake || topology.changed_routing(&peer_id) {
+			if self.kind == ConnectedKind::PendingHandshake || self.kind_changed {
 				let old_kind = self.kind;
 				self.kind = peers.add_peer(local_id, &peer_id, topology);
+				self.kind_changed = false;
 				// TODO on new kind external apply topology accept_peers and
 				// possibly revert. TODO probably need a kind to keep conn
 				// open for a while to finish messaging (half bandwidth use, same for
@@ -415,8 +422,6 @@ impl<C: Connection> ManagedConnection<C> {
 			let (current, external) = if self.kind.routing_receive() {
 				(window.current_packet_limit, false)
 			} else {
-				// TODO should cache topology with kind (and recalc when one new external,
-				// not only when changed_routing)
 				let (n, d) = topology.bandwidth_external(&peer_id, peers).unwrap_or((0, 1));
 				((window.current_packet_limit * n) / d, true)
 			};

@@ -128,7 +128,11 @@ impl NetworkBehaviour for MixnetBehaviour {
 	type OutEvent = MixnetEvent;
 
 	fn new_handler(&mut self) -> Self::ConnectionHandler {
-		Handler::new(handler::Config::default(), dyn_clone::clone_box(&*self.mixnet_worker_sink))
+		Handler::new(
+			handler::Config::default(),
+			dyn_clone::clone_box(&*self.mixnet_worker_sink),
+			self.keep_connection_alive,
+		)
 	}
 
 	fn inject_event(&mut self, _: PeerId, _: ConnectionId, _: ()) {}
@@ -191,7 +195,9 @@ impl NetworkBehaviour for MixnetBehaviour {
 			Poll::Ready(Some(out)) => match out {
 				MixnetEvent::Disconnected(peer_id) =>
 					if self.keep_connection_alive {
-						Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::Disconnected(peer_id)))
+						Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+							MixnetEvent::Disconnected(peer_id),
+						))
 					} else if let Some(con_id) = self.connected.remove(&peer_id) {
 						Poll::Ready(NetworkBehaviourAction::CloseConnection {
 							peer_id,
