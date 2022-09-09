@@ -130,7 +130,8 @@ impl Packet {
 }
 
 pub enum MixEvent {
-	Disconnected(Vec<NetworkPeerId>),
+	Disconnected(Vec<(NetworkPeerId, Option<MixPeerId>)>),
+	TryConnect(Vec<(MixPeerId, Option<NetworkPeerId>)>),
 	None,
 }
 
@@ -589,13 +590,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	/// Should be called when a peer is disconnected.
-	pub fn remove_connected_peer(&mut self, id: &NetworkPeerId) {
+	pub fn remove_connected_peer(&mut self, id: &NetworkPeerId) -> Option<MixPeerId> {
 		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|mut c| {
 			self.peer_stats.remove_peer(c.disconnected_kind());
 			c.mixnet_id().cloned()
 		}) {
 			self.handshaken_peers.remove(&mix_id);
 			self.topology.disconnected(&mix_id);
+			Some(mix_id)
+		} else {
+			None
 		}
 	}
 
@@ -648,6 +652,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		if let Some(need_conn) = self.topology.try_connect() {
+			let mut try_connect = Vec::new();
 			for (peer_id, maybe_net_id) in need_conn {
 				if let Some(net_id) = maybe_net_id.as_ref() {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
@@ -678,9 +683,15 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 							connection.set_kind_changed();
 							continue
 						}
+					} else {
+						try_connect.push((peer_id, Some(*net_id)));
+						continue
 					}
 				}
-				// TODO send back info to the behaviour to reinit or init connection
+				try_connect.push((peer_id, maybe_net_id));
+			}
+			if !try_connect.is_empty() {
+				return Poll::Ready(MixEvent::TryConnect(try_connect))
 			}
 		}
 
@@ -762,7 +773,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				},
 				Poll::Ready(ConnectionEvent::Broken) => {
 					// same as pending
-					disconnected.push(*peer_id);
+					disconnected.push((*peer_id, connection.mixnet_id().cloned()));
 				},
 				Poll::Ready(ConnectionEvent::None) => {
 					all_pending = false;
@@ -793,7 +804,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		if !disconnected.is_empty() {
-			for peer in disconnected.iter() {
+			for (peer, _) in disconnected.iter() {
 				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 				self.remove_connected_peer(peer);
 			}

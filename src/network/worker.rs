@@ -120,9 +120,17 @@ impl<T: Configuration> MixnetWorker<T> {
 		match result {
 			MixEvent::None => (),
 			MixEvent::Disconnected(peers) =>
-				for peer in peers.into_iter() {
+				for (net_id, peer_id) in peers {
 					if let Err(e) =
-						self.worker_out.start_send_unpin(MixnetEvent::Disconnected(peer))
+						self.worker_out.start_send_unpin(MixnetEvent::Disconnected(net_id, peer_id))
+					{
+						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+					}
+				},
+			MixEvent::TryConnect(peers) =>
+				for (peer_id, net_id) in peers {
+					if let Err(e) =
+						self.worker_out.start_send_unpin(MixnetEvent::TryConnect(peer_id, net_id))
 					{
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					}
@@ -189,10 +197,11 @@ impl<T: Configuration> MixnetWorker<T> {
 	fn disconnect_peer(&mut self, peer: &PeerId) {
 		log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 		log::error!(target: "mixnet", "Disconnecting peer {:?}", peer);
-		if let Err(e) = self.worker_out.start_send_unpin(MixnetEvent::Disconnected(*peer)) {
+		let peer_id = self.mixnet.remove_connected_peer(peer);
+		if let Err(e) = self.worker_out.start_send_unpin(MixnetEvent::Disconnected(*peer, peer_id))
+		{
 			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 		}
-		self.mixnet.remove_connected_peer(peer);
 	}
 
 	pub fn mixnet_mut(&mut self) -> &mut Mixnet<T, Connection> {

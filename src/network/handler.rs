@@ -187,8 +187,14 @@ impl Handler {
 	}
 }
 
+#[derive(Debug)]
+pub enum HandlerEvent {
+	NetworkId(PeerId),
+	TryReConnect,
+}
+
 impl ConnectionHandler for Handler {
-	type InEvent = PeerId;
+	type InEvent = HandlerEvent;
 	type OutEvent = ();
 	type Error = Failure;
 	type InboundProtocol = protocol::Mixnet;
@@ -218,12 +224,18 @@ impl ConnectionHandler for Handler {
 		}
 	}
 
-	fn inject_event(&mut self, peer: PeerId) {
-		if let Some(old_id) = self.peer_id.as_ref() {
-			log::trace!(target: "mixnet", "Dropping peer id {:?}, already got {:?}", peer, old_id);
-		} else {
-			self.peer_id = Some(peer);
-			self.try_send_connected();
+	fn inject_event(&mut self, event: HandlerEvent) {
+		match event {
+			HandlerEvent::NetworkId(peer) =>
+				if let Some(old_id) = self.peer_id.as_ref() {
+					log::trace!(target: "mixnet", "Dropping peer id {:?}, already got {:?}", peer, old_id);
+				} else {
+					self.peer_id = Some(peer);
+					self.try_send_connected();
+				},
+			HandlerEvent::TryReConnect => {
+				unimplemented!("TODO");
+			},
 		}
 	}
 

@@ -263,7 +263,10 @@ pub fn spawn_swarms(
 							}
 						}
 					},
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(peer_id)) => {
+					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(
+						peer_id,
+						_omixnet_id,
+					)) => {
 						// when keep_connection_alive is true TODO factor the decrease and increase
 						// code
 						num_connected -= 1;
@@ -283,6 +286,13 @@ pub fn spawn_swarms(
 								target_peers = None;
 							}
 						}
+					},
+					SwarmEvent::Behaviour(mixnet::MixnetEvent::TryConnect(
+						_peer_id,
+						_o_network_id,
+					)) => {
+						// unimplemented!("TODO store rx address and matching peer id (get peer id
+						// from disconnected msg), then dial again from peer id");
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
 						from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await.unwrap();
