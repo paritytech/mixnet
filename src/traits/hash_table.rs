@@ -363,12 +363,14 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 
 	fn connected(&mut self, peer_id: MixPeerId, _key: MixPublicKey) {
 		debug!(target: "mixnet", "Connected from internal");
-		self.add_connected_peer(peer_id)
+		self.add_connected_peer(peer_id);
+		self.distributed_try_connect();
 	}
 
 	fn disconnected(&mut self, peer_id: &MixPeerId) {
 		debug!(target: "mixnet", "Disconnected from internal");
 		self.add_disconnected_peer(peer_id);
+		self.distributed_try_connect();
 	}
 
 	fn bandwidth_external(&self, id: &MixPeerId, peers: &PeerCount) -> Option<(usize, usize)> {
@@ -570,7 +572,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			}
 		}
 
-		// TODO incorrect: we want
+		// all previously allowed will see their routing change.
 		let mut prev =
 			std::mem::replace(&mut self.changed_routing, std::mem::take(&mut self.allowed_routing));
 		self.changed_routing.append(&mut prev);
@@ -579,7 +581,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 		for peer_id in set {
 			self.allowed_routing.insert(*peer_id);
-			self.changed_routing.insert(*peer_id);
 			if &self.local_id == peer_id {
 				debug!(target: "mixnet", "In new routing set, routing.");
 				self.routing = true;
@@ -587,10 +588,25 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	fn handle_new_routing_set_end(&mut self) {
-		let connected = std::mem::take(&mut self.connected_nodes);
-		for peer_id in connected.into_iter() {
-			self.add_connected_peer(peer_id);
+	pub fn distributed_try_connect(&mut self) {
+		if C::DISTRIBUTE_ROUTES {
+			let mut nb_try_connect = C::NUMBER_CONNECTED_FORWARD;
+			for peer in self.should_connect_to.iter() {
+				if let Some(_table) = self.routing_peers.get(peer) {
+					if !self.routing_table.connected_to.contains(peer) {
+						// TODO try_connect_pending with ttl to avoid getting stuck on
+						// list start
+						// enough) -> maybe up nb_try_connect.
+						// TODO network_id in routing table??
+						// self.try_connect.insert(*peer, table.network_id);
+						self.try_connect.insert(*peer, None);
+					}
+				}
+				nb_try_connect -= 1;
+				if nb_try_connect == 0 {
+					return
+				}
+			}
 		}
 	}
 
@@ -610,7 +626,13 @@ impl<C: Configuration> TopologyHashTable<C> {
 		debug!(target: "mixnet", "should connect to {:?}", self.should_connect_to);
 		self.routing_table.version = version;
 		self.refresh_self_routing_table();
-		self.handle_new_routing_set_end();
+
+		// reinsert to update should_connect_pending: TODO just iterate here
+		let connected = std::mem::take(&mut self.connected_nodes);
+		for peer_id in connected.into_iter() {
+			self.add_connected_peer(peer_id);
+		}
+		self.distributed_try_connect();
 	}
 
 	pub fn handle_new_routing_set(
@@ -621,7 +643,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 		assert!(!C::DISTRIBUTE_ROUTES);
 		self.handle_new_routing_set_start(set.iter().map(|k| &k.0), new_self);
 		self.refresh_static_routing_tables(set);
-		self.handle_new_routing_set_end();
 	}
 
 	pub fn handle_new_self_key(&mut self) {
@@ -695,6 +716,12 @@ impl<C: Configuration> TopologyHashTable<C> {
 					Some(&self.routing_table),
 					&self.allowed_routing,
 				) {
+					// TODO could also add receive_from.
+					for peer_id in table.connected_to.iter() {
+						if !self.routing_table.connected_to.contains(peer_id) {
+							self.try_connect.insert(*peer_id, None);
+						}
+					}
 					self.routing_table = table;
 					self.paths.clear();
 					self.paths_depth = 0;
