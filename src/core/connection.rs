@@ -52,7 +52,9 @@ pub(crate) struct ManagedConnection<C> {
 	network_id: NetworkPeerId,
 	kind: ConnectedKind,
 	kind_changed: bool,
+	handshake_queue: bool,
 	handshake_sent: bool,
+	error_on_handshake_sent: bool,
 	handshake_received: bool,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
 	// Real messages queue, sorted by deadline (`QueuedPacket` is ord desc by deadline).
@@ -93,7 +95,9 @@ impl<C: Connection> ManagedConnection<C> {
 			next_packet: None,
 			current_window,
 			public_key: None,
+			handshake_queue: false,
 			handshake_sent: false,
+			error_on_handshake_sent: false,
 			handshake_received: false,
 			sent_in_window: 0,
 			recv_in_window: 0,
@@ -125,7 +129,7 @@ impl<C: Connection> ManagedConnection<C> {
 		public_key: &MixPublicKey,
 		topology: &mut impl Handshake,
 	) -> Poll<Result<(), ()>> {
-		if !self.handshake_sent {
+		if !self.handshake_queue {
 			let handshake =
 				if let Some(handshake) = topology.handshake(&self.network_id, public_key) {
 					handshake
@@ -134,7 +138,7 @@ impl<C: Connection> ManagedConnection<C> {
 					return Poll::Ready(Err(()))
 				};
 			if self.connection.try_queue_send(handshake).is_none() {
-				self.handshake_sent = true;
+				self.handshake_queue = true;
 			} else {
 				// should not happen as handshake is first ever paquet.
 				log::error!(target: "mixnet", "Hanshake is first paquet");
@@ -142,7 +146,14 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 		}
 		match self.connection.send_flushed(cx) {
-			Poll::Ready(Ok(true)) => Poll::Ready(Ok(())),
+			Poll::Ready(Ok(true)) => {
+				self.handshake_sent = true;
+				if self.error_on_handshake_sent {
+					self.error_on_handshake_sent = false;
+					return Poll::Ready(Err(()));
+				}
+				Poll::Ready(Ok(()))
+			},
 			Poll::Ready(Ok(false)) => {
 				// No message queued, handshake as been sent, just wait on reply
 				// or timeout.
@@ -208,7 +219,12 @@ impl<C: Connection> ManagedConnection<C> {
 					self.handshake_received = true;
 					if !accepted {
 						log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?}", self.network_id);
-						Poll::Ready(Err(()))
+						if self.handshake_sent {
+							Poll::Ready(Err(()))
+						} else {
+							self.error_on_handshake_sent = true;
+							Poll::Ready(Ok((peer_id, pk)))
+						}
 					} else {
 						Poll::Ready(Ok((peer_id, pk)))
 					}
