@@ -449,7 +449,6 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 		&mut self,
 		payload: &[u8],
 		_from: &NetworkPeerId,
-		peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)> {
 		let mut peer_id = [0u8; 32];
 		peer_id.copy_from_slice(&payload[0..32]);
@@ -464,9 +463,6 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 		message.extend_from_slice(&pk[..]);
 		if pub_key.verify(&signature, &message[..]).is_ok() {
 			let pk = MixPublicKey::from(pk);
-			if !self.topo.accept_peer(&peer_id, peers) {
-				return None
-			}
 			if !self.topo.can_route(&peer_id) {
 				if self.nb_external == self.max_external {
 					return None

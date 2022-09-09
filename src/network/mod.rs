@@ -213,15 +213,17 @@ impl NetworkBehaviour for MixnetBehaviour {
 				},
 				MixnetEvent::TryConnect(mixnet_id, None) => {
 					if let Some(network_id) = self.keep_alive.remove(&mixnet_id) {
-						Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
-							mixnet_id,
-							Some(network_id),
-						)))
-					} else {
-						Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
-							mixnet_id, None,
-						)))
+						if let Some(con_id) = self.connected.get(&network_id) {
+							return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+								peer_id: network_id,
+								handler: NotifyHandler::One(*con_id),
+								event: handler::HandlerEvent::TryReConnect,
+							})
+						}
 					}
+					Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
+						mixnet_id, None,
+					)))
 				},
 				// TODO looks like adding this mixnet_id may be useless after all.
 				MixnetEvent::Disconnected(network_id, mixnet_id) =>

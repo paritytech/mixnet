@@ -114,7 +114,6 @@ pub trait Topology: Sized {
 	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>>;
 
 	/// Is peer allowed to connect to our node.
-	/// TODO call manually after check_handshake.
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool;
 }
 
@@ -129,7 +128,6 @@ pub trait Handshake {
 		&mut self,
 		payload: &[u8],
 		from: &NetworkPeerId,
-		peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)>;
 
 	/// On handshake, return handshake payload.
@@ -241,7 +239,6 @@ impl Handshake for NoTopology {
 		&mut self,
 		payload: &[u8],
 		from: &NetworkPeerId,
-		_peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)> {
 		let peer_id = crate::core::to_sphinx_id(from).ok()?;
 		let mut pk = [0u8; crate::core::PUBLIC_KEY_LEN];

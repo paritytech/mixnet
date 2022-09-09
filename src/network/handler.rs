@@ -234,7 +234,8 @@ impl ConnectionHandler for Handler {
 					self.try_send_connected();
 				},
 			HandlerEvent::TryReConnect => {
-				unimplemented!("TODO");
+				self.state = State::ActiveNotSent;
+				self.do_outbound_query = true;
 			},
 		}
 	}

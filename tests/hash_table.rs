@@ -85,9 +85,8 @@ impl mixnet::traits::Handshake for NotDistributed {
 		&mut self,
 		payload: &[u8],
 		from: &PeerId,
-		peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.check_handshake(payload, from, peers)
+		self.inner.check_handshake(payload, from)
 	}
 
 	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
@@ -192,9 +191,8 @@ impl mixnet::traits::Handshake for NotDistributedShared {
 		&mut self,
 		payload: &[u8],
 		from: &PeerId,
-		peers: &PeerCount,
 	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.write().check_handshake(payload, from, peers)
+		self.inner.write().check_handshake(payload, from)
 	}
 
 	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {

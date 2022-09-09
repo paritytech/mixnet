@@ -771,9 +771,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					}
 				},
-				Poll::Ready(ConnectionEvent::Broken) => {
+				Poll::Ready(ConnectionEvent::Broken(mixnet_id)) => {
 					// same as pending
-					disconnected.push((*peer_id, connection.mixnet_id().cloned()));
+					disconnected.push((*peer_id, mixnet_id));
 				},
 				Poll::Ready(ConnectionEvent::None) => {
 					all_pending = false;

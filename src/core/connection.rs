@@ -42,7 +42,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) enum ConnectionEvent {
 	Established(MixPeerId, MixPublicKey),
 	Received((Packet, bool)),
-	Broken,
+	Broken(Option<MixPeerId>),
 	None,
 }
 
@@ -188,7 +188,7 @@ impl<C: Connection> ManagedConnection<C> {
 	fn try_recv_handshake(
 		&mut self,
 		cx: &mut Context,
-		topology: &mut impl Handshake,
+		topology: &mut impl Configuration,
 		peers: &PeerCount,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
 		if self.handshake_received {
@@ -200,12 +200,18 @@ impl<C: Connection> ManagedConnection<C> {
 				self.read_timeout.reset(READ_TIMEOUT);
 				log::trace!(target: "mixnet", "Handshake message from {:?}", self.network_id);
 				if let Some((peer_id, pk)) =
-					topology.check_handshake(handshake.as_slice(), &self.network_id, peers)
+					topology.check_handshake(handshake.as_slice(), &self.network_id)
 				{
+					let accepted = topology.accept_peer(&peer_id, peers);
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
 					self.handshake_received = true;
-					Poll::Ready(Ok((peer_id, pk)))
+					if !accepted {
+						log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?}", self.network_id);
+						Poll::Ready(Err(()))
+					} else {
+						Poll::Ready(Ok((peer_id, pk)))
+					}
 				} else {
 					log::trace!(target: "mixnet", "Invalid handshake from peer, closing: {:?}", self.network_id);
 					Poll::Ready(Err(()))
@@ -308,7 +314,7 @@ impl<C: Connection> ManagedConnection<C> {
 	) -> Poll<ConnectionEvent> {
 		peers.remove_peer(self.disconnected_kind());
 		topology.peer_stats(peers);
-		Poll::Ready(ConnectionEvent::Broken)
+		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id.clone()))
 	}
 
 	pub(crate) fn poll(
