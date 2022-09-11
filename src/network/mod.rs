@@ -53,10 +53,6 @@ pub struct MixnetBehaviour {
 	mixnet_worker_stream: StreamFromWorker,
 	// avoid two connections from a single peer.
 	connected: HashMap<PeerId, ConnectionId>,
-	// When keep alive on disconnect, we keep reference to
-	// MixPeerId for reconnection.
-	// TODO ttl map this and clean connected somehow
-	keep_alive: HashMap<MixPeerId, PeerId>,
 	// connection handler notify queue
 	notify_queue: VecDeque<(PeerId, ConnectionId)>,
 	// if true when mixnet do not accept a peer we do not
@@ -78,7 +74,6 @@ impl MixnetBehaviour {
 			mixnet_worker_stream: worker_out,
 			notify_queue: Default::default(),
 			connected: Default::default(),
-			keep_alive: Default::default(),
 			keep_connection_alive,
 		}
 	}
@@ -211,26 +206,11 @@ impl NetworkBehaviour for MixnetBehaviour {
 						Some(network_id),
 					)))
 				},
-				MixnetEvent::TryConnect(mixnet_id, None) => {
-					if let Some(network_id) = self.keep_alive.remove(&mixnet_id) {
-						if let Some(con_id) = self.connected.get(&network_id) {
-							return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-								peer_id: network_id,
-								handler: NotifyHandler::One(*con_id),
-								event: handler::HandlerEvent::TryReConnect,
-							})
-						}
-					}
-					Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
-						mixnet_id, None,
-					)))
-				},
-				// TODO looks like adding this mixnet_id may be useless after all.
+				MixnetEvent::TryConnect(mixnet_id, None) => Poll::Ready(
+					NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(mixnet_id, None)),
+				),
 				MixnetEvent::Disconnected(network_id, mixnet_id) =>
 					if self.keep_connection_alive {
-						if let Some(mixnet_id) = mixnet_id {
-							self.keep_alive.insert(mixnet_id, network_id);
-						}
 						Poll::Ready(NetworkBehaviourAction::GenerateEvent(
 							MixnetEvent::Disconnected(network_id, mixnet_id),
 						))

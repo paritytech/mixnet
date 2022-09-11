@@ -92,6 +92,7 @@ pub struct Handler {
 	/// Send connection infos and streams to worker.
 	mixnet_worker_sink: SinkToWorker,
 	/// Receive connection close event when the connection sent to mixnet is dropped.
+	/// TODO could just get event from behaviour on disconnected.
 	connection_closed: Option<futures::channel::oneshot::Receiver<()>>,
 
 	/// Inbound stream kept until outbound is send.

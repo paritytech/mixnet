@@ -63,6 +63,12 @@ pub struct Config {
 	/// Mixnet will yield if it did not for that many
 	/// consecutive poll calls.
 	pub no_yield_budget: usize,
+	/// Peer handshake connection when
+	/// dropped can persist due to multiplexing.
+	/// In this case keep peer id info to be
+	/// able to reconnect faster.
+	/// TODO a ttl
+	pub keep_handshaken_disconnected_address: bool,
 }
 
 impl Config {
@@ -88,6 +94,7 @@ impl Config {
 			replay_ttl_ms: 100_000,
 			persist_surb_query: true,
 			no_yield_budget: DEFAULT_NO_YIELD_BUDGET,
+			keep_handshaken_disconnected_address: true,
 			window_size_ms: DEFAULT_WINDOW_SIZE
 				.as_millis()
 				.try_into()

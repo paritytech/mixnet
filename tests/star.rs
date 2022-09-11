@@ -312,6 +312,7 @@ fn test_messages(conf: TestConfig) {
 		replay_ttl_ms: 100_000,
 		surb_ttl_ms: 100_000,
 		window_size_ms: 2_000,
+		keep_handshaken_disconnected_address: true,
 	};
 	let mut source_message = Vec::new();
 	use rand::SeedableRng;
@@ -321,7 +322,7 @@ fn test_messages(conf: TestConfig) {
 	let source_message = &source_message;
 
 	let executor = futures::executor::ThreadPool::new().unwrap();
-	let keep_connection_alive = false;
+	let keep_connection_alive = config_proto.keep_handshaken_disconnected_address;
 	let expect_all_connected = true;
 	let (handles, mut with_swarm_channels) = common::spawn_swarms(
 		num_peers,

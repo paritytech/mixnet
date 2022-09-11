@@ -226,6 +226,8 @@ pub struct Mixnet<T, C> {
 	connected_peers: HashMap<NetworkPeerId, ManagedConnection<C>>,
 	peer_stats: PeerCount,
 	handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
+	// TODO ttl map this and clean connected somehow
+	disconnected_handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
 	// Message waiting for surb.
@@ -245,6 +247,8 @@ pub struct Mixnet<T, C> {
 	window: WindowInfo,
 
 	window_size: Duration,
+
+	keep_handshaken_disconnected_address: bool,
 }
 
 /// Mixnet window current state.
@@ -291,6 +295,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			connected_peers: Default::default(),
 			peer_stats: Default::default(),
 			handshaken_peers: Default::default(),
+			disconnected_handshaken_peers: Default::default(),
+			keep_handshaken_disconnected_address: config.keep_handshaken_disconnected_address,
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
 			average_traffic_delay,
@@ -597,6 +603,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}) {
 			self.handshaken_peers.remove(&mix_id);
 			self.topology.disconnected(&mix_id);
+			if self.keep_handshaken_disconnected_address {
+				self.disconnected_handshaken_peers.insert(mix_id, *id);
+			}
 			Some(mix_id)
 		} else {
 			None
@@ -687,6 +696,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						try_connect.push((peer_id, Some(*net_id)));
 						continue
 					}
+				} else if let Some(net_id) = self.disconnected_handshaken_peers.remove(&peer_id) {
+					try_connect.push((peer_id, Some(net_id)));
+					continue
 				}
 				try_connect.push((peer_id, maybe_net_id));
 			}

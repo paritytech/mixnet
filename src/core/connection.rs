@@ -150,7 +150,7 @@ impl<C: Connection> ManagedConnection<C> {
 				self.handshake_sent = true;
 				if self.error_on_handshake_sent {
 					self.error_on_handshake_sent = false;
-					return Poll::Ready(Err(()));
+					return Poll::Ready(Err(()))
 				}
 				Poll::Ready(Ok(()))
 			},
@@ -330,7 +330,7 @@ impl<C: Connection> ManagedConnection<C> {
 	) -> Poll<ConnectionEvent> {
 		peers.remove_peer(self.disconnected_kind());
 		topology.peer_stats(peers);
-		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id.clone()))
+		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
 	}
 
 	pub(crate) fn poll(
