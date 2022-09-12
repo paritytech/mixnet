@@ -312,7 +312,10 @@ fn test_messages(conf: TestConfig) {
 		replay_ttl_ms: 100_000,
 		surb_ttl_ms: 100_000,
 		window_size_ms: 2_000,
+		graceful_topology_change_period_ms: 0,
 		keep_handshaken_disconnected_address: true,
+		queue_message_unconnected_ms: 0,
+		queue_message_unconnected_number: 0,
 	};
 	let mut source_message = Vec::new();
 	use rand::SeedableRng;

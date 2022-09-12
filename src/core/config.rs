@@ -69,6 +69,26 @@ pub struct Config {
 	/// able to reconnect faster.
 	/// TODO a ttl
 	pub keep_handshaken_disconnected_address: bool,
+
+	/// When topology change, usually connection will
+	/// be closed and usually as many connection will
+	/// be opened. A gracefull period can be use to
+	/// avoid breaking too many connections.
+	/// During this period closed and open connection
+	/// from topology change will use half the available
+	/// bandwidth.
+	/// So usually depending on network load, this should
+	/// be set to the average round trip or twice it.
+	/// Note that this period should be the same for all peers.
+	pub graceful_topology_change_period_ms: u64,
+
+	/// Keep forwarded messages in queue for a given time.
+	/// (message is only queued if topology allows it and the
+	/// peer will potentially connect).
+	pub queue_message_unconnected_ms: u64,
+
+	/// Limit total number of queued message received by a single peer.
+	pub queue_message_unconnected_number: u32,
 }
 
 impl Config {
@@ -82,6 +102,9 @@ impl Config {
 		public_key: MixPublicKey,
 		secret_key: MixSecretKey,
 	) -> Self {
+		let average_message_delay_ms: u32 = 500;
+		let graceful_topology_change_period_ms =
+			crate::core::sphinx::MAX_HOPS as u64 * average_message_delay_ms as u64 * 2;
 		Self {
 			secret_key,
 			public_key,
@@ -89,12 +112,15 @@ impl Config {
 			target_bytes_per_second: DEFAULT_PEER_CONNECTION,
 			timeout_ms: 5000,
 			num_hops: 3,
-			average_message_delay_ms: 500,
+			average_message_delay_ms,
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 			persist_surb_query: true,
 			no_yield_budget: DEFAULT_NO_YIELD_BUDGET,
 			keep_handshaken_disconnected_address: true,
+			graceful_topology_change_period_ms,
+			queue_message_unconnected_ms: 0,
+			queue_message_unconnected_number: 0,
 			window_size_ms: DEFAULT_WINDOW_SIZE
 				.as_millis()
 				.try_into()

@@ -206,6 +206,7 @@ fn test_messages(conf: TestConfig) {
 	let seed: u64 = 0;
 	let single_thread = true;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
+	let average_message_delay_ms = 50;
 	let config_proto = mixnet::Config {
 		secret_key,
 		public_key,
@@ -216,7 +217,12 @@ fn test_messages(conf: TestConfig) {
 		no_yield_budget: 32,
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
-		average_message_delay_ms: 50,
+		average_message_delay_ms,
+		graceful_topology_change_period_ms: average_message_delay_ms as u64 *
+			conf.num_hops as u64 *
+			2,
+		queue_message_unconnected_ms: 0,
+		queue_message_unconnected_number: 0,
 		persist_surb_query: false,
 		replay_ttl_ms: 100_000,
 		surb_ttl_ms: 100_000,
@@ -379,6 +385,7 @@ fn test_change_routing_set(conf: TestConfig) {
 	let seed: u64 = 0;
 	let single_thread = false;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
+	let average_message_delay_ms = 50;
 	let config_proto = mixnet::Config {
 		secret_key,
 		public_key,
@@ -389,7 +396,12 @@ fn test_change_routing_set(conf: TestConfig) {
 		no_yield_budget: 32,
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
-		average_message_delay_ms: 50,
+		average_message_delay_ms,
+		queue_message_unconnected_ms: 30_000, // just allow send before connecting
+		queue_message_unconnected_number: 100,
+		graceful_topology_change_period_ms: average_message_delay_ms as u64 *
+			conf.num_hops as u64 *
+			2,
 		persist_surb_query: false,
 		replay_ttl_ms: 100_000,
 		surb_ttl_ms: 100_000,

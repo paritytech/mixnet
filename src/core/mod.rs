@@ -67,7 +67,7 @@ pub struct TransmitInfo {
 	surb_id: Option<ReplayTag>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum ConnectedKind {
 	PendingHandshake,
 	Consumer,
@@ -181,7 +181,7 @@ pub fn public_from_ed25519(ed25519_pk: [u8; 32]) -> MixPublicKey {
 }
 
 // only needed for stats
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum PacketType {
 	Forward,
 	ForwardExternal,
@@ -249,6 +249,10 @@ pub struct Mixnet<T, C> {
 	window_size: Duration,
 
 	keep_handshaken_disconnected_address: bool,
+
+	graceful_topology_change_period: Option<Duration>,
+
+	forward_unconnected_message_queue: Option<QueuedUnconnectedPackets>,
 }
 
 /// Mixnet window current state.
@@ -282,6 +286,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 		let now = Instant::now();
 		let stats = topology.collect_windows_stats().then(WindowStats::default);
+		let graceful_topology_change_period = (config.graceful_topology_change_period_ms != 0)
+			.then(|| Duration::from_millis(config.graceful_topology_change_period_ms as u64));
+		let forward_unconnected_message_queue = (config.queue_message_unconnected_ms > 0 &&
+			config.queue_message_unconnected_number > 0)
+			.then(|| {
+				QueuedUnconnectedPackets::new(
+					config.queue_message_unconnected_ms,
+					config.queue_message_unconnected_number,
+				)
+			});
 		Mixnet {
 			topology,
 			surb: SurbsCollection::new(&config),
@@ -296,6 +310,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			peer_stats: Default::default(),
 			handshaken_peers: Default::default(),
 			disconnected_handshaken_peers: Default::default(),
+			graceful_topology_change_period,
+			forward_unconnected_message_queue,
 			keep_handshaken_disconnected_address: config.keep_handshaken_disconnected_address,
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
@@ -379,7 +395,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				&self.peer_stats,
 			)?;
 		} else {
-			return Err(Error::Unreachable(data))
+			let deadline = self.window.last_now + delay;
+			if let Some(queue) = self.forward_unconnected_message_queue.as_mut() {
+				queue.insert(
+					recipient,
+					QueuedPacket { deadline, data, kind },
+					self.window.last_now,
+				);
+			} else {
+				return Err(Error::Unreachable)
+			}
 		}
 		Ok(())
 	}
@@ -405,7 +430,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				&self.peer_stats,
 			)?;
 		} else {
-			return Err(Error::Unreachable(data))
+			return Err(Error::Unreachable)
 		}
 		Ok(())
 	}
@@ -646,6 +671,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		self.fragments.cleanup(now);
 		self.surb.cleanup(now);
 		self.replay_filter.cleanup(now);
+		if let Some(queue) = self.forward_unconnected_message_queue.as_mut() {
+			queue.cleanup(now)
+		}
 	}
 
 	// Poll for new messages to send over the wire.
@@ -771,10 +799,32 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			) {
 				Poll::Ready(ConnectionEvent::Established(_peer_id, key)) => {
 					all_pending = false;
+					let mut removed_queue = None;
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						self.topology.connected(*sphinx_id, key);
 						self.topology.peer_stats(&self.peer_stats);
+						removed_queue = self
+							.forward_unconnected_message_queue
+							.as_mut()
+							.and_then(|q| q.remove(sphinx_id));
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
+					}
+
+					if let Some(queue_packets) = removed_queue {
+						for (packet, _) in queue_packets {
+							let queued = connection.queue_packet(
+								packet,
+								self.window.packet_per_window,
+								&self.topology,
+								&self.peer_stats,
+							);
+							if queued.is_err() {
+								log::error!(
+									"Could not queue packet received before handshake: {:?}",
+									queued
+								);
+							}
+						}
 					}
 
 					if let Err(e) = results
@@ -1011,6 +1061,84 @@ where
 			self.exp_deque_offset += Wrapping(1);
 		}
 		count - self.messages.len()
+	}
+}
+
+struct QueuedUnconnectedPackets {
+	messages: HashMap<MixPeerId, VecDeque<(QueuedPacket, Wrapping<usize>)>>,
+	expiration: Duration,
+	exp_deque: VecDeque<(Instant, Option<MixPeerId>)>,
+	exp_deque_offset: Wrapping<usize>,
+	queue_message_unconnected_number: u32,
+}
+
+impl QueuedUnconnectedPackets {
+	pub fn new(ttl_ms: u64, queue_message_unconnected_number: u32) -> Self {
+		QueuedUnconnectedPackets {
+			messages: Default::default(),
+			expiration: Duration::from_millis(ttl_ms),
+			exp_deque: Default::default(),
+			exp_deque_offset: Wrapping(0),
+			queue_message_unconnected_number,
+		}
+	}
+
+	fn insert(&mut self, recipient: MixPeerId, packet: QueuedPacket, now: Instant) {
+		let expires = now + self.expiration;
+		let ix = self.exp_deque_offset + Wrapping(self.exp_deque.len());
+		let queue = self.messages.entry(recipient).or_default();
+		if queue.len() == self.queue_message_unconnected_number as usize {
+			if let Some((message, ix)) = queue.pop_front() {
+				let ix = ix - self.exp_deque_offset;
+				self.exp_deque[ix.0].1 = None;
+				log::error!("Dropped message {:?} after {:?}", message.kind, self.expiration);
+			}
+		}
+		queue.push_back((packet, ix));
+		self.exp_deque.push_back((expires, Some(recipient)));
+	}
+
+	fn remove(
+		&mut self,
+		recipient: &MixPeerId,
+	) -> Option<VecDeque<(QueuedPacket, Wrapping<usize>)>> {
+		let result = self.messages.remove(recipient);
+		if let Some(paquets) = result.as_ref() {
+			for (_, ix) in paquets.iter() {
+				let ix = ix - self.exp_deque_offset;
+				self.exp_deque[ix.0].1 = None;
+			}
+		}
+		result
+	}
+
+	fn cleanup(&mut self, now: Instant) {
+		while let Some(first) = self.exp_deque.front() {
+			if first.0 > now {
+				break
+			}
+			if let Some(first) = first.1.as_ref() {
+				let mut remove = false;
+				if let Some(messages) = self.messages.get_mut(first) {
+					if let Some(message) = messages.pop_front() {
+						debug_assert!(message.1 == self.exp_deque_offset);
+						log::error!(
+							"Dropped message {:?} after {:?}",
+							message.0.kind,
+							self.expiration
+						);
+					}
+					if messages.is_empty() {
+						remove = true;
+					}
+				}
+				if remove {
+					self.messages.remove(first);
+				}
+			}
+			self.exp_deque.pop_front();
+			self.exp_deque_offset += Wrapping(1);
+		}
 	}
 }
 

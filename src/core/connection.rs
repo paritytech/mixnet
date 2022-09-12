@@ -281,7 +281,7 @@ impl<C: Connection> ManagedConnection<C> {
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
 			if packet.injected_packet() {
 				if !external && !self.kind.routing_forward() {
-					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop.");
+					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
 					return Err(crate::Error::NoPath(Some(*peer_id)))
 				}
 				self.packet_queue_inject.push(packet);
@@ -346,29 +346,56 @@ impl<C: Connection> ManagedConnection<C> {
 		// TODO add a state where we wait peer accept before sending cover?
 		if !(self.handshake_sent && self.handshake_received) {
 			let mut result = Poll::Pending;
-			match self.try_recv_handshake(cx, topology, peers) {
-				Poll::Ready(Ok(key)) => {
+			if !self.handshake_received {
+				match self.try_recv_handshake(cx, topology, peers) {
+					Poll::Ready(Ok(key)) => {
+						self.mixnet_id = Some(key.0);
+						self.public_key = Some(key.1);
+						if matches!(result, Poll::Pending) {
+							result = Poll::Ready(ConnectionEvent::None);
+						}
+					},
+					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+					Poll::Pending => (),
+				}
+			}
+			if !self.handshake_sent {
+				match self.try_send_handshake(cx, handshake, topology) {
+					Poll::Ready(Ok(())) =>
+						if matches!(result, Poll::Pending) {
+							result = Poll::Ready(ConnectionEvent::None);
+						},
+					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+					Poll::Pending => (),
+				}
+			}
+			if self.handshake_sent && self.handshake_received {
+				if let (Some(mixnet_id), Some(public_key)) =
+					(self.mixnet_id.as_ref(), self.public_key.as_ref())
+				{
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
-					// TODO nb_pending_handshake change here
-					result = Poll::Ready(ConnectionEvent::Established(key.0, key.1));
-				},
-				Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-				Poll::Pending => (),
+					let old_kind = self.kind;
+					self.kind = peers.add_peer(local_id, &mixnet_id, topology);
+					self.kind_changed = false;
+					// TODO on new kind external apply topology accept_peers and
+					// possibly revert. TODO probably need a kind to keep conn
+					// open for a while to finish messaging (half bandwidth use, same for
+					// new topo).
+					peers.remove_peer(old_kind);
+					topology.peer_stats(peers);
+					return Poll::Ready(ConnectionEvent::Established(*mixnet_id, *public_key))
+				} else {
+					// is actually unreachable
+					return self.broken_connection(topology, peers)
+				}
+			} else {
+				return result
 			}
-			match self.try_send_handshake(cx, handshake, topology) {
-				Poll::Ready(Ok(())) =>
-					if matches!(result, Poll::Pending) {
-						result = Poll::Ready(ConnectionEvent::None);
-					},
-				Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-				Poll::Pending => (),
-			}
-			return result
 		} else if let Some(peer_id) = self.mixnet_id {
 			// TODO this could be a poll on a channel.
-			if self.kind == ConnectedKind::PendingHandshake || self.kind_changed {
+			if self.kind_changed {
 				let old_kind = self.kind;
 				self.kind = peers.add_peer(local_id, &peer_id, topology);
 				self.kind_changed = false;

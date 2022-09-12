@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, Packet};
+use crate::core::sphinx::Error as SphinxError;
 use crate::MixPeerId;
 use std::fmt;
 
@@ -50,7 +50,7 @@ pub enum Error {
 	WorkerChannelFull,
 	/// Destination peer not connected.
 	/// Depending on use case, dial could be attempted here.
-	Unreachable(Packet),
+	Unreachable,
 	/// No sphinx id from handshake.
 	NoSphinxId,
 	/// Mixnet not ready.
@@ -74,7 +74,7 @@ impl fmt::Display for Error {
 			Error::QueueFull => write!(f, "Packet queue is full."),
 			Error::WorkerChannelFull => write!(f, "Worker channel is full."),
 			Error::TooManyHops => write!(f, "Too many hops for mixnet."),
-			Error::Unreachable(_) => write!(f, "Destination peer not connected."),
+			Error::Unreachable => write!(f, "Destination peer not connected."),
 			Error::NoSphinxId => write!(f, "Sphinx Id not obtain from handshake."),
 			Error::NotReady => write!(f, "Mixnet not ready."),
 			Error::Other(e) => write!(f, "Other: {}", e),
