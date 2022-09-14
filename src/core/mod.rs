@@ -253,6 +253,8 @@ pub struct Mixnet<T, C> {
 	graceful_topology_change_period: Option<Duration>,
 
 	forward_unconnected_message_queue: Option<QueuedUnconnectedPackets>,
+
+	pending_events: VecDeque<MixEvent>,
 }
 
 /// Mixnet window current state.
@@ -310,6 +312,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			peer_stats: Default::default(),
 			handshaken_peers: Default::default(),
 			disconnected_handshaken_peers: Default::default(),
+			pending_events: Default::default(),
 			graceful_topology_change_period,
 			forward_unconnected_message_queue,
 			keep_handshaken_disconnected_address: config.keep_handshaken_disconnected_address,
@@ -395,16 +398,18 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				&self.peer_stats,
 			)?;
 		} else {
-			let deadline = self.window.last_now + delay;
 			if let Some(queue) = self.forward_unconnected_message_queue.as_mut() {
-				queue.insert(
-					recipient,
-					QueuedPacket { deadline, data, kind },
-					self.window.last_now,
-				);
-			} else {
-				return Err(Error::Unreachable)
+				if kind != PacketType::Cover {
+					let deadline = self.window.last_now + delay;
+					queue.insert(
+						recipient,
+						QueuedPacket { deadline, data, kind },
+						self.window.last_now,
+					);
+					return Ok(())
+				}
 			}
+			return Err(Error::Unreachable)
 		}
 		Ok(())
 	}
@@ -445,6 +450,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		message: Vec<u8>,
 		send_options: SendOptions,
 	) -> Result<(), Error> {
+		self.try_apply_topology_change();
 		let mut rng = rand::thread_rng();
 
 		let (maybe_peer_id, peer_pub_key) = if let Some(id) = peer_id {
@@ -533,6 +539,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Send a new surb message to the network.
 	/// Message cannot be bigger than a single fragment.
 	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbsPayload) -> Result<(), Error> {
+		self.try_apply_topology_change();
 		let SurbsPayload { first_node, first_key, header } = surb;
 		let mut rng = rand::thread_rng();
 
@@ -556,7 +563,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Handle new packet coming from the network. Removes one layer of Sphinx encryption and either
 	/// adds the result to the queue for forwarding, or accepts the fragment addressed to us. If the
 	/// fragment completes the message, full message is returned.
-	pub fn import_message(
+	fn import_message(
 		&mut self,
 		peer_id: MixPeerId,
 		message: Packet,
@@ -676,18 +683,22 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 	}
 
-	// Poll for new messages to send over the wire.
-	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
+	fn try_apply_topology_change(&mut self) {
 		if let Some(changed) = self.topology.changed_route() {
 			for peer_id in changed {
 				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
-						connection.set_kind_changed();
+						connection.set_kind_changed(
+							&self.local_id,
+							&mut self.peer_stats,
+							&mut self.topology,
+							self.forward_unconnected_message_queue.as_mut(),
+							self.window.packet_per_window,
+						);
 					}
 				}
 			}
 		}
-
 		if let Some(need_conn) = self.topology.try_connect() {
 			let mut try_connect = Vec::new();
 			for (peer_id, maybe_net_id) in need_conn {
@@ -695,9 +706,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						if connection.mixnet_id() == Some(&peer_id) {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
-							connection.set_kind_changed();
+							connection.set_kind_changed(
+								&self.local_id,
+								&mut self.peer_stats,
+								&mut self.topology,
+								self.forward_unconnected_message_queue.as_mut(),
+								self.window.packet_per_window,
+							);
 							continue
 						} else {
+							// TODO log error
 							// change of peer id for network other peer should have broken
 							// connection already
 							// TODO disconnect and reconnect, but disconnect with the keep alive
@@ -715,9 +733,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						if maybe_net_id.is_some() && maybe_net_id.as_ref() != Some(net_id) {
 							// existing connection with change of network id.
 							// TODO slow disconnect.
+							// TODO log error
 						} else {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
-							connection.set_kind_changed();
+							connection.set_kind_changed(
+								&self.local_id,
+								&mut self.peer_stats,
+								&mut self.topology,
+								self.forward_unconnected_message_queue.as_mut(),
+								self.window.packet_per_window,
+							);
 							continue
 						}
 					} else {
@@ -731,8 +756,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				try_connect.push((peer_id, maybe_net_id));
 			}
 			if !try_connect.is_empty() {
-				return Poll::Ready(MixEvent::TryConnect(try_connect))
+				self.pending_events.push_back(MixEvent::TryConnect(try_connect));
 			}
+		}
+	}
+	
+	// Poll for new messages to send over the wire.
+	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
+		self.try_apply_topology_change();
+		if let Some(event) = self.pending_events.pop_front() {
+			return Poll::Ready(event)
 		}
 
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
@@ -796,35 +829,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				&self.window,
 				&mut self.topology,
 				&mut self.peer_stats,
+				self.forward_unconnected_message_queue.as_mut(),
 			) {
 				Poll::Ready(ConnectionEvent::Established(_peer_id, key)) => {
 					all_pending = false;
-					let mut removed_queue = None;
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						self.topology.connected(*sphinx_id, key);
 						self.topology.peer_stats(&self.peer_stats);
-						removed_queue = self
-							.forward_unconnected_message_queue
-							.as_mut()
-							.and_then(|q| q.remove(sphinx_id));
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
-					}
-
-					if let Some(queue_packets) = removed_queue {
-						for (packet, _) in queue_packets {
-							let queued = connection.queue_packet(
-								packet,
-								self.window.packet_per_window,
-								&self.topology,
-								&self.peer_stats,
-							);
-							if queued.is_err() {
-								log::error!(
-									"Could not queue packet received before handshake: {:?}",
-									queued
-								);
-							}
-						}
 					}
 
 					if let Err(e) = results

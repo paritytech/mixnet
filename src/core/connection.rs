@@ -24,7 +24,7 @@
 //! of packet.
 
 use crate::{
-	core::{ConnectedKind, PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT},
+	core::{ConnectedKind, PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT, QueuedUnconnectedPackets},
 	traits::{Configuration, Connection, Handshake, Topology},
 	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
 };
@@ -51,7 +51,6 @@ pub(crate) struct ManagedConnection<C> {
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
 	kind: ConnectedKind,
-	kind_changed: bool,
 	handshake_queue: bool,
 	handshake_sent: bool,
 	error_on_handshake_sent: bool,
@@ -63,7 +62,6 @@ pub(crate) struct ManagedConnection<C> {
 	// Messages manually set are lower priority than the `packet_queue` one
 	// and will only replace cover messages.
 	// Warning this queue do not have a size limit, we trust.
-	// TODO add stat to substrate branches.
 	// TODO have a safe mode that error on too big (but then
 	// need a mechanism to rollback other message chunk in other connections).
 	packet_queue_inject: BinaryHeap<QueuedPacket>,
@@ -90,7 +88,6 @@ impl<C: Connection> ManagedConnection<C> {
 			mixnet_id: None,
 			network_id,
 			kind: ConnectedKind::PendingHandshake,
-			kind_changed: false,
 			read_timeout: Delay::new(READ_TIMEOUT),
 			next_packet: None,
 			current_window,
@@ -107,8 +104,20 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
-	pub fn set_kind_changed(&mut self) {
-		self.kind_changed = true;
+	pub(super) fn set_kind_changed(
+		&mut self,
+		local_id: &MixPeerId,
+		peers: &mut PeerCount,
+		topology: &mut impl Configuration,
+		forward_queue: Option<&mut QueuedUnconnectedPackets>,
+		packet_per_window: usize,
+	) {
+		if self.kind != ConnectedKind::PendingHandshake {
+			let old_kind = self.kind;
+			self.kind = self.add_peer(local_id, topology, forward_queue, peers, packet_per_window);
+			peers.remove_peer(old_kind);
+			topology.peer_stats(peers);
+		}
 	}
 
 	pub fn connection_mut(&mut self) -> &mut C {
@@ -121,6 +130,40 @@ impl<C: Connection> ManagedConnection<C> {
 
 	pub fn network_id(&self) -> NetworkPeerId {
 		self.network_id
+	}
+
+	fn add_peer(
+		&mut self,
+		local_id: &MixPeerId,
+		topology: &mut impl Configuration,
+		forward_queue: Option<&mut QueuedUnconnectedPackets>,
+		peer_counts: &mut PeerCount,
+		packet_per_window: usize,
+	) -> ConnectedKind {
+		if let Some(peer) = self.mixnet_id.as_ref() {
+		let kind = peer_counts.add_peer(local_id, peer, topology);
+		if kind.routing_forward() {
+			if let Some(queue_packets) = forward_queue.and_then(|q| q.remove(peer)) {
+					for (packet, _) in queue_packets {
+						let queued = self.queue_packet(
+							packet,
+							packet_per_window,
+							topology,
+							peer_counts,
+						);
+						if queued.is_err() {
+							log::error!(
+								"Could not queue packet received before handshake: {:?}",
+								queued
+							);
+						}
+				}
+			}
+		}
+		kind
+	} else {
+		ConnectedKind::PendingHandshake
+	}
 	}
 
 	fn try_send_handshake(
@@ -189,7 +232,6 @@ impl<C: Connection> ManagedConnection<C> {
 	// return packet if already sending one.
 	pub fn try_queue_send_packet(&mut self, packet: Vec<u8>) -> Option<Vec<u8>> {
 		if !self.kind.is_mixnet_connected() {
-			// TODO queue if pending handshake or a given number if trying reco!!
 			log::error!(target: "mixnet", "Peer {:?} not ready, dropping a packet", self.network_id);
 			return None
 		}
@@ -333,7 +375,7 @@ impl<C: Connection> ManagedConnection<C> {
 		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
 	}
 
-	pub(crate) fn poll(
+	pub(super) fn poll(
 		&mut self,
 		cx: &mut Context,
 		local_id: &MixPeerId,
@@ -341,9 +383,9 @@ impl<C: Connection> ManagedConnection<C> {
 		window: &WindowInfo,
 		topology: &mut impl Configuration,
 		peers: &mut PeerCount,
+		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 	) -> Poll<ConnectionEvent> {
 		let mut result = Poll::Pending;
-		// TODO add a state where we wait peer accept before sending cover?
 		if !(self.handshake_sent && self.handshake_received) {
 			let mut result = Poll::Pending;
 			if !self.handshake_received {
@@ -370,22 +412,15 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 			}
 			if self.handshake_sent && self.handshake_received {
-				if let (Some(mixnet_id), Some(public_key)) =
-					(self.mixnet_id.as_ref(), self.public_key.as_ref())
-				{
+				if let (Some(mixnet_id), Some(public_key)) = (self.mixnet_id, self.public_key) {
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
 					let old_kind = self.kind;
-					self.kind = peers.add_peer(local_id, &mixnet_id, topology);
-					self.kind_changed = false;
-					// TODO on new kind external apply topology accept_peers and
-					// possibly revert. TODO probably need a kind to keep conn
-					// open for a while to finish messaging (half bandwidth use, same for
-					// new topo).
+					self.kind = self.add_peer(local_id, topology, forward_queue, peers, window.packet_per_window);
 					peers.remove_peer(old_kind);
 					topology.peer_stats(peers);
-					return Poll::Ready(ConnectionEvent::Established(*mixnet_id, *public_key))
+					return Poll::Ready(ConnectionEvent::Established(mixnet_id, public_key))
 				} else {
 					// is actually unreachable
 					return self.broken_connection(topology, peers)
@@ -394,19 +429,6 @@ impl<C: Connection> ManagedConnection<C> {
 				return result
 			}
 		} else if let Some(peer_id) = self.mixnet_id {
-			// TODO this could be a poll on a channel.
-			if self.kind_changed {
-				let old_kind = self.kind;
-				self.kind = peers.add_peer(local_id, &peer_id, topology);
-				self.kind_changed = false;
-				// TODO on new kind external apply topology accept_peers and
-				// possibly revert. TODO probably need a kind to keep conn
-				// open for a while to finish messaging (half bandwidth use, same for
-				// new topo).
-				peers.remove_peer(old_kind);
-				topology.peer_stats(peers);
-			}
-
 			// Forward first.
 			while self.sent_in_window < window.current_packet_limit {
 				match self.try_send_flushed(cx) {
