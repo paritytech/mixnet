@@ -420,6 +420,7 @@ impl<C: Connection> ManagedConnection<C> {
 		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	pub(super) fn poll(
 		&mut self,
 		cx: &mut Context,
