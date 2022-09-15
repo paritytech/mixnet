@@ -137,6 +137,7 @@ impl<C: Connection> ManagedConnection<C> {
 
 			// gracefull handling
 			let disco = matches!(self.kind, ConnectedKind::Disconnected);
+			// TODO include consumer here?
 			let forward = old_kind.routing_forward() != self.kind.routing_forward();
 			let receive = old_kind.routing_receive() != self.kind.routing_receive();
 			if receive || forward {
@@ -149,10 +150,10 @@ impl<C: Connection> ManagedConnection<C> {
 					window.graceful_topology_change_period
 				{
 					if forward {
-//						self.gracefull_nb_packet_send = number_message_graceful_period;
+						self.gracefull_nb_packet_send = number_message_graceful_period;
 					}
 					if receive {
-//						self.gracefull_nb_packet_receive = number_message_graceful_period;
+						self.gracefull_nb_packet_receive = number_message_graceful_period;
 					}
 					if disco {
 						let period_ms = period.as_millis();
@@ -160,7 +161,7 @@ impl<C: Connection> ManagedConnection<C> {
 						let period_ms = period_ms * (100 + WINDOW_MARGIN_PERCENT as u128) / 100;
 						let period = Duration::from_millis(period_ms as u64);
 						let deadline = window.last_now + period;
-//						self.gracefull_disconnecting = Some(deadline);
+						self.gracefull_disconnecting = Some(deadline);
 					}
 				}
 			}
@@ -430,7 +431,7 @@ impl<C: Connection> ManagedConnection<C> {
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 	) -> Poll<ConnectionEvent> {
 		if let Some(gracefull_disco_deadline) = self.gracefull_disconnecting.as_ref() {
-			if gracefull_disco_deadline >= &window.last_now {
+			if gracefull_disco_deadline <= &window.last_now {
 				return self.broken_connection(topology, peers)
 			}
 		}
@@ -556,13 +557,17 @@ impl<C: Connection> ManagedConnection<C> {
 				let (n, d) = topology.bandwidth_external(&peer_id, peers).unwrap_or((0, 1));
 				((window.current_packet_limit * n) / d, true)
 			};
-			let current = if self.gracefull_nb_packet_receive > 0 { current / 2 } else { current };
+			let current = if self.gracefull_nb_packet_receive > 0 {
+				window.current_packet_limit / 2
+			} else {
+				current
+			};
 			if self.recv_in_window < current {
 				match self.try_recv_packet(cx, window.current) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
 						if self.gracefull_nb_packet_receive > 0 {
-							self.gracefull_nb_packet_send -= 1;
+							self.gracefull_nb_packet_receive -= 1;
 							if self.gracefull_nb_packet_send == 0 &&
 								self.gracefull_nb_packet_receive == 0 &&
 								self.gracefull_disconnecting.is_some()
