@@ -250,8 +250,6 @@ pub struct Mixnet<T, C> {
 
 	keep_handshaken_disconnected_address: bool,
 
-	graceful_topology_change_period: Option<Duration>,
-
 	forward_unconnected_message_queue: Option<QueuedUnconnectedPackets>,
 
 	pending_events: VecDeque<MixEvent>,
@@ -260,6 +258,8 @@ pub struct Mixnet<T, C> {
 /// Mixnet window current state.
 pub struct WindowInfo {
 	packet_per_window: usize,
+	graceful_topology_change_period: Option<(Duration, usize)>,
+
 	current_start: Instant,
 	current: Wrapping<usize>,
 	current_packet_limit: usize,
@@ -289,7 +289,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let now = Instant::now();
 		let stats = topology.collect_windows_stats().then(WindowStats::default);
 		let graceful_topology_change_period = (config.graceful_topology_change_period_ms != 0)
-			.then(|| Duration::from_millis(config.graceful_topology_change_period_ms as u64));
+			.then(|| {
+				let nb_packet =
+					config.graceful_topology_change_period_ms * 1_000_000 / packet_duration_nanos;
+				(
+					Duration::from_millis(config.graceful_topology_change_period_ms as u64),
+					nb_packet as usize,
+				)
+			});
 		let forward_unconnected_message_queue = (config.queue_message_unconnected_ms > 0 &&
 			config.queue_message_unconnected_number > 0)
 			.then(|| {
@@ -313,7 +320,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			handshaken_peers: Default::default(),
 			disconnected_handshaken_peers: Default::default(),
 			pending_events: Default::default(),
-			graceful_topology_change_period,
 			forward_unconnected_message_queue,
 			keep_handshaken_disconnected_address: config.keep_handshaken_disconnected_address,
 			next_message: Delay::new(Duration::from_millis(0)),
@@ -321,11 +327,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			average_traffic_delay,
 			window_size,
 			window: WindowInfo {
+				packet_per_window,
+				graceful_topology_change_period,
+
 				current_start: now,
 				last_now: now,
 				current: Wrapping(0),
 				current_packet_limit: 0,
-				packet_per_window,
 				stats,
 			},
 		}
@@ -693,7 +701,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 							&mut self.peer_stats,
 							&mut self.topology,
 							self.forward_unconnected_message_queue.as_mut(),
-							self.window.packet_per_window,
+							&self.window,
+							false,
 						);
 					}
 				}
@@ -711,7 +720,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 								&mut self.peer_stats,
 								&mut self.topology,
 								self.forward_unconnected_message_queue.as_mut(),
-								self.window.packet_per_window,
+								&self.window,
+								false,
 							);
 							continue
 						} else {
@@ -741,7 +751,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 								&mut self.peer_stats,
 								&mut self.topology,
 								self.forward_unconnected_message_queue.as_mut(),
-								self.window.packet_per_window,
+								&self.window,
+								false,
 							);
 							continue
 						}
@@ -760,7 +771,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			}
 		}
 	}
-	
+
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
 		self.try_apply_topology_change();

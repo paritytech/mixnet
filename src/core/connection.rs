@@ -24,7 +24,10 @@
 //! of packet.
 
 use crate::{
-	core::{ConnectedKind, PacketType, QueuedPacket, WindowInfo, WINDOW_MARGIN_PERCENT, QueuedUnconnectedPackets},
+	core::{
+		ConnectedKind, PacketType, QueuedPacket, QueuedUnconnectedPackets, WindowInfo,
+		WINDOW_MARGIN_PERCENT,
+	},
 	traits::{Configuration, Connection, Handshake, Topology},
 	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
 };
@@ -34,7 +37,7 @@ use std::{
 	collections::BinaryHeap,
 	num::Wrapping,
 	task::{Context, Poll},
-	time::Duration,
+	time::{Duration, Instant},
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -71,6 +74,12 @@ pub(crate) struct ManagedConnection<C> {
 	current_window: Wrapping<usize>,
 	sent_in_window: usize,
 	recv_in_window: usize,
+	gracefull_nb_packet_receive: usize,
+	gracefull_nb_packet_send: usize,
+	// hard limit when disconnecting, should
+	// disconnect when connection broken or gracefull_nb_packet
+	// both at 0.
+	gracefull_disconnecting: Option<Instant>,
 	stats: Option<(ConnectionStats, Option<PacketType>)>,
 }
 
@@ -101,7 +110,14 @@ impl<C: Connection> ManagedConnection<C> {
 			packet_queue: Default::default(),
 			packet_queue_inject: Default::default(),
 			stats: with_stats.then(Default::default),
+			gracefull_nb_packet_receive: 0,
+			gracefull_nb_packet_send: 0,
+			gracefull_disconnecting: None,
 		}
+	}
+
+	pub fn connection_mut(&mut self) -> &mut C {
+		&mut self.connection
 	}
 
 	pub(super) fn set_kind_changed(
@@ -110,18 +126,45 @@ impl<C: Connection> ManagedConnection<C> {
 		peers: &mut PeerCount,
 		topology: &mut impl Configuration,
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
-		packet_per_window: usize,
+		window: &WindowInfo,
+		on_handshake_success: bool,
 	) {
-		if self.kind != ConnectedKind::PendingHandshake {
+		if on_handshake_success || self.kind != ConnectedKind::PendingHandshake {
 			let old_kind = self.kind;
-			self.kind = self.add_peer(local_id, topology, forward_queue, peers, packet_per_window);
+			self.kind = self.add_peer(local_id, topology, forward_queue, peers, window);
 			peers.remove_peer(old_kind);
 			topology.peer_stats(peers);
-		}
-	}
 
-	pub fn connection_mut(&mut self) -> &mut C {
-		&mut self.connection
+			// gracefull handling
+			let disco = matches!(self.kind, ConnectedKind::Disconnected);
+			let forward = old_kind.routing_forward() != self.kind.routing_forward();
+			let receive = old_kind.routing_receive() != self.kind.routing_receive();
+			if receive || forward {
+				if self.gracefull_nb_packet_send > 0 || self.gracefull_nb_packet_receive > 0 {
+					// do not reenter gracefull period ensuring an equilibrium fro constant number
+					// of peers.
+					return
+				}
+				if let Some((period, number_message_graceful_period)) =
+					window.graceful_topology_change_period
+				{
+					if forward {
+//						self.gracefull_nb_packet_send = number_message_graceful_period;
+					}
+					if receive {
+//						self.gracefull_nb_packet_receive = number_message_graceful_period;
+					}
+					if disco {
+						let period_ms = period.as_millis();
+						// could be using its own margins
+						let period_ms = period_ms * (100 + WINDOW_MARGIN_PERCENT as u128) / 100;
+						let period = Duration::from_millis(period_ms as u64);
+						let deadline = window.last_now + period;
+//						self.gracefull_disconnecting = Some(deadline);
+					}
+				}
+			}
+		}
 	}
 
 	pub fn mixnet_id(&self) -> Option<&MixPeerId> {
@@ -138,16 +181,16 @@ impl<C: Connection> ManagedConnection<C> {
 		topology: &mut impl Configuration,
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 		peer_counts: &mut PeerCount,
-		packet_per_window: usize,
+		window: &WindowInfo,
 	) -> ConnectedKind {
 		if let Some(peer) = self.mixnet_id.as_ref() {
-		let kind = peer_counts.add_peer(local_id, peer, topology);
-		if kind.routing_forward() {
-			if let Some(queue_packets) = forward_queue.and_then(|q| q.remove(peer)) {
+			let kind = peer_counts.add_peer(local_id, peer, topology);
+			if kind.routing_forward() {
+				if let Some(queue_packets) = forward_queue.and_then(|q| q.remove(peer)) {
 					for (packet, _) in queue_packets {
 						let queued = self.queue_packet(
 							packet,
-							packet_per_window,
+							window.packet_per_window,
 							topology,
 							peer_counts,
 						);
@@ -157,13 +200,13 @@ impl<C: Connection> ManagedConnection<C> {
 								queued
 							);
 						}
+					}
 				}
 			}
+			kind
+		} else {
+			ConnectedKind::PendingHandshake
 		}
-		kind
-	} else {
-		ConnectedKind::PendingHandshake
-	}
 	}
 
 	fn try_send_handshake(
@@ -322,7 +365,7 @@ impl<C: Connection> ManagedConnection<C> {
 		let external = self.kind.is_consumer();
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
 			if packet.injected_packet() {
-				if !external && !self.kind.routing_forward() {
+				if !(external || self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
 					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
 					return Err(crate::Error::NoPath(Some(*peer_id)))
 				}
@@ -342,9 +385,10 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::QueueFull)
 			}
 
-			if !external &&
-				!self.kind.routing_forward() &&
-				topology.bandwidth_external(peer_id, peers).is_none()
+			if !(external ||
+				self.kind.routing_forward() ||
+				topology.bandwidth_external(peer_id, peers).is_some() ||
+				self.gracefull_nb_packet_send > 0)
 			{
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
 				return Err(crate::Error::NoPath(Some(*peer_id)))
@@ -379,12 +423,17 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		cx: &mut Context,
 		local_id: &MixPeerId,
-		handshake: &MixPublicKey,
+		local_public_key: &MixPublicKey,
 		window: &WindowInfo,
 		topology: &mut impl Configuration,
 		peers: &mut PeerCount,
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 	) -> Poll<ConnectionEvent> {
+		if let Some(gracefull_disco_deadline) = self.gracefull_disconnecting.as_ref() {
+			if gracefull_disco_deadline >= &window.last_now {
+				return self.broken_connection(topology, peers)
+			}
+		}
 		let mut result = Poll::Pending;
 		if !(self.handshake_sent && self.handshake_received) {
 			let mut result = Poll::Pending;
@@ -402,7 +451,7 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 			}
 			if !self.handshake_sent {
-				match self.try_send_handshake(cx, handshake, topology) {
+				match self.try_send_handshake(cx, local_public_key, topology) {
 					Poll::Ready(Ok(())) =>
 						if matches!(result, Poll::Pending) {
 							result = Poll::Ready(ConnectionEvent::None);
@@ -416,10 +465,7 @@ impl<C: Connection> ManagedConnection<C> {
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
-					let old_kind = self.kind;
-					self.kind = self.add_peer(local_id, topology, forward_queue, peers, window.packet_per_window);
-					peers.remove_peer(old_kind);
-					topology.peer_stats(peers);
+					self.set_kind_changed(local_id, peers, topology, forward_queue, window, true);
 					return Poll::Ready(ConnectionEvent::Established(mixnet_id, public_key))
 				} else {
 					// is actually unreachable
@@ -429,12 +475,26 @@ impl<C: Connection> ManagedConnection<C> {
 				return result
 			}
 		} else if let Some(peer_id) = self.mixnet_id {
+			let send_limit = if self.gracefull_nb_packet_send > 0 {
+				window.current_packet_limit / 2
+			} else {
+				window.current_packet_limit
+			};
 			// Forward first.
-			while self.sent_in_window < window.current_packet_limit {
+			while self.sent_in_window < send_limit {
 				match self.try_send_flushed(cx) {
 					Poll::Ready(Ok(true)) => {
 						// Did send message
 						self.sent_in_window += 1;
+						if self.gracefull_nb_packet_send > 0 {
+							self.gracefull_nb_packet_send -= 1;
+							if self.gracefull_nb_packet_send == 0 &&
+								self.gracefull_nb_packet_receive == 0 &&
+								self.gracefull_disconnecting.is_some()
+							{
+								return self.broken_connection(topology, peers)
+							}
+						}
 						break
 					},
 					Poll::Ready(Ok(false)) => {
@@ -496,10 +556,21 @@ impl<C: Connection> ManagedConnection<C> {
 				let (n, d) = topology.bandwidth_external(&peer_id, peers).unwrap_or((0, 1));
 				((window.current_packet_limit * n) / d, true)
 			};
+			let current = if self.gracefull_nb_packet_receive > 0 { current / 2 } else { current };
 			if self.recv_in_window < current {
 				match self.try_recv_packet(cx, window.current) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
+						if self.gracefull_nb_packet_receive > 0 {
+							self.gracefull_nb_packet_send -= 1;
+							if self.gracefull_nb_packet_send == 0 &&
+								self.gracefull_nb_packet_receive == 0 &&
+								self.gracefull_disconnecting.is_some()
+							{
+								self.gracefull_disconnecting = Some(window.last_now);
+							}
+						}
+
 						result = Poll::Ready(ConnectionEvent::Received((packet, external)));
 					},
 					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
