@@ -183,7 +183,7 @@ pub fn spawn_swarms(
 	};
 
 	let (transports, handles) = mk_transports(num_peers, extra_external);
-	let swarms = mk_swarms(transports, keep_connection_alive);
+let swarms = mk_swarms(transports, keep_connection_alive);
 
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
 	// This should be remove or optional if mixnet got non connected use case.
@@ -544,7 +544,7 @@ pub fn send_messages(
 	let TestConfig { message_count, with_surb, .. } = *conf;
 
 	for (i, send_conf) in send.into_iter().enumerate() {
-		if i == 3 { // TODO rem
+		if i == 2 { // TODO rem
 		let recipient = &nodes[send_conf.to];
 		log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
 		for _ in 0..message_count {
@@ -572,7 +572,7 @@ pub fn wait_on_messages(
 	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
 
 	for (i, sent) in sent.into_iter().enumerate() {
-		if i == 3 { // TODO rem
+		if i == 2 { // TODO rem
 		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
 		nb.0 += message_count;
 		if with_surb {

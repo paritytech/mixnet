@@ -299,6 +299,7 @@ impl<C: Connection> ManagedConnection<C> {
 					topology.check_handshake(handshake.as_slice(), &self.network_id)
 				{
 					let accepted = topology.accept_peer(&peer_id, peers);
+					log::trace!(target: "mixnet_test", "Hand peer {:?}", peer_id);
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
 					self.handshake_received = true;
@@ -362,10 +363,9 @@ impl<C: Connection> ManagedConnection<C> {
 		topology: &impl Topology,
 		peers: &PeerCount,
 	) -> Result<(), crate::Error> {
-		let external = self.kind.is_consumer();
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
 			if packet.injected_packet() {
-				if !(external || self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
+				if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
 					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
 					return Err(crate::Error::NoPath(Some(*peer_id)))
 				}
@@ -385,7 +385,7 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::QueueFull)
 			}
 
-			if !(external ||
+			if !(self.kind.is_consumer() ||
 				self.kind.routing_forward() ||
 				topology.bandwidth_external(peer_id, peers).is_some() ||
 				self.gracefull_nb_packet_send > 0)
@@ -467,6 +467,7 @@ impl<C: Connection> ManagedConnection<C> {
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
 					self.set_kind_changed(local_id, peers, topology, forward_queue, window, true);
+			log::trace!(target: "mixnet_test", "polling {:?}", mixnet_id);
 					return Poll::Ready(ConnectionEvent::Established(mixnet_id, public_key))
 				} else {
 					// is actually unreachable
@@ -562,7 +563,7 @@ impl<C: Connection> ManagedConnection<C> {
 			} else {
 				current
 			};
-			if self.recv_in_window < current {
+			if self.recv_in_window < current || self.kind.is_external() {
 				match self.try_recv_packet(cx, window.current) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;

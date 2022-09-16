@@ -469,6 +469,8 @@ fn test_change_routing_set(conf: TestConfig) {
 		handle_topos_ptr.push(inner.clone());
 		NotDistributedShared { inner }
 	};
+
+	let handles2: Vec<_> = handles.iter().map(|h| h.0.clone()).collect();
 	let nodes = common::spawn_workers::<NotDistributedShared>(
 		handles,
 		&mut rng,
@@ -477,7 +479,10 @@ fn test_change_routing_set(conf: TestConfig) {
 		&executor,
 		single_thread,
 	);
-
+	for h in handles2.iter() {
+				log::trace!(target: "mixnet_test", "!!AA\t {:?}", h);
+	}
+	
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");

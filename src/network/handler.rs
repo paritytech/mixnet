@@ -208,20 +208,26 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_fully_negotiated_inbound(&mut self, stream: NegotiatedSubstream, _: ()) {
-		if self.state == State::ActiveNotSent || self.state == State::ActiveInboundNotSent {
+		if matches!(self.state, State::ActiveNotSent | State::ActiveInboundNotSent | State::Inactive {..}) {
+			if self.inbound.is_some() {
+				log::warn!(target: "mixnet", "Dropping inbound");
+			}
 			self.inbound = Some(stream);
 			self.try_send_connected();
 		} else {
-			log::trace!(target: "mixnet", "Dropping inbound, one was already sent");
+			log::warn!(target: "mixnet", "Dropping inbound, one was already sent");
 		}
 	}
 
 	fn inject_fully_negotiated_outbound(&mut self, stream: NegotiatedSubstream, (): ()) {
-		if self.state == State::ActiveNotSent {
+		if matches!(self.state, State::ActiveNotSent) {
+			if self.outbound.is_some() {
+				log::warn!(target: "mixnet", "Dropping outbound");
+			}
 			self.outbound = Some(stream);
 			self.try_send_connected();
 		} else {
-			log::trace!(target: "mixnet", "Dropping outbound, one was already sent");
+			log::warn!(target: "mixnet", "Dropping outbound, one was already sent");
 		}
 	}
 
