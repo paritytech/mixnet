@@ -104,9 +104,10 @@ impl Config {
 	) -> Self {
 		let average_message_delay_ms: u32 = 500;
 		let target_bytes_per_second = DEFAULT_PEER_CONNECTION;
-		let packet_duration_ms =
-			crate::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
-		let graceful_topology_change_period_ms = crate::core::sphinx::MAX_HOPS as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
+		let packet_duration_ms = crate::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
+		let graceful_topology_change_period_ms = crate::core::sphinx::MAX_HOPS as u64 *
+			(average_message_delay_ms as u64 + packet_duration_ms) *
+			2;
 		Self {
 			secret_key,
 			public_key,

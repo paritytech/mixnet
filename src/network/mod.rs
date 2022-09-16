@@ -55,6 +55,7 @@ pub struct MixnetBehaviour {
 	connected: HashMap<PeerId, ConnectionId>,
 	// connection handler notify queue
 	notify_queue: VecDeque<(PeerId, ConnectionId)>,
+	try_connect: VecDeque<PeerId>,
 	// if true when mixnet do not accept a peer we do not
 	// cut the swarm connection: can make sense in case it
 	// is multiplexed. Then it disconnect depending on ttl
@@ -73,9 +74,15 @@ impl MixnetBehaviour {
 			mixnet_worker_sink: worker_in,
 			mixnet_worker_stream: worker_out,
 			notify_queue: Default::default(),
+			try_connect: Default::default(),
 			connected: Default::default(),
 			keep_connection_alive,
 		}
+	}
+
+	/// Try connect mixnet without dial if swarm is already connected.
+	pub fn try_connect(&mut self, peer_id: PeerId) {
+		self.try_connect.push_back(peer_id);
 	}
 }
 
@@ -183,7 +190,18 @@ impl NetworkBehaviour for MixnetBehaviour {
 		cx: &mut Context,
 		params: &mut impl PollParameters,
 	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
+
+		if let Some(network_id) = self.try_connect.pop_front() {
+			// TODO cx waker
+			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+				peer_id: network_id,
+				handler: NotifyHandler::Any,
+				event: handler::HandlerEvent::TryReConnect,
+			})
+		}
+
 		if let Some((id, connection)) = self.notify_queue.pop_front() {
+			// TODO cx waker
 			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
 				peer_id: id,
 				handler: NotifyHandler::One(connection),
@@ -201,6 +219,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 							event: handler::HandlerEvent::TryReConnect,
 						})
 					}
+					// TODO just go for NotifyHanler::Any? but then need to handle error.
 					Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
 						mixnet_id,
 						Some(network_id),

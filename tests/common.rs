@@ -43,6 +43,7 @@ use rand::{rngs::SmallRng, RngCore};
 use std::{
 	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
 	sync::Arc,
+	sync::atomic::AtomicBool,
 	task::Poll,
 };
 
@@ -169,13 +170,22 @@ pub fn mk_workers<T: Configuration>(
 }
 
 /// Spawn a libp2p local swarm with all peers.
-pub fn spawn_swarms(
+pub fn spawn_swarms<T: Configuration>(
 	num_peers: usize,
 	from_external: bool,
 	executor: &ThreadPool,
 	expect_all_connected: bool,
 	keep_connection_alive: bool,
-) -> (Vec<(NetworkPeerId, WorkerChannels)>, Vec<TestChannels>) {
+	rng: &mut SmallRng,
+	config_proto: &Config,
+	make_topo: impl FnMut(
+		usize,
+		NetworkPeerId,
+		&[(MixPeerId, MixPublicKey)],
+		&[(MixSecretKey, ed25519_zebra::SigningKey)],
+		&Config,
+	) -> T,
+) -> (Vec<MixnetWorker<T>>, Vec<TestChannels>, Arc<AtomicBool>) {
 	let extra_external = if from_external {
 		2 // 2 external node at ix num_peers and num_peers + 1
 	} else {
@@ -183,8 +193,14 @@ pub fn spawn_swarms(
 	};
 
 	let (transports, handles) = mk_transports(num_peers, extra_external);
-let swarms = mk_swarms(transports, keep_connection_alive);
+	let swarms = mk_swarms(transports, keep_connection_alive);
+	let workers = mk_workers(handles, rng, config_proto, make_topo);
 
+
+	let peer_ids: HashMap<_, _> = workers.iter().zip(swarms.iter()).map(|(worker, swarm)| 
+		(worker.local_id().clone(), swarm.0.local_peer_id().clone())
+	).collect();
+	let peer_ids = Arc::new(peer_ids);
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
 	// This should be remove or optional if mixnet got non connected use case.
 	// TODO just test dial (list of peers) and retry dial simple system (synch is complex for no
@@ -209,6 +225,8 @@ let swarms = mk_swarms(transports, keep_connection_alive);
 	let mut swarm_futures = Vec::with_capacity(swarms.len());
 	let mut test_channels = Vec::with_capacity(swarms.len());
 
+	// TODO this should not be needed by removing inital connection.
+	let inital_connection = Arc::new(AtomicBool::new(false));
 	for (p, (mut swarm, to_worker)) in swarms.into_iter().enumerate() {
 		let (mut from_swarm_sink, from_swarm_stream) = mpsc::channel(1000);
 		test_channels.push((from_swarm_stream, MixnetCommandSink(Box::new(to_worker))));
@@ -226,6 +244,8 @@ let swarms = mk_swarms(transports, keep_connection_alive);
 
 		let mut to_notify = std::mem::take(&mut to_notify[p]);
 		let mut to_wait = std::mem::take(&mut to_wait[p]);
+		let peer_ids = peer_ids.clone();
+		let inital_connection = inital_connection.clone();
 		let poll_fn = async move {
 			let mut num_connected = 0isize;
 			let mut num_connected_p2p = 0isize;
@@ -288,11 +308,37 @@ let swarms = mk_swarms(transports, keep_connection_alive);
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::TryConnect(
-						_peer_id,
-						_o_network_id,
+						peer_id,
+						o_network_id,
 					)) => {
-						// unimplemented!("TODO store rx address and matching peer id (get peer id
-						// from disconnected msg), then dial again from peer id");
+						if let Some(network_id) = o_network_id {
+							if swarm.is_connected(&network_id) {
+								// already connected, just send TryConnect to handler
+								let mixnet_behaviour: &mut MixnetBehaviour = swarm.behaviour_mut();
+								mixnet_behaviour.try_connect(network_id);
+							} else {
+								log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+								let e = swarm.dial(network_id);
+								log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
+
+							}
+						} else {
+							if let Some(network_id) = peer_ids.get(&peer_id) {
+								if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
+									if swarm.is_connected(network_id) {
+										// already connected, just send TryConnect to handler
+										let mixnet_behaviour: &mut MixnetBehaviour = swarm.behaviour_mut();
+										mixnet_behaviour.try_connect(*network_id);
+									} else {
+										log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+										let e = swarm.dial(*network_id);
+										log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
+									}
+								}
+							} else {
+								log::error!(target: "mixnet_test", "Could not try connect");
+							}
+						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
 						from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await.unwrap();
@@ -358,27 +404,16 @@ let swarms = mk_swarms(transports, keep_connection_alive);
 			}
 		}))
 		.unwrap();
-	(handles, test_channels)
+	(workers, test_channels, inital_connection)
 }
 
 /// Spawn the mixnet workers workers
 pub fn spawn_workers<T: Configuration>(
-	handles: Vec<(NetworkPeerId, WorkerChannels)>,
-	rng: &mut SmallRng,
-	config_proto: &Config,
-	make_topo: impl FnMut(
-		usize,
-		NetworkPeerId,
-		&[(MixPeerId, MixPublicKey)],
-		&[(MixSecretKey, ed25519_zebra::SigningKey)],
-		&Config,
-	) -> T,
+	workers: Vec<MixnetWorker<T>>,
 	executor: &ThreadPool,
 	single_thread: bool,
 ) -> Vec<MixPeerId> {
-	let mut nodes = Vec::with_capacity(handles.len());
-	let workers = mk_workers(handles, rng, config_proto, make_topo);
-
+	let mut nodes = Vec::with_capacity(workers.len());
 	let mut workers_futures = Vec::with_capacity(workers.len());
 	for mut worker in workers.into_iter() {
 		nodes.push(*worker.local_id());
@@ -544,19 +579,20 @@ pub fn send_messages(
 	let TestConfig { message_count, with_surb, .. } = *conf;
 
 	for (i, send_conf) in send.into_iter().enumerate() {
-		if i == 2 { // TODO rem
-		let recipient = &nodes[send_conf.to];
-		log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
-		for _ in 0..message_count {
-			with_swarm_channels[send_conf.from]
-				.1
-				.send(
-					Some(*recipient),
-					send_conf.message.clone(),
-					SendOptions { num_hop: None, with_surb },
-				)
-				.unwrap();
-		}
+		if i == 2 {
+			// TODO rem
+			let recipient = &nodes[send_conf.to];
+			log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
+			for _ in 0..message_count {
+				with_swarm_channels[send_conf.from]
+					.1
+					.send(
+						Some(*recipient),
+						send_conf.message.clone(),
+						SendOptions { num_hop: None, with_surb },
+					)
+					.unwrap();
+			}
 		}
 	}
 }
@@ -572,13 +608,15 @@ pub fn wait_on_messages(
 	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
 
 	for (i, sent) in sent.into_iter().enumerate() {
-		if i == 2 { // TODO rem
-		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
-		nb.0 += message_count;
-		if with_surb {
-			let nb = expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
-			nb.1 += message_count;
-		}
+		if i == 2 {
+			// TODO rem
+			let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
+			nb.0 += message_count;
+			if with_surb {
+				let nb =
+					expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
+				nb.1 += message_count;
+			}
 		}
 	}
 
@@ -614,7 +652,7 @@ pub fn wait_on_messages(
 							}
 						},
 						Poll::Ready(None) => {
-							log::error!("Loop on None, consider failure here");
+// TODO restore?							log::error!("Loop on None, consider failure here");
 						},
 						Poll::Pending => return Poll::Pending,
 					}

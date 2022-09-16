@@ -327,13 +327,6 @@ fn test_messages(conf: TestConfig) {
 	let executor = futures::executor::ThreadPool::new().unwrap();
 	let keep_connection_alive = config_proto.keep_handshaken_disconnected_address;
 	let expect_all_connected = true;
-	let (handles, mut with_swarm_channels) = common::spawn_swarms(
-		num_peers,
-		from_external,
-		&executor,
-		expect_all_connected,
-		keep_connection_alive,
-	);
 
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
@@ -355,11 +348,20 @@ fn test_messages(conf: TestConfig) {
 		};
 		ConfigGraph { inner: handshake }
 	};
-	let nodes = common::spawn_workers::<ConfigGraph>(
-		handles,
+
+	let (handles, mut with_swarm_channels, _) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		expect_all_connected,
+		keep_connection_alive,
 		&mut rng,
 		&config_proto,
 		make_topo,
+	);
+
+	let nodes = common::spawn_workers::<ConfigGraph>(
+		handles,
 		&executor,
 		single_thread,
 	);

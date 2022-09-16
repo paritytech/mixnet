@@ -124,6 +124,7 @@ impl<T: Configuration> MixnetWorker<T> {
 					if let Err(e) =
 						self.worker_out.start_send_unpin(MixnetEvent::Disconnected(net_id, peer_id))
 					{
+						log::error!(target: "mixnet", "Error sending full message to channel: {:?}, {:?}", e, self.mixnet.local_id());
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					}
 				},

@@ -896,6 +896,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 		if !disconnected.is_empty() {
 			for (peer, _a) in disconnected.iter() {
+				log::error!(target: "mixnet", "Disconnecting peer {:?} from {:?}", _a, self.local_id);
 				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 				self.remove_connected_peer(peer);
 			}

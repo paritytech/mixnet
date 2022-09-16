@@ -208,9 +208,9 @@ fn test_messages(conf: TestConfig) {
 	let (public_key, secret_key) = mixnet::generate_new_keys();
 	let average_message_delay_ms = 50;
 	let target_bytes_per_second = 16 * 1024; // for release 64 * 1024
-	let packet_duration_ms =
-		mixnet::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
-	let graceful_topology_change_period_ms = (conf.num_hops + 1) as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
+	let packet_duration_ms = mixnet::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
+	let graceful_topology_change_period_ms =
+		(conf.num_hops + 1) as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
 	let config_proto = mixnet::Config {
 		secret_key,
 		public_key,
@@ -242,14 +242,6 @@ fn test_messages(conf: TestConfig) {
 	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
 	let keep_connection_alive = config_proto.keep_handshaken_disconnected_address;
 	let expect_all_connected = false;
-	let (handles, mut with_swarm_channels) = common::spawn_swarms(
-		num_peers,
-		from_external,
-		&executor,
-		expect_all_connected,
-		keep_connection_alive,
-	);
-
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
 	                      nodes: &[(MixPeerId, MixPublicKey)],
@@ -276,11 +268,20 @@ fn test_messages(conf: TestConfig) {
 		};
 		NotDistributed { inner }
 	};
-	let nodes = common::spawn_workers::<NotDistributed>(
-		handles,
+
+	let (handles, mut with_swarm_channels, _) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		expect_all_connected,
+		keep_connection_alive,
 		&mut rng,
 		&config_proto,
 		make_topo,
+	);
+
+	let nodes = common::spawn_workers::<NotDistributed>(
+		handles,
 		&executor,
 		single_thread,
 	);
@@ -389,9 +390,9 @@ fn test_change_routing_set(conf: TestConfig) {
 	let (public_key, secret_key) = mixnet::generate_new_keys();
 	let average_message_delay_ms = 50;
 	let target_bytes_per_second = 16 * 1024; // for release 64 * 1024
-	let packet_duration_ms =
-		mixnet::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
-	let graceful_topology_change_period_ms = (conf.num_hops + 1) as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
+	let packet_duration_ms = mixnet::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
+	let graceful_topology_change_period_ms =
+		(conf.num_hops + 1) as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
 	let config_proto = mixnet::Config {
 		secret_key,
 		public_key,
@@ -422,13 +423,6 @@ fn test_change_routing_set(conf: TestConfig) {
 	let executor = futures::executor::ThreadPool::new().unwrap();
 	let keep_connection_alive = true;
 	let expect_all_connected = false;
-	let (handles, mut with_swarm_channels) = common::spawn_swarms(
-		num_peers,
-		from_external,
-		&executor,
-		expect_all_connected,
-		keep_connection_alive,
-	);
 
 	let set_topo = set_1.clone();
 	let mut handle_topos = Vec::new();
@@ -470,24 +464,28 @@ fn test_change_routing_set(conf: TestConfig) {
 		NotDistributedShared { inner }
 	};
 
-	let handles2: Vec<_> = handles.iter().map(|h| h.0.clone()).collect();
-	let nodes = common::spawn_workers::<NotDistributedShared>(
-		handles,
+	let (handles, mut with_swarm_channels, initial_con) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		expect_all_connected,
+		keep_connection_alive,
 		&mut rng,
 		&config_proto,
 		make_topo,
+	);
+
+	let nodes = common::spawn_workers::<NotDistributedShared>(
+		handles,
 		&executor,
 		single_thread,
 	);
-	log::trace!(target: "mixnet_test", "Network ids:");
-	for h in handles2.iter() {
-				log::trace!(target: "mixnet_test", "\t {:?}", h);
-	}
-	
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
+
+	initial_con.store(true, std::sync::atomic::Ordering::Relaxed);
 
 	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {

@@ -129,6 +129,7 @@ impl Handler {
 		mixnet_worker_sink: SinkToWorker,
 		keep_connection_alive: bool,
 	) -> Self {
+		log::error!("NHAND");
 		Handler {
 			config,
 			pending_errors: VecDeque::with_capacity(2),
@@ -208,7 +209,10 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_fully_negotiated_inbound(&mut self, stream: NegotiatedSubstream, _: ()) {
-		if matches!(self.state, State::ActiveNotSent | State::ActiveInboundNotSent | State::Inactive {..}) {
+		if matches!(
+			self.state,
+			State::ActiveNotSent | State::ActiveInboundNotSent | State::Inactive { .. }
+		) {
 			if self.inbound.is_some() {
 				log::warn!(target: "mixnet", "Dropping inbound");
 			}
