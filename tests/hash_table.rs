@@ -479,8 +479,9 @@ fn test_change_routing_set(conf: TestConfig) {
 		&executor,
 		single_thread,
 	);
+	log::trace!(target: "mixnet_test", "Network ids:");
 	for h in handles2.iter() {
-				log::trace!(target: "mixnet_test", "!!AA\t {:?}", h);
+				log::trace!(target: "mixnet_test", "\t {:?}", h);
 	}
 	
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);

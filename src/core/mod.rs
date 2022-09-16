@@ -718,9 +718,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		if let Some(need_conn) = self.topology.try_connect() {
 			let mut try_connect = Vec::new();
 			for (peer_id, mut maybe_net_id) in need_conn {
-				log::error!("| {:?} -> {:?}", self.local_id, peer_id);
 				if let Some(net_id) = maybe_net_id.as_ref() {
-				log::error!("| has net id??");
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						if connection.mixnet_id() == Some(&peer_id) {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
@@ -734,7 +732,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 							);
 							continue
 						} else {
-						log::error!("yyysy");
 							// TODO log error
 							// change of peer id for network other peer should have broken
 							// connection already
@@ -751,12 +748,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						if maybe_net_id.is_some() && maybe_net_id.as_ref() != Some(net_id) {
-						log::error!("yyyy");
 							// existing connection with change of network id.
 							// TODO slow disconnect.
 							// TODO log error
 						} else {
-							log::error!(target: "mixnet", "New routing set, already connected to peer.{:?}", self.local_id);
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
 							connection.set_kind_changed(
 								&self.local_id,
@@ -769,16 +764,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 							continue
 						}
 					} else {
-//						log::error!("{:?} -> {:?}", self.local_id, peer_id);
 						maybe_net_id = Some(*net_id);
-//						try_connect.push((peer_id, Some(*net_id)));
-//						continue
 					}
 				} else if let Some(net_id) = self.disconnected_handshaken_peers.remove(&peer_id) {
-//					log::error!("{:?} -> {:?} -", self.local_id, peer_id);
 					maybe_net_id = Some(net_id);
-//					try_connect.push((peer_id, Some(net_id)));
-//					continue
 				}
 				log::error!("{:?} -> {:?} - {:?}", self.local_id, peer_id, maybe_net_id.is_some());
 				try_connect.push((peer_id, maybe_net_id));

@@ -299,7 +299,6 @@ impl<C: Connection> ManagedConnection<C> {
 					topology.check_handshake(handshake.as_slice(), &self.network_id)
 				{
 					let accepted = topology.accept_peer(&peer_id, peers);
-					log::trace!(target: "mixnet_test", "Hand peer {:?}", peer_id);
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
 					self.handshake_received = true;
@@ -467,7 +466,6 @@ impl<C: Connection> ManagedConnection<C> {
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
 					self.set_kind_changed(local_id, peers, topology, forward_queue, window, true);
-			log::trace!(target: "mixnet_test", "polling {:?}", mixnet_id);
 					return Poll::Ready(ConnectionEvent::Established(mixnet_id, public_key))
 				} else {
 					// is actually unreachable
