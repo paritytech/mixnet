@@ -54,8 +54,14 @@ const COVER_TAG: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
 // of time an identical message was received, it
 // would not be needed.
 fn hash(iv: &[u8], data: &[u8]) -> MessageHash {
+	use blake2::digest::{FixedOutput, Update};
+	type Blake2b256 = blake2::Blake2bMac<blake2::digest::typenum::U32>;
+	let mut ctx = Blake2b256::new_with_salt_and_personal(iv, &[], &[])
+		.expect("Salt length (32) is a valid key length (<= 64)");
+	ctx.update(data);
+	let hash = ctx.finalize_fixed();
 	let mut r = MessageHash::default();
-	r.copy_from_slice(blake2_rfc::blake2b::blake2b(32, iv, data).as_bytes());
+	r.copy_from_slice(&hash);
 	r
 }
 

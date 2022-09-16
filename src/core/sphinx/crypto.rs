@@ -124,8 +124,13 @@ pub fn hkdf_expand(prk: &[u8], info: &[u8]) -> [u8; KDF_OUTPUT_SIZE] {
 
 /// Hash the input.
 pub fn hash(input: &[u8; KEY_SIZE]) -> [u8; HASH_OUTPUT_SIZE] {
+	use blake2::digest::{FixedOutput, Update};
+	type Blake2b256 = blake2::Blake2b<blake2::digest::typenum::U32>;
 	let mut r = [0u8; HASH_OUTPUT_SIZE];
-	r.copy_from_slice(blake2_rfc::blake2b::blake2b(32, &[], &input[..]).as_bytes());
+	let mut ctx = Blake2b256::default();
+	ctx.update(input);
+	let hash = ctx.finalize_fixed();
+	r.copy_from_slice(&hash);
 	r
 }
 

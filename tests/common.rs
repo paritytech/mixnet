@@ -589,7 +589,7 @@ pub fn wait_on_messages(
 						Poll::Ready(Some(PeerTestReply::ReceiveMessage(
 							mixnet::DecodedMessage { peer, message, mut kind },
 						))) => {
-							log::trace!(target: "mixnet", "Decoded message {} bytes, from {:?}", message.len(), peer);
+							log::trace!(target: "mixnet_test", "Decoded message {} bytes, from {:?}", message.len(), peer);
 							let nb = messages.remove(&message).map(|mut nb| {
 								if let Some(_o_query) = kind.extract_surb_query() {
 									nb.1 -= 1;

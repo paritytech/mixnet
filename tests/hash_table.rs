@@ -377,10 +377,13 @@ fn test_change_routing_set(conf: TestConfig) {
 	let TestConfig { num_peers, message_size, from_external, .. } = conf;
 
 	let set_1 = 0..num_peers;
+	log::trace!(target: "mixnet_test", "Topo_peers:");
+	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	let half_set = num_peers / 2;
 	// we change half the set, so raising numpeers by half
 	let num_peers = num_peers + half_set;
 	let set_2 = half_set..num_peers;
+	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 
 	let seed: u64 = 0;
 	let single_thread = false;
@@ -430,11 +433,18 @@ fn test_change_routing_set(conf: TestConfig) {
 	let mut handle_topos = Vec::new();
 	let handle_topos_ptr = &mut handle_topos;
 
+	let disp = std::sync::atomic::AtomicBool::new(true);
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
 	                      nodes: &[(MixPeerId, MixPublicKey)],
 	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
 	                      config: &mixnet::Config| {
+		if disp.swap(false, std::sync::atomic::Ordering::Relaxed) {
+			log::trace!(target: "mixnet_test", "Topo_peers:");
+			for p in nodes {
+				log::trace!(target: "mixnet_test", "\t {:?}", p.0);
+			}
+		}
 		let mut topo = TopologyHashTable::new(
 			nodes[p].0,
 			nodes[p].1,
@@ -535,7 +545,7 @@ fn testing_mess() {
 	test_change_routing_set(TestConfig {
 		num_peers: 4,
 		num_hops: 3,
-		message_count: 2,
+		message_count: 1,
 		message_size: 1, // max 256 * 1024
 		with_surb: false,
 		from_external: false,

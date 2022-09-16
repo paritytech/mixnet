@@ -19,7 +19,7 @@ log = "0.4.17"
 rand = "0.8.4"
 rand_distr = "0.4.3"
 void = "1.0"
-blake2-rfc = { version = "0.2.18", default-features = false }
+blake2 = { version = "0.10.4", default-features = false }
 curve25519-dalek = "3.2.0"
 dyn-clone = "1.0.5"
 static_assertions = "1.1.0"
