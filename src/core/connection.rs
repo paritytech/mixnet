@@ -131,7 +131,7 @@ impl<C: Connection> ManagedConnection<C> {
 	) {
 		if on_handshake_success || self.kind != ConnectedKind::PendingHandshake {
 			let old_kind = self.kind;
-			self.kind = self.add_peer(local_id, topology, forward_queue, peers, window);
+			self.add_peer(local_id, topology, forward_queue, peers, window);
 			peers.remove_peer(old_kind);
 			topology.peer_stats(peers);
 
@@ -183,10 +183,10 @@ impl<C: Connection> ManagedConnection<C> {
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 		peer_counts: &mut PeerCount,
 		window: &WindowInfo,
-	) -> ConnectedKind {
+	) {
 		if let Some(peer) = self.mixnet_id.as_ref() {
-			let kind = peer_counts.add_peer(local_id, peer, topology);
-			if kind.routing_forward() {
+			self.kind = peer_counts.add_peer(local_id, peer, topology);
+			if self.kind.routing_forward() {
 				if let Some(queue_packets) = forward_queue.and_then(|q| q.remove(peer)) {
 					for (packet, _) in queue_packets {
 						let queued = self.queue_packet(
@@ -204,9 +204,8 @@ impl<C: Connection> ManagedConnection<C> {
 					}
 				}
 			}
-			kind
 		} else {
-			ConnectedKind::PendingHandshake
+			self.kind = ConnectedKind::PendingHandshake;
 		}
 	}
 

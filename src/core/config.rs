@@ -103,13 +103,15 @@ impl Config {
 		secret_key: MixSecretKey,
 	) -> Self {
 		let average_message_delay_ms: u32 = 500;
-		let graceful_topology_change_period_ms =
-			crate::core::sphinx::MAX_HOPS as u64 * average_message_delay_ms as u64 * 2;
+		let target_bytes_per_second = DEFAULT_PEER_CONNECTION;
+		let packet_duration_ms =
+			crate::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
+		let graceful_topology_change_period_ms = crate::core::sphinx::MAX_HOPS as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
 		Self {
 			secret_key,
 			public_key,
 			local_id: id,
-			target_bytes_per_second: DEFAULT_PEER_CONNECTION,
+			target_bytes_per_second,
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms,

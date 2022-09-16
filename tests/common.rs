@@ -543,9 +543,10 @@ pub fn send_messages(
 ) {
 	let TestConfig { message_count, with_surb, .. } = *conf;
 
-	for send_conf in send {
+	for (i, send_conf) in send.into_iter().enumerate() {
+		if i == 3 { // TODO rem
 		let recipient = &nodes[send_conf.to];
-		log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
+		log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
 		for _ in 0..message_count {
 			with_swarm_channels[send_conf.from]
 				.1
@@ -555,6 +556,7 @@ pub fn send_messages(
 					SendOptions { num_hop: None, with_surb },
 				)
 				.unwrap();
+		}
 		}
 	}
 }
@@ -569,12 +571,14 @@ pub fn wait_on_messages(
 
 	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
 
-	for sent in sent {
+	for (i, sent) in sent.into_iter().enumerate() {
+		if i == 3 { // TODO rem
 		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
 		nb.0 += message_count;
 		if with_surb {
 			let nb = expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
 			nb.1 += message_count;
+		}
 		}
 	}
 

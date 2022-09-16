@@ -207,20 +207,22 @@ fn test_messages(conf: TestConfig) {
 	let single_thread = true;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
 	let average_message_delay_ms = 50;
+	let target_bytes_per_second = 16 * 1024; // for release 64 * 1024
+	let packet_duration_ms =
+		mixnet::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
+	let graceful_topology_change_period_ms = (conf.num_hops + 1) as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
 	let config_proto = mixnet::Config {
 		secret_key,
 		public_key,
 		local_id: Default::default(),
-		target_bytes_per_second: 16 * 1024, // for release 64 * 1024
+		target_bytes_per_second,
 		// usually only need to be low value for high bandwidth in debug mode and not in single
 		// thread
 		no_yield_budget: 32,
 		timeout_ms: 10000,
 		num_hops: conf.num_hops,
 		average_message_delay_ms,
-		graceful_topology_change_period_ms: average_message_delay_ms as u64 *
-			conf.num_hops as u64 *
-			2,
+		graceful_topology_change_period_ms,
 		queue_message_unconnected_ms: 0,
 		queue_message_unconnected_number: 0,
 		persist_surb_query: false,
@@ -377,18 +379,19 @@ fn test_change_routing_set(conf: TestConfig) {
 	let TestConfig { num_peers, message_size, from_external, .. } = conf;
 
 	let set_1 = 0..num_peers;
-	log::trace!(target: "mixnet_test", "Topo_peers:");
-	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	let half_set = num_peers / 2;
 	// we change half the set, so raising numpeers by half
 	let num_peers = num_peers + half_set;
 	let set_2 = half_set..num_peers;
-	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 
 	let seed: u64 = 0;
 	let single_thread = false;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
 	let average_message_delay_ms = 50;
+	let target_bytes_per_second = 16 * 1024; // for release 64 * 1024
+	let packet_duration_ms =
+		mixnet::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;
+	let graceful_topology_change_period_ms = (conf.num_hops + 1) as u64 * (average_message_delay_ms as u64 + packet_duration_ms) * 2;
 	let config_proto = mixnet::Config {
 		secret_key,
 		public_key,
@@ -402,9 +405,7 @@ fn test_change_routing_set(conf: TestConfig) {
 		average_message_delay_ms,
 		queue_message_unconnected_ms: 30_000, // just allow send before connecting
 		queue_message_unconnected_number: 100,
-		graceful_topology_change_period_ms: average_message_delay_ms as u64 *
-			conf.num_hops as u64 *
-			2,
+		graceful_topology_change_period_ms,
 		persist_surb_query: false,
 		replay_ttl_ms: 100_000,
 		surb_ttl_ms: 100_000,
@@ -477,6 +478,8 @@ fn test_change_routing_set(conf: TestConfig) {
 		single_thread,
 	);
 
+	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
+	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
