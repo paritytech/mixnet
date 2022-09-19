@@ -190,7 +190,6 @@ impl NetworkBehaviour for MixnetBehaviour {
 		cx: &mut Context,
 		params: &mut impl PollParameters,
 	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-
 		if let Some(network_id) = self.try_connect.pop_front() {
 			// TODO cx waker
 			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {

@@ -360,11 +360,7 @@ fn test_messages(conf: TestConfig) {
 		make_topo,
 	);
 
-	let nodes = common::spawn_workers::<ConfigGraph>(
-		handles,
-		&executor,
-		single_thread,
-	);
+	let nodes = common::spawn_workers::<ConfigGraph>(handles, &executor, single_thread);
 
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 

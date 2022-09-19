@@ -42,8 +42,7 @@ use mixnet::{
 use rand::{rngs::SmallRng, RngCore};
 use std::{
 	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-	sync::Arc,
-	sync::atomic::AtomicBool,
+	sync::{atomic::AtomicBool, Arc},
 	task::Poll,
 };
 
@@ -55,6 +54,32 @@ pub enum PeerTestReply {
 
 pub type TestChannels = (mpsc::Receiver<PeerTestReply>, MixnetCommandSink);
 
+#[macro_export]
+macro_rules! log_unwrap {
+	($code:expr) => {
+		match $code {
+			Err(e) => {
+				log::error!(target: "mixnet_test", "Error in unwrap: {:?}", e);
+				panic!("{:?}", e)
+			},
+			Ok(r) => r,
+		}
+	};
+}
+
+#[macro_export]
+macro_rules! log_unwrap_opt {
+	($code:expr) => {
+		match $code {
+			None => {
+				log::error!(target: "mixnet_test", "Unwrap none");
+				panic!("")
+			},
+			Some(r) => r,
+		}
+	};
+}
+
 /// Spawn a lip2p local transport for tests.
 fn mk_transport(
 ) -> (NetworkPeerId, identity::ed25519::Keypair, transport::Boxed<(NetworkPeerId, StreamMuxerBox)>)
@@ -62,7 +87,8 @@ fn mk_transport(
 	let key = identity::ed25519::Keypair::generate();
 	let id_keys = identity::Keypair::Ed25519(key.clone());
 	let peer_id = id_keys.public().to_peer_id();
-	let noise_keys = noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys).unwrap();
+	let noise_keys =
+		log_unwrap!(noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys));
 	(
 		peer_id,
 		key,
@@ -118,7 +144,7 @@ fn mk_swarms(
 			mixnet::MixnetBehaviour::new(to_worker_sink, from_worker_stream, keep_connection_alive);
 		let mut swarm = Swarm::new(trans, mixnet, peer_id);
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
-		swarm.listen_on(addr).unwrap();
+		log_unwrap!(swarm.listen_on(addr));
 		swarms.push((swarm, to_worker));
 	}
 	swarms
@@ -196,10 +222,11 @@ pub fn spawn_swarms<T: Configuration>(
 	let swarms = mk_swarms(transports, keep_connection_alive);
 	let workers = mk_workers(handles, rng, config_proto, make_topo);
 
-
-	let peer_ids: HashMap<_, _> = workers.iter().zip(swarms.iter()).map(|(worker, swarm)| 
-		(worker.local_id().clone(), swarm.0.local_peer_id().clone())
-	).collect();
+	let peer_ids: HashMap<_, _> = workers
+		.iter()
+		.zip(swarms.iter())
+		.map(|(worker, swarm)| (worker.local_id().clone(), swarm.0.local_peer_id().clone()))
+		.collect();
 	let peer_ids = Arc::new(peer_ids);
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
 	// This should be remove or optional if mixnet got non connected use case.
@@ -256,10 +283,10 @@ pub fn spawn_swarms<T: Configuration>(
 				match swarm.select_next_some().await {
 					SwarmEvent::NewListenAddr { address, .. } => {
 						for mut tx in to_notify.drain(..) {
-							tx.send(address.clone()).await.unwrap()
+							log_unwrap!(tx.send(address.clone()).await)
 						}
 						for mut rx in to_wait.drain(..) {
-							swarm.dial(rx.next().await.unwrap()).unwrap();
+							log_unwrap!(swarm.dial(log_unwrap_opt!(rx.next().await)));
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Connected(peer, _)) => {
@@ -275,10 +302,11 @@ pub fn spawn_swarms<T: Configuration>(
 							{
 								expect_all_connected = false;
 								count_connected = false;
-								from_swarm_sink
-									.send(PeerTestReply::InitialConnectionsCompleted)
-									.await
-									.unwrap();
+								log_unwrap!(
+									from_swarm_sink
+										.send(PeerTestReply::InitialConnectionsCompleted)
+										.await
+								);
 								target_peers = None;
 							}
 						}
@@ -299,10 +327,11 @@ pub fn spawn_swarms<T: Configuration>(
 							if Some(handshake_done.len()) == target_peers {
 								expect_all_connected = false;
 								count_connected = false;
-								from_swarm_sink
-									.send(PeerTestReply::InitialConnectionsCompleted)
-									.await
-									.unwrap();
+								log_unwrap!(
+									from_swarm_sink
+										.send(PeerTestReply::InitialConnectionsCompleted)
+										.await
+								);
 								target_peers = None;
 							}
 						}
@@ -320,14 +349,14 @@ pub fn spawn_swarms<T: Configuration>(
 								log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
 								let e = swarm.dial(network_id);
 								log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
-
 							}
 						} else {
 							if let Some(network_id) = peer_ids.get(&peer_id) {
 								if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
 									if swarm.is_connected(network_id) {
 										// already connected, just send TryConnect to handler
-										let mixnet_behaviour: &mut MixnetBehaviour = swarm.behaviour_mut();
+										let mixnet_behaviour: &mut MixnetBehaviour =
+											swarm.behaviour_mut();
 										mixnet_behaviour.try_connect(*network_id);
 									} else {
 										log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
@@ -341,7 +370,9 @@ pub fn spawn_swarms<T: Configuration>(
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
-						from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await.unwrap();
+						log_unwrap!(
+							from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await
+						);
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::CloseStream) => {
 						log::error!(target: "mixnet", "Stream close, no message incomming.");
@@ -364,10 +395,11 @@ pub fn spawn_swarms<T: Configuration>(
 							if Some(handshake_done.len()) == target_peers {
 								expect_all_connected = false;
 								count_connected = false;
-								from_swarm_sink
-									.send(PeerTestReply::InitialConnectionsCompleted)
-									.await
-									.unwrap();
+								log_unwrap!(
+									from_swarm_sink
+										.send(PeerTestReply::InitialConnectionsCompleted)
+										.await
+								);
 								target_peers = None;
 							}
 						}
@@ -385,25 +417,23 @@ pub fn spawn_swarms<T: Configuration>(
 		};
 		swarm_futures.push(Box::pin(poll_fn));
 	}
-	executor
-		.spawn(future::poll_fn(move |cx| {
-			let mut swarm_futures = futures::future::select_all(&mut swarm_futures);
-			loop {
-				use std::pin::Pin;
-				match Pin::new(&mut swarm_futures).poll(cx) {
-					Poll::Ready((_swarm, p, remaining)) => {
-						log::trace!(target: "mixnet", "Swarm {} exited", p);
-						if remaining.is_empty() {
-							log::trace!(target: "mixnet", "All Swarms exited");
-							return Poll::Ready(())
-						}
-						swarm_futures = futures::future::select_all(remaining);
-					},
-					Poll::Pending => return Poll::Pending,
-				}
+	log_unwrap!(executor.spawn(future::poll_fn(move |cx| {
+		let mut swarm_futures = futures::future::select_all(&mut swarm_futures);
+		loop {
+			use std::pin::Pin;
+			match Pin::new(&mut swarm_futures).poll(cx) {
+				Poll::Ready((_swarm, p, remaining)) => {
+					log::trace!(target: "mixnet", "Swarm {} exited", p);
+					if remaining.is_empty() {
+						log::trace!(target: "mixnet", "All Swarms exited");
+						return Poll::Ready(())
+					}
+					swarm_futures = futures::future::select_all(remaining);
+				},
+				Poll::Pending => return Poll::Pending,
 			}
-		}))
-		.unwrap();
+		}
+	})));
 	(workers, test_channels, inital_connection)
 }
 
@@ -430,29 +460,27 @@ pub fn spawn_workers<T: Configuration>(
 		if single_thread {
 			workers_futures.push(worker);
 		} else {
-			executor.spawn(worker).unwrap();
+			log_unwrap!(executor.spawn(worker));
 		}
 	}
 	if !workers_futures.is_empty() {
-		executor
-			.spawn(future::poll_fn(move |cx| {
-				let mut workers_futures = futures::future::select_all(&mut workers_futures);
-				loop {
-					use std::pin::Pin;
-					match Pin::new(&mut workers_futures).poll(cx) {
-						Poll::Ready((_swarm, p, remaining)) => {
-							log::trace!(target: "mixnet", "Workers {} exited", p);
-							if remaining.is_empty() {
-								log::trace!(target: "mixnet", "All Workers exited");
-								return Poll::Ready(())
-							}
-							workers_futures = futures::future::select_all(remaining);
-						},
-						Poll::Pending => return Poll::Pending,
-					}
+		log_unwrap!(executor.spawn(future::poll_fn(move |cx| {
+			let mut workers_futures = futures::future::select_all(&mut workers_futures);
+			loop {
+				use std::pin::Pin;
+				match Pin::new(&mut workers_futures).poll(cx) {
+					Poll::Ready((_swarm, p, remaining)) => {
+						log::trace!(target: "mixnet", "Workers {} exited", p);
+						if remaining.is_empty() {
+							log::trace!(target: "mixnet", "All Workers exited");
+							return Poll::Ready(())
+						}
+						workers_futures = futures::future::select_all(remaining);
+					},
+					Poll::Pending => return Poll::Pending,
 				}
-			}))
-			.unwrap();
+			}
+		})));
 	}
 	nodes
 }
@@ -492,9 +520,9 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 		pk.copy_from_slice(&payload[32..64]);
 		let mut signature = [0u8; 64];
 		signature.copy_from_slice(&payload[64..]);
-		let signature = ed25519_zebra::Signature::try_from(&signature[..]).unwrap();
-		let pub_key = ed25519_zebra::VerificationKey::try_from(&peer_id[..]).unwrap();
-		let mut message = self.local_network_id.unwrap().to_bytes().to_vec();
+		let signature = log_unwrap!(ed25519_zebra::Signature::try_from(&signature[..]));
+		let pub_key = log_unwrap!(ed25519_zebra::VerificationKey::try_from(&peer_id[..]));
+		let mut message = log_unwrap_opt!(self.local_network_id).to_bytes().to_vec();
 		message.extend_from_slice(&pk[..]);
 		if pub_key.verify(&signature, &message[..]).is_ok() {
 			let pk = MixPublicKey::from(pk);
@@ -512,7 +540,7 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 	}
 
 	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
-		let mut result = self.local_id.as_ref().unwrap().to_vec();
+		let mut result = log_unwrap_opt!(self.local_id.as_ref()).to_vec();
 		result.extend_from_slice(&public_key.as_bytes()[..]);
 		if let Some(keypair) = &self.mix_secret_key {
 			let mut message = with.to_bytes().to_vec();
@@ -584,14 +612,11 @@ pub fn send_messages(
 			let recipient = &nodes[send_conf.to];
 			log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
 			for _ in 0..message_count {
-				with_swarm_channels[send_conf.from]
-					.1
-					.send(
-						Some(*recipient),
-						send_conf.message.clone(),
-						SendOptions { num_hop: None, with_surb },
-					)
-					.unwrap();
+				log_unwrap!(with_swarm_channels[send_conf.from].1.send(
+					Some(*recipient),
+					send_conf.message.clone(),
+					SendOptions { num_hop: None, with_surb },
+				));
 			}
 		}
 	}
@@ -642,17 +667,17 @@ pub fn wait_on_messages(
 							});
 							assert!(nb.is_some());
 							if nb != Some((0, 0)) {
-								messages.insert(message, nb.unwrap());
+								messages.insert(message, log_unwrap_opt!(nb));
 							}
 							if let Some(reply) = kind.surb() {
-								sender.surb(surb_reply.to_vec(), reply).unwrap();
+								log_unwrap!(sender.surb(surb_reply.to_vec(), reply));
 							}
 							if messages.is_empty() {
 								return Poll::Ready(messages.is_empty())
 							}
 						},
 						Poll::Ready(None) => {
-// TODO restore?							log::error!("Loop on None, consider failure here");
+							// TODO restore?							log::error!("Loop on None, consider failure here");
 						},
 						Poll::Pending => return Poll::Pending,
 					}

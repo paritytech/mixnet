@@ -238,7 +238,7 @@ fn test_messages(conf: TestConfig) {
 	rng.fill_bytes(&mut source_message);
 	let source_message = &source_message;
 
-	let executor = futures::executor::ThreadPool::new().unwrap();
+	let executor = log_unwrap!(futures::executor::ThreadPool::new());
 	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
 	let keep_connection_alive = config_proto.keep_handshaken_disconnected_address;
 	let expect_all_connected = false;
@@ -280,11 +280,7 @@ fn test_messages(conf: TestConfig) {
 		make_topo,
 	);
 
-	let nodes = common::spawn_workers::<NotDistributed>(
-		handles,
-		&executor,
-		single_thread,
-	);
+	let nodes = common::spawn_workers::<NotDistributed>(handles, &executor, single_thread);
 
 	log::trace!(target: "mixnet_test", "before waiting connections");
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
@@ -420,7 +416,7 @@ fn test_change_routing_set(conf: TestConfig) {
 	rng.fill_bytes(&mut source_message);
 	let source_message = &source_message;
 
-	let executor = futures::executor::ThreadPool::new().unwrap();
+	let executor = log_unwrap!(futures::executor::ThreadPool::new());
 	let keep_connection_alive = true;
 	let expect_all_connected = false;
 
@@ -475,11 +471,7 @@ fn test_change_routing_set(conf: TestConfig) {
 		make_topo,
 	);
 
-	let nodes = common::spawn_workers::<NotDistributedShared>(
-		handles,
-		&executor,
-		single_thread,
-	);
+	let nodes = common::spawn_workers::<NotDistributedShared>(handles, &executor, single_thread);
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");
