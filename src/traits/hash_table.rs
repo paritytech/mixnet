@@ -21,7 +21,10 @@
 //! Topology where direct peers are resolved
 //! by hashing peers id (so randomly distributed).
 
-use crate::{traits::Topology, Error, MixPeerId, MixPublicKey, NetworkPeerId, PeerCount};
+use crate::{
+	traits::{NewRoutingSet, ShouldConnectTo, Topology},
+	Error, MixPeerId, MixPublicKey, NetworkPeerId, PeerCount,
+};
 use log::{debug, error, trace};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -420,14 +423,22 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		}
 	}
 
-	fn should_connect_to(&self) -> (&[MixPeerId], usize) {
-		(self.should_connect_to.as_slice(), C::NUMBER_CONNECTED_FORWARD)
+	fn should_connect_to(&self) -> ShouldConnectTo {
+		ShouldConnectTo {
+			peers: self.should_connect_to.as_slice(),
+			number: C::NUMBER_CONNECTED_FORWARD,
+			is_static: !C::DISTRIBUTE_ROUTES,
+		}
 	}
 
-	fn handle_new_routing_set(&mut self, set: &[(MixPeerId, MixPublicKey)]) {
-		assert!(!C::DISTRIBUTE_ROUTES);
-		self.handle_new_routing_set_start(set.iter().map(|k| &k.0), None);
-		self.refresh_static_routing_tables(set);
+	fn handle_new_routing_set(&mut self, set: NewRoutingSet) {
+		if !C::DISTRIBUTE_ROUTES {
+			assert!(!C::DISTRIBUTE_ROUTES);
+			self.handle_new_routing_set_start(set.peers.iter().map(|k| &k.0), None);
+			self.refresh_static_routing_tables(set.peers);
+		} else {
+			unimplemented!("TODO");
+		}
 	}
 }
 

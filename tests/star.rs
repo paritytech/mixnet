@@ -37,8 +37,9 @@ use std::{
 
 use ambassador::Delegate;
 use mixnet::{
-	ambassador_impl_Topology, traits::Topology, Error, MixPeerId, MixPublicKey, MixSecretKey,
-	NetworkPeerId, PeerCount, SendOptions,
+	ambassador_impl_Topology,
+	traits::{NewRoutingSet, ShouldConnectTo, Topology},
+	Error, MixPeerId, MixPublicKey, MixSecretKey, NetworkPeerId, PeerCount, SendOptions,
 };
 
 #[derive(Delegate)]
@@ -260,12 +261,12 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn should_connect_to(&self) -> (&[MixPeerId], usize) {
+	fn should_connect_to(&self) -> ShouldConnectTo {
 		// no reco hanling in these tests
-		(&[], 0)
+		ShouldConnectTo::empty()
 	}
 
-	fn handle_new_routing_set(&mut self, _set: &[(MixPeerId, MixPublicKey)]) {
+	fn handle_new_routing_set(&mut self, _set: NewRoutingSet) {
 		// static set in these tests
 	}
 }

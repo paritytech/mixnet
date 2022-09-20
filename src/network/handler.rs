@@ -218,6 +218,8 @@ impl ConnectionHandler for Handler {
 			self.inbound = Some(stream);
 			self.try_send_connected();
 		} else {
+			log::trace!(target: "mixnet", "Dropping inbound, one was already sent");
+			/* TODO rem (broken will simply be followed to reconnect attempt)
 			if matches!(self.state, State::Active) {
 				log::warn!(target: "mixnet", "Inbound receive on an active connection");
 				// means peer dial when we consider state fine (can happen on non routing
@@ -227,7 +229,7 @@ impl ConnectionHandler for Handler {
 				self.do_outbound_query = true;
 			} else {
 				log::trace!(target: "mixnet", "Dropping inbound, one was already sent");
-			}
+			}*/
 		}
 	}
 

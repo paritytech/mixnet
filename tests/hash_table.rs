@@ -24,14 +24,15 @@ mod common;
 
 use ambassador::Delegate;
 use common::{
-	send_messages, wait_on_connections, wait_on_messages, SendConf, SimpleHandshake, TestConfig, new_routing_set,
+	new_routing_set, send_messages, wait_on_connections, wait_on_messages, SendConf,
+	SimpleHandshake, TestConfig,
 };
 use libp2p_core::PeerId;
 use mixnet::{
 	ambassador_impl_Topology,
 	traits::{
 		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
-		Topology,
+		NewRoutingSet, ShouldConnectTo, Topology,
 	},
 	Error, MixPeerId, MixPublicKey, MixSecretKey, NetworkPeerId, PeerCount, SendOptions,
 };
@@ -90,7 +91,6 @@ impl mixnet::traits::Handshake for NotDistributed {
 	}
 }
 
-
 fn test_messages(conf: TestConfig) {
 	let TestConfig { num_peers, message_size, from_external, .. } = conf;
 
@@ -145,7 +145,7 @@ fn test_messages(conf: TestConfig) {
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
-		topo.handle_new_routing_set(&nodes[..num_peers]);
+		topo.handle_new_routing_set(NewRoutingSet { peers: &nodes[..num_peers] });
 		let mix_secret_key = secrets[p].1;
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 
@@ -330,7 +330,7 @@ fn test_change_routing_set(conf: TestConfig) {
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
-		topo.handle_new_routing_set(&nodes[set_topo.clone()]);
+		topo.handle_new_routing_set(NewRoutingSet { peers: &nodes[set_topo.clone()] });
 		let mix_secret_key = secrets[p].1;
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 
@@ -356,9 +356,7 @@ fn test_change_routing_set(conf: TestConfig) {
 
 	let nodes_ids: Vec<_> = handles
 		.iter()
-		.map(|worker| {
-			(*worker.mixnet().local_id(), *worker.mixnet().public_key())
-		})
+		.map(|worker| (*worker.mixnet().local_id(), *worker.mixnet().public_key()))
 		.collect();
 
 	let nodes = common::spawn_workers::<NotDistributed>(handles, &executor, single_thread);

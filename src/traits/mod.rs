@@ -98,11 +98,11 @@ pub trait Topology: Sized {
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error>;
 
 	/// On connection successful handshake.
-	/// TODO remove by just passing current connected node as param of random_path
+	/// TODO could pass connectionkind to simplify code
 	fn connected(&mut self, id: MixPeerId, public_key: MixPublicKey);
 
 	/// On disconnect.
-	/// TODO remove by just passing current connected node as param of random_path
+	/// TODO could pass connectionkind to simplify code
 	fn disconnected(&mut self, id: &MixPeerId);
 
 	/// On topology change, might have existing peer changed, return a list of these peers.
@@ -118,16 +118,35 @@ pub trait Topology: Sized {
 
 	/// Return all possible connection ordered by priority and the targetted number of connections
 	/// to use.
-	fn should_connect_to(&self) -> (&[MixPeerId], usize);
+	fn should_connect_to(&self) -> ShouldConnectTo;
 
 	/// Is peer allowed to connect to our node.
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool;
 
 	/// A new static routing set was globally defined.
-	fn handle_new_routing_set(&mut self, set: &[(MixPeerId, MixPublicKey)]);
+	fn handle_new_routing_set(&mut self, set: NewRoutingSet);
 
 	// TODO handle new id and key.
 	// TODO handle new distributed routing table
+}
+
+// TODO a enum variant with MixPublicKey or opt MixPublicKey.
+pub struct ShouldConnectTo<'a> {
+	pub peers: &'a [MixPeerId],
+	pub number: usize,
+	pub is_static: bool,
+}
+
+impl<'a> ShouldConnectTo<'a> {
+	pub fn empty() -> ShouldConnectTo<'static> {
+		ShouldConnectTo { peers: &[], number: 0, is_static: true }
+	}
+}
+
+/// A current routing set of peers.
+/// Two variant given other info will be shared.
+pub struct NewRoutingSet<'a> {
+	pub peers: &'a [(MixPeerId, MixPublicKey)],
 }
 
 /// Handshake on peer connection.
@@ -232,11 +251,11 @@ impl Topology for NoTopology {
 		None
 	}
 
-	fn should_connect_to(&self) -> (&[MixPeerId], usize) {
-		(&[], 0)
+	fn should_connect_to(&self) -> ShouldConnectTo {
+		ShouldConnectTo::empty()
 	}
 
-	fn handle_new_routing_set(&mut self, _set: &[(MixPeerId, MixPublicKey)]) {}
+	fn handle_new_routing_set(&mut self, _set: NewRoutingSet) {}
 }
 
 impl Configuration for NoTopology {

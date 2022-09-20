@@ -45,7 +45,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) enum ConnectionEvent {
 	Established(MixPeerId, MixPublicKey),
 	Received((Packet, bool)),
-	Broken(Option<MixPeerId>, bool),
+	Broken(Option<MixPeerId>),
 	None,
 }
 
@@ -82,13 +82,6 @@ pub(crate) struct ManagedConnection<C> {
 	// both at 0.
 	gracefull_disconnecting: Option<Instant>,
 	stats: Option<(ConnectionStats, Option<PacketType>)>,
-	// Connection my be broken but seen as fine when it was refused
-	// from one side only and no packet where send to see that the connection
-	// is broken.
-	try_reco_on_first_broken_send: bool, /* TODO remove should just rerun handshake on new query
-	                                      * for handshake */
-	try_reco_on_first_broken_recv: bool, /* TODO remove should just rerun handshake on new query
-	                                      * for handshake */
 }
 
 impl<C: Connection> ManagedConnection<C> {
@@ -121,8 +114,6 @@ impl<C: Connection> ManagedConnection<C> {
 			gracefull_nb_packet_receive: 0,
 			gracefull_nb_packet_send: 0,
 			gracefull_disconnecting: None,
-			try_reco_on_first_broken_send: false,
-			try_reco_on_first_broken_recv: false,
 		}
 	}
 
@@ -151,10 +142,6 @@ impl<C: Connection> ManagedConnection<C> {
 			let forward = old_kind.routing_forward() != self.kind.routing_forward();
 			let receive = old_kind.routing_receive() != self.kind.routing_receive();
 			if receive || forward {
-				// consumer may stay connected without breaking connection (accepted on their side
-				// and no send packets). applying this for all kind as it should not be an issue.
-				self.try_reco_on_first_broken_recv = true;
-				self.try_reco_on_first_broken_send = true;
 				if self.gracefull_nb_packet_send > 0 || self.gracefull_nb_packet_receive > 0 {
 					// do not reenter gracefull period ensuring an equilibrium fro constant number
 					// of peers.
@@ -270,7 +257,6 @@ impl<C: Connection> ManagedConnection<C> {
 	fn try_send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
 		match self.connection.send_flushed(cx) {
 			Poll::Ready(Ok(sent)) => {
-				self.try_reco_on_first_broken_send = false;
 				if let Some((stats, kind)) = self.stats.as_mut() {
 					stats.success_packet(kind.take());
 				}
@@ -397,7 +383,6 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 		match self.connection.try_recv(cx, PACKET_SIZE) {
 			Poll::Ready(Ok(Some(packet))) => {
-				self.try_reco_on_first_broken_recv = false;
 				self.read_timeout.reset(READ_TIMEOUT);
 				log::trace!(target: "mixnet", "Packet received from {:?}", self.network_id);
 				let packet = Packet::from_vec(packet).unwrap();
@@ -474,13 +459,10 @@ impl<C: Connection> ManagedConnection<C> {
 		peers: &mut PeerCount,
 		local_id: &MixPeerId,
 	) -> Poll<ConnectionEvent> {
-		log::error!(target: "mixnet_test",  "disco {:?} from : {:?}, {:?}", local_id, self.mixnet_id, (self.try_reco_on_first_broken_send, self.try_reco_on_first_broken_recv));
+		log::error!(target: "mixnet_test",  "disco {:?} from : {:?}", local_id, self.mixnet_id);
 		peers.remove_peer(self.disconnected_kind());
 		topology.peer_stats(peers);
-		Poll::Ready(ConnectionEvent::Broken(
-			self.mixnet_id,
-			self.try_reco_on_first_broken_send | self.try_reco_on_first_broken_recv,
-		))
+		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
 	}
 
 	#[allow(clippy::too_many_arguments)]

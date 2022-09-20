@@ -30,7 +30,7 @@ use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
-	traits::{Configuration, Connection},
+	traits::{Configuration, Connection, NewRoutingSet, ShouldConnectTo},
 	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, WorkerSink2,
 };
 pub use config::Config;
@@ -55,6 +55,10 @@ pub type MixSecretKey = sphinx::StaticSecret;
 
 /// Length of `MixPublicKey`
 pub const PUBLIC_KEY_LEN: usize = 32;
+
+/// Try reconnect, warning is rounded to window size.
+/// TODO in conf
+pub const TRY_RECONNECT_MS: usize = 5_000;
 
 /// Size of a mixnet packet.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
@@ -230,7 +234,15 @@ pub struct Mixnet<T, C> {
 	secret: MixSecretKey,
 	local_id: MixPeerId,
 	connected_peers: HashMap<NetworkPeerId, ManagedConnection<C>>,
-	peer_stats: PeerCount,
+	peer_stats: PeerCount, // TODO rename to peer_counts: if number are wrong, some things are
+	// broken: not just stats
+
+	// TODO for reconnect and topo with known mix peer id have it from
+	// dial.
+	// TODO also manage change of peer id from distant peer.
+	// This allows filtering try_reconnect while handshaking.
+	pending_handshake: HashMap<MixPeerId, NetworkPeerId>,
+
 	handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
 	// TODO ttl map this and clean connected somehow
 	disconnected_handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
@@ -259,6 +271,12 @@ pub struct Mixnet<T, C> {
 	forward_unconnected_message_queue: Option<QueuedUnconnectedPackets>,
 
 	pending_events: VecDeque<MixEvent>,
+
+	/// try to connect to better peers or unconnected peers every N windows.
+	try_reconnect_every: usize,
+
+	/// Countdown to next attempt at finding new connections.
+	next_try_reconnect: usize,
 }
 
 /// Mixnet window current state.
@@ -311,6 +329,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					config.queue_message_unconnected_number,
 				)
 			});
+
+		let mut try_reconnect_every = TRY_RECONNECT_MS / config.window_size_ms as usize;
+		if TRY_RECONNECT_MS % config.window_size_ms as usize > 0 {
+			try_reconnect_every += 1;
+		}
+		let next_try_reconnect = 0; // try connect on first poll.
 		Mixnet {
 			topology,
 			surb: SurbsCollection::new(&config),
@@ -323,6 +347,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			fragments: MessageCollection::new(),
 			connected_peers: Default::default(),
 			peer_stats: Default::default(),
+			pending_handshake: Default::default(),
 			handshaken_peers: Default::default(),
 			disconnected_handshaken_peers: Default::default(),
 			pending_events: Default::default(),
@@ -331,6 +356,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			next_message: Delay::new(Duration::from_millis(0)),
 			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
 			average_traffic_delay,
+			try_reconnect_every,
+			next_try_reconnect,
 			window_size,
 			window: WindowInfo {
 				packet_per_window,
@@ -552,7 +579,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	/// Change of globablly allowed peer to be in routing set.
 	pub fn new_global_routing_set(&mut self, set: Vec<(MixPeerId, MixPublicKey)>) {
-		self.topology.handle_new_routing_set(&set)
+		self.topology.handle_new_routing_set(NewRoutingSet { peers: &set })
 	}
 
 	/// Send a new surb message to the network.
@@ -783,12 +810,44 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 	}
 
+	fn try_reconnect(&mut self) {
+		let mut try_connect = Vec::new();
+		let ShouldConnectTo { peers, number, is_static } = self.topology.should_connect_to();
+		let already_connected = self.peer_stats.nb_connected_forward_routing;
+		if already_connected >= number && is_static {
+			return
+		}
+
+		if is_static {
+			for peer in peers.iter() {
+				if try_connect.len() == number - already_connected {
+					break
+				}
+				if !self.pending_handshake.contains_key(peer) &&
+					!self.handshaken_peers.contains_key(peer)
+				{
+					let network_id = self.disconnected_handshaken_peers.get(peer);
+					try_connect.push((*peer, network_id.copied()));
+				}
+			}
+		} else {
+			// TODO some params on number. Also should not be always the very first, but always
+			// more prior than already connected if enough con
+		};
+
+		if !try_connect.is_empty() {
+			self.pending_events.push_back(MixEvent::TryConnect(try_connect));
+		}
+	}
+
 	// Poll for new messages to send over the wire.
 	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
 		self.try_apply_topology_change();
 		if let Some(event) = self.pending_events.pop_front() {
 			return Poll::Ready(event)
 		}
+
+		let mut try_reconnect = false;
 
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
 			let now = Instant::now();
@@ -806,6 +865,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				self.window.current += Wrapping(nb_spent);
 				for _ in 0..nb_spent {
 					self.window.current_start += self.window_size;
+				}
+
+				if self.next_try_reconnect <= nb_spent {
+					try_reconnect = true;
+					self.next_try_reconnect = self.try_reconnect_every;
+				} else {
+					self.next_try_reconnect -= nb_spent;
 				}
 
 				if let Some(stats) = self.window.stats.as_mut() {
@@ -867,9 +933,27 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					}
 				},
-				Poll::Ready(ConnectionEvent::Broken(mixnet_id, try_reco)) => {
+				Poll::Ready(ConnectionEvent::Broken(mixnet_id)) => {
+					let ShouldConnectTo { peers: _, number, is_static } =
+						self.topology.should_connect_to();
+					let mut retry = false;
+					if let Some(mixnet_id) = mixnet_id.as_ref() {
+						log::error!("c");
+						if is_static {
+								log::error!("b");
+								// TODO or just peers.contains mixnet_id (would make more sense)
+								if self.topology.routing_to(&self.local_id, &mixnet_id) {
+									log::error!("a");
+									retry = true;
+								}
+						} else {
+							log::error!("d");
+							// TODO should try more prio up to some limit among all disco
+						}
+					}
+
 					// same as pending
-					disconnected.push((*peer_id, mixnet_id, try_reco));
+					disconnected.push((*peer_id, mixnet_id, retry));
 				},
 				Poll::Ready(ConnectionEvent::None) => {
 					all_pending = false;
@@ -899,14 +983,17 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			}
 		}
 
+		if try_reconnect {
+			self.try_reconnect();
+		}
+
 		if !disconnected.is_empty() {
-			// TODO handle try_reco!! (is the on change set connection broken) TODO just use
-			// should_connect_to.
-			for (peer, _a, try_reco) in disconnected.iter() {
-				log::error!(target: "mixnet", "Disconnecting peer {:?} from {:?}", _a, self.local_id);
+			for (peer, _a, _retry) in disconnected.iter() {
+				log::error!(target: "mixnet", "Disconnecting peer {:?} from {:?}, retry {:?}", _a, self.local_id, _retry);
 				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 				self.remove_connected_peer(peer);
 			}
+
 			return Poll::Ready(MixEvent::Disconnected(disconnected))
 		}
 

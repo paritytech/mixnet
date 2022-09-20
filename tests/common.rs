@@ -34,7 +34,7 @@ use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
 	ambassador_impl_Topology,
-	traits::{Configuration, Topology},
+	traits::{Configuration, NewRoutingSet, ShouldConnectTo, Topology},
 	Config, Error, MixPeerId, MixPublicKey, MixSecretKey, MixnetBehaviour, MixnetCommandSink,
 	MixnetWorker, PeerCount, SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels,
 	WorkerCommand,
@@ -225,7 +225,9 @@ pub fn spawn_swarms<T: Configuration>(
 	let peer_ids: HashMap<_, _> = workers
 		.iter()
 		.zip(swarms.iter())
-		.map(|(worker, swarm)| (worker.mixnet().local_id().clone(), swarm.0.local_peer_id().clone()))
+		.map(|(worker, swarm)| {
+			(worker.mixnet().local_id().clone(), swarm.0.local_peer_id().clone())
+		})
 		.collect();
 	let peer_ids = Arc::new(peer_ids);
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
@@ -621,7 +623,6 @@ pub fn new_routing_set(
 		log_unwrap!(channel.1.new_global_routing_set(set.to_vec()));
 	}
 }
-
 
 pub fn wait_on_messages(
 	conf: &TestConfig,
