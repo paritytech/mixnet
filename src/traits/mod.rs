@@ -98,9 +98,11 @@ pub trait Topology: Sized {
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error>;
 
 	/// On connection successful handshake.
+	/// TODO remove by just passing current connected node as param of random_path
 	fn connected(&mut self, id: MixPeerId, public_key: MixPublicKey);
 
 	/// On disconnect.
+	/// TODO remove by just passing current connected node as param of random_path
 	fn disconnected(&mut self, id: &MixPeerId);
 
 	/// On topology change, might have existing peer changed, return a list of these peers.
@@ -111,10 +113,21 @@ pub trait Topology: Sized {
 	/// On topology change, might have new peer to accept.
 	/// Call to this function return the new peers only once and should
 	/// be costless when no change occurs.
+	/// TODO maybe just rely on should connect too.
 	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>>;
+
+	/// Return all possible connection ordered by priority and the targetted number of connections
+	/// to use.
+	fn should_connect_to(&self) -> (&[MixPeerId], usize);
 
 	/// Is peer allowed to connect to our node.
 	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool;
+
+	/// A new static routing set was globally defined.
+	fn handle_new_routing_set(&mut self, set: &[(MixPeerId, MixPublicKey)]);
+
+	// TODO handle new id and key.
+	// TODO handle new distributed routing table
 }
 
 /// Handshake on peer connection.
@@ -125,7 +138,7 @@ pub trait Handshake {
 	/// Check handshake payload and extract (or return from state)
 	/// peer id and public key.
 	fn check_handshake(
-		&mut self,
+		&self,
 		payload: &[u8],
 		from: &NetworkPeerId,
 	) -> Option<(MixPeerId, MixPublicKey)>;
@@ -133,7 +146,7 @@ pub trait Handshake {
 	/// On handshake, return handshake payload.
 	///
 	/// Return None if peer is filtered by network id.
-	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>>;
+	fn handshake(&self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>>;
 }
 
 /// No topology try direct connection.
@@ -218,6 +231,12 @@ impl Topology for NoTopology {
 	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>> {
 		None
 	}
+
+	fn should_connect_to(&self) -> (&[MixPeerId], usize) {
+		(&[], 0)
+	}
+
+	fn handle_new_routing_set(&mut self, _set: &[(MixPeerId, MixPublicKey)]) {}
 }
 
 impl Configuration for NoTopology {
@@ -236,7 +255,7 @@ impl Handshake for NoTopology {
 	}
 
 	fn check_handshake(
-		&mut self,
+		&self,
 		payload: &[u8],
 		from: &NetworkPeerId,
 	) -> Option<(MixPeerId, MixPublicKey)> {
@@ -247,7 +266,7 @@ impl Handshake for NoTopology {
 		Some((peer_id, pk))
 	}
 
-	fn handshake(&mut self, _with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+	fn handshake(&self, _with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		Some(public_key.to_bytes().to_vec())
 	}
 }

@@ -136,7 +136,7 @@ impl Packet {
 }
 
 pub enum MixEvent {
-	Disconnected(Vec<(NetworkPeerId, Option<MixPeerId>)>),
+	Disconnected(Vec<(NetworkPeerId, Option<MixPeerId>, bool)>),
 	TryConnect(Vec<(MixPeerId, Option<NetworkPeerId>)>),
 	None,
 }
@@ -550,6 +550,11 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		Ok(())
 	}
 
+	/// Change of globablly allowed peer to be in routing set.
+	pub fn new_global_routing_set(&mut self, set: Vec<(MixPeerId, MixPublicKey)>) {
+		self.topology.handle_new_routing_set(&set)
+	}
+
 	/// Send a new surb message to the network.
 	/// Message cannot be bigger than a single fragment.
 	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbsPayload) -> Result<(), Error> {
@@ -862,9 +867,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 					}
 				},
-				Poll::Ready(ConnectionEvent::Broken(mixnet_id)) => {
+				Poll::Ready(ConnectionEvent::Broken(mixnet_id, try_reco)) => {
 					// same as pending
-					disconnected.push((*peer_id, mixnet_id));
+					disconnected.push((*peer_id, mixnet_id, try_reco));
 				},
 				Poll::Ready(ConnectionEvent::None) => {
 					all_pending = false;
@@ -895,7 +900,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		if !disconnected.is_empty() {
-			for (peer, _a) in disconnected.iter() {
+			// TODO handle try_reco!! (is the on change set connection broken) TODO just use
+			// should_connect_to.
+			for (peer, _a, try_reco) in disconnected.iter() {
 				log::error!(target: "mixnet", "Disconnecting peer {:?} from {:?}", _a, self.local_id);
 				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 				self.remove_connected_peer(peer);

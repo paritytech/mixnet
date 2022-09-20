@@ -45,11 +45,12 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) enum ConnectionEvent {
 	Established(MixPeerId, MixPublicKey),
 	Received((Packet, bool)),
-	Broken(Option<MixPeerId>),
+	Broken(Option<MixPeerId>, bool),
 	None,
 }
 
 pub(crate) struct ManagedConnection<C> {
+	// TODO put local_id in it instead of param TODO other param and use ref to them
 	connection: C,
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
@@ -81,6 +82,13 @@ pub(crate) struct ManagedConnection<C> {
 	// both at 0.
 	gracefull_disconnecting: Option<Instant>,
 	stats: Option<(ConnectionStats, Option<PacketType>)>,
+	// Connection my be broken but seen as fine when it was refused
+	// from one side only and no packet where send to see that the connection
+	// is broken.
+	try_reco_on_first_broken_send: bool, /* TODO remove should just rerun handshake on new query
+	                                      * for handshake */
+	try_reco_on_first_broken_recv: bool, /* TODO remove should just rerun handshake on new query
+	                                      * for handshake */
 }
 
 impl<C: Connection> ManagedConnection<C> {
@@ -113,6 +121,8 @@ impl<C: Connection> ManagedConnection<C> {
 			gracefull_nb_packet_receive: 0,
 			gracefull_nb_packet_send: 0,
 			gracefull_disconnecting: None,
+			try_reco_on_first_broken_send: false,
+			try_reco_on_first_broken_recv: false,
 		}
 	}
 
@@ -141,6 +151,10 @@ impl<C: Connection> ManagedConnection<C> {
 			let forward = old_kind.routing_forward() != self.kind.routing_forward();
 			let receive = old_kind.routing_receive() != self.kind.routing_receive();
 			if receive || forward {
+				// consumer may stay connected without breaking connection (accepted on their side
+				// and no send packets). applying this for all kind as it should not be an issue.
+				self.try_reco_on_first_broken_recv = true;
+				self.try_reco_on_first_broken_send = true;
 				if self.gracefull_nb_packet_send > 0 || self.gracefull_nb_packet_receive > 0 {
 					// do not reenter gracefull period ensuring an equilibrium fro constant number
 					// of peers.
@@ -256,6 +270,7 @@ impl<C: Connection> ManagedConnection<C> {
 	fn try_send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
 		match self.connection.send_flushed(cx) {
 			Poll::Ready(Ok(sent)) => {
+				self.try_reco_on_first_broken_send = false;
 				if let Some((stats, kind)) = self.stats.as_mut() {
 					stats.success_packet(kind.take());
 				}
@@ -286,10 +301,19 @@ impl<C: Connection> ManagedConnection<C> {
 		cx: &mut Context,
 		topology: &mut impl Configuration,
 		peers: &PeerCount,
+		local_id: &MixPeerId,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
+		let from_byte = local_id[0];
+		let to_byte = self.mixnet_id.as_ref().map(|r| r[0]).unwrap_or(255);
 		if self.handshake_received {
 			// ignore
 			return Poll::Pending
+		}
+		if from_byte == 30 && to_byte == 31 {
+			log::trace!("dd");
+		}
+		if from_byte == 44 && to_byte == 31 {
+			log::trace!("dd");
 		}
 		match self.connection.try_recv(cx, topology.handshake_size()) {
 			Poll::Ready(Ok(Some(handshake))) => {
@@ -299,10 +323,24 @@ impl<C: Connection> ManagedConnection<C> {
 					topology.check_handshake(handshake.as_slice(), &self.network_id)
 				{
 					let accepted = topology.accept_peer(&peer_id, peers);
+					let to_byte = peer_id[0];
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
 					self.handshake_received = true;
 					if !accepted {
+						if from_byte == 31 && to_byte == 44 {
+							log::trace!("dd");
+						}
+						if from_byte == 44 && to_byte == 31 {
+							log::trace!("dd");
+						}
+						if from_byte == 31 && to_byte == 30 {
+							log::trace!("dd");
+						}
+						if from_byte == 30 && to_byte == 31 {
+							log::trace!("dd");
+						}
+						log::trace!(target: "mixnet_test", "Valid handshake, rejected peer, closing: {:?} from {:?}", peer_id, local_id);
 						log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?}", self.network_id);
 						if self.handshake_sent {
 							Poll::Ready(Err(()))
@@ -311,6 +349,18 @@ impl<C: Connection> ManagedConnection<C> {
 							Poll::Ready(Ok((peer_id, pk)))
 						}
 					} else {
+						if from_byte == 31 && to_byte == 44 {
+							log::trace!("dd");
+						}
+						if from_byte == 44 && to_byte == 31 {
+							log::trace!("dd");
+						}
+						if from_byte == 31 && to_byte == 30 {
+							log::trace!("dd");
+						}
+						if from_byte == 30 && to_byte == 31 {
+							log::trace!("dd");
+						}
 						Poll::Ready(Ok((peer_id, pk)))
 					}
 				} else {
@@ -318,7 +368,7 @@ impl<C: Connection> ManagedConnection<C> {
 					Poll::Ready(Err(()))
 				}
 			},
-			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology, peers),
+			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology, peers, local_id),
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error receiving handshake from peer, closing: {:?}", self.network_id);
 				Poll::Ready(Err(()))
@@ -331,13 +381,23 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		cx: &mut Context,
 		current_window: Wrapping<usize>,
+		local_id: &MixPeerId,
 	) -> Poll<Result<Packet, ()>> {
+		let from_byte = local_id[0];
+		let to_byte = self.mixnet_id.as_ref().map(|r| r[0]).unwrap_or(255);
+		if from_byte == 30 && to_byte == 31 {
+			log::trace!("dd");
+		}
+		if from_byte == 44 && to_byte == 31 {
+			log::trace!("dd");
+		}
 		if !self.kind.is_mixnet_connected() {
 			// this is actually unreachable but ignore it.
 			return Poll::Pending
 		}
 		match self.connection.try_recv(cx, PACKET_SIZE) {
 			Poll::Ready(Ok(Some(packet))) => {
+				self.try_reco_on_first_broken_recv = false;
 				self.read_timeout.reset(READ_TIMEOUT);
 				log::trace!(target: "mixnet", "Packet received from {:?}", self.network_id);
 				let packet = Packet::from_vec(packet).unwrap();
@@ -346,7 +406,7 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 				Poll::Ready(Ok(packet))
 			},
-			Poll::Ready(Ok(None)) => self.try_recv_packet(cx, current_window),
+			Poll::Ready(Ok(None)) => self.try_recv_packet(cx, current_window, local_id),
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error receiving from peer, closing: {:?}", self.network_id);
 				Poll::Ready(Err(()))
@@ -412,10 +472,15 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		topology: &mut impl Configuration,
 		peers: &mut PeerCount,
+		local_id: &MixPeerId,
 	) -> Poll<ConnectionEvent> {
+		log::error!(target: "mixnet_test",  "disco {:?} from : {:?}, {:?}", local_id, self.mixnet_id, (self.try_reco_on_first_broken_send, self.try_reco_on_first_broken_recv));
 		peers.remove_peer(self.disconnected_kind());
 		topology.peer_stats(peers);
-		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
+		Poll::Ready(ConnectionEvent::Broken(
+			self.mixnet_id,
+			self.try_reco_on_first_broken_send | self.try_reco_on_first_broken_recv,
+		))
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -429,16 +494,18 @@ impl<C: Connection> ManagedConnection<C> {
 		peers: &mut PeerCount,
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 	) -> Poll<ConnectionEvent> {
+		let first_byte = local_id[0]; // TODO rem (for debugging :)
+		let first_byte_dest = self.mixnet_id().as_ref().map(|r| r[0]).unwrap_or(255); // TODO rem (for debugging :)
 		if let Some(gracefull_disco_deadline) = self.gracefull_disconnecting.as_ref() {
 			if gracefull_disco_deadline <= &window.last_now {
-				return self.broken_connection(topology, peers)
+				return self.broken_connection(topology, peers, local_id)
 			}
 		}
 		let mut result = Poll::Pending;
 		if !(self.handshake_sent && self.handshake_received) {
 			let mut result = Poll::Pending;
 			if !self.handshake_received {
-				match self.try_recv_handshake(cx, topology, peers) {
+				match self.try_recv_handshake(cx, topology, peers, local_id) {
 					Poll::Ready(Ok(key)) => {
 						self.mixnet_id = Some(key.0);
 						self.public_key = Some(key.1);
@@ -446,7 +513,8 @@ impl<C: Connection> ManagedConnection<C> {
 							result = Poll::Ready(ConnectionEvent::None);
 						}
 					},
-					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+					Poll::Ready(Err(())) =>
+						return self.broken_connection(topology, peers, local_id),
 					Poll::Pending => (),
 				}
 			}
@@ -456,11 +524,13 @@ impl<C: Connection> ManagedConnection<C> {
 						if matches!(result, Poll::Pending) {
 							result = Poll::Ready(ConnectionEvent::None);
 						},
-					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+					Poll::Ready(Err(())) =>
+						return self.broken_connection(topology, peers, local_id),
 					Poll::Pending => (),
 				}
 			}
 			if self.handshake_sent && self.handshake_received {
+				log::error!(target: "mixnet_test", "Con succ {:?} to {:?}", local_id, self.mixnet_id);
 				if let (Some(mixnet_id), Some(public_key)) = (self.mixnet_id, self.public_key) {
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
@@ -469,7 +539,7 @@ impl<C: Connection> ManagedConnection<C> {
 					return Poll::Ready(ConnectionEvent::Established(mixnet_id, public_key))
 				} else {
 					// is actually unreachable
-					return self.broken_connection(topology, peers)
+					return self.broken_connection(topology, peers, local_id)
 				}
 			} else {
 				return result
@@ -492,7 +562,7 @@ impl<C: Connection> ManagedConnection<C> {
 								self.gracefull_nb_packet_receive == 0 &&
 								self.gracefull_disconnecting.is_some()
 							{
-								return self.broken_connection(topology, peers)
+								return self.broken_connection(topology, peers, local_id)
 							}
 						}
 						break
@@ -544,7 +614,8 @@ impl<C: Connection> ManagedConnection<C> {
 							}
 						}
 					},
-					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+					Poll::Ready(Err(())) =>
+						return self.broken_connection(topology, peers, local_id),
 					Poll::Pending => break,
 				}
 			}
@@ -562,7 +633,7 @@ impl<C: Connection> ManagedConnection<C> {
 				current
 			};
 			if self.recv_in_window < current || self.kind.is_external() {
-				match self.try_recv_packet(cx, window.current) {
+				match self.try_recv_packet(cx, window.current, local_id) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
 						if self.gracefull_nb_packet_receive > 0 {
@@ -577,7 +648,8 @@ impl<C: Connection> ManagedConnection<C> {
 
 						result = Poll::Ready(ConnectionEvent::Received((packet, external)));
 					},
-					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+					Poll::Ready(Err(())) =>
+						return self.broken_connection(topology, peers, local_id),
 					Poll::Pending => (),
 				}
 			}
@@ -611,7 +683,7 @@ impl<C: Connection> ManagedConnection<C> {
 		match self.read_timeout.poll_unpin(cx) {
 			Poll::Ready(()) => {
 				log::trace!(target: "mixnet", "Peer, nothing received for too long.");
-				return self.broken_connection(topology, peers)
+				return self.broken_connection(topology, peers, local_id)
 			},
 			Poll::Pending => (),
 		}

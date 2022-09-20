@@ -99,15 +99,11 @@ impl mixnet::traits::Handshake for ConfigGraph {
 		self.inner.handshake_size()
 	}
 
-	fn check_handshake(
-		&mut self,
-		payload: &[u8],
-		from: &PeerId,
-	) -> Option<(MixPeerId, MixPublicKey)> {
+	fn check_handshake(&self, payload: &[u8], from: &PeerId) -> Option<(MixPeerId, MixPublicKey)> {
 		self.inner.check_handshake(payload, from)
 	}
 
-	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+	fn handshake(&self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		self.inner.handshake(with, public_key)
 	}
 }
@@ -263,6 +259,15 @@ impl Topology for TopologyGraph {
 			false
 		}
 	}
+
+	fn should_connect_to(&self) -> (&[MixPeerId], usize) {
+		// no reco hanling in these tests
+		(&[], 0)
+	}
+
+	fn handle_new_routing_set(&mut self, _set: &[(MixPeerId, MixPublicKey)]) {
+		// static set in these tests
+	}
 }
 
 fn gen_paths(
@@ -341,8 +346,6 @@ fn test_messages(conf: TestConfig) {
 		let handshake = SimpleHandshake {
 			local_id: Some(config.local_id),
 			local_network_id: Some(network_id),
-			nb_external: 0,
-			max_external: 1,
 			topo,
 			mix_secret_key: Some(Arc::new((mix_secret_key, mix_public_key))),
 		};

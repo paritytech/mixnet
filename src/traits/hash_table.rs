@@ -116,12 +116,12 @@ pub struct TopologyHashTable<C: Configuration> {
 	paths: BTreeMap<usize, HashMap<MixPeerId, HashMap<MixPeerId, Vec<MixPeerId>>>>,
 	paths_depth: usize,
 
-	// Connection to peer that are more prioritary: attempt connect.
-	// This is only used when `DISTRIBUTE_ROUTE` is true.
+	// Ordered theorical connections by priority.
 	should_connect_to: Vec<MixPeerId>,
 
 	// Connection to peer that are more prioritary: attempt connect.
 	// This is only used when `DISTRIBUTE_ROUTE` is true.
+	// TODO should be part of mixnet core/mod struct.
 	should_connect_pending: HashMap<MixPeerId, (usize, bool)>,
 }
 
@@ -419,6 +419,16 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
 		}
 	}
+
+	fn should_connect_to(&self) -> (&[MixPeerId], usize) {
+		(self.should_connect_to.as_slice(), C::NUMBER_CONNECTED_FORWARD)
+	}
+
+	fn handle_new_routing_set(&mut self, set: &[(MixPeerId, MixPublicKey)]) {
+		assert!(!C::DISTRIBUTE_ROUTES);
+		self.handle_new_routing_set_start(set.iter().map(|k| &k.0), None);
+		self.refresh_static_routing_tables(set);
+	}
 }
 
 impl<C: Configuration> TopologyHashTable<C> {
@@ -635,16 +645,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 		self.distributed_try_connect();
 	}
 
-	pub fn handle_new_routing_set(
-		&mut self,
-		set: &[(MixPeerId, MixPublicKey)],
-		new_self: Option<(Option<MixPeerId>, Option<MixPublicKey>)>,
-	) {
-		assert!(!C::DISTRIBUTE_ROUTES);
-		self.handle_new_routing_set_start(set.iter().map(|k| &k.0), new_self);
-		self.refresh_static_routing_tables(set);
-	}
-
 	pub fn handle_new_self_key(&mut self) {
 		unimplemented!("rotate key");
 	}
@@ -715,6 +715,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 					public_key,
 					Some(&self.routing_table),
 					&self.allowed_routing,
+					&mut self.should_connect_to,
 				) {
 					// TODO could also add receive_from.
 					for peer_id in table.connected_to.iter() {
@@ -728,9 +729,13 @@ impl<C: Configuration> TopologyHashTable<C> {
 				}
 			} else {
 				let past = self.routing_peers.get(id);
-				if let Some(table) =
-					Self::refresh_connection_table_to(id, public_key, past, &self.allowed_routing)
-				{
+				if let Some(table) = Self::refresh_connection_table_to(
+					id,
+					public_key,
+					past,
+					&self.allowed_routing,
+					&mut self.should_connect_to,
+				) {
 					self.routing_peers.insert(*id, table);
 					self.paths.clear();
 					self.paths_depth = 0;
@@ -768,17 +773,19 @@ impl<C: Configuration> TopologyHashTable<C> {
 		from_key: &MixPublicKey,
 		past: Option<&RoutingTable<C::Version>>,
 		allowed_routing: &BTreeSet<MixPeerId>,
+		should_connect_to_dest: &mut Vec<MixPeerId>,
 	) -> Option<RoutingTable<C::Version>> {
-		let tos = should_connect_to(from, allowed_routing, C::NUMBER_CONNECTED_FORWARD);
+		*should_connect_to_dest =
+			should_connect_to(from, allowed_routing, C::NUMBER_CONNECTED_FORWARD);
 		let mut routing_table = RoutingTable {
 			public_key: *from_key,
 			version: Default::default(), // No version when refreshing from peer set only
 			connected_to: Default::default(),
 			receive_from: Default::default(),
 		};
-		for peer in tos.into_iter() {
+		for peer in should_connect_to_dest.iter() {
 			// consider all connected
-			routing_table.connected_to.insert(peer);
+			routing_table.connected_to.insert(*peer);
 			if routing_table.connected_to.len() == C::NUMBER_CONNECTED_FORWARD {
 				break
 			}

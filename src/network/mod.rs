@@ -29,7 +29,9 @@ mod worker;
 
 pub(crate) use crate::network::worker::Command;
 pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
-use crate::{core::SurbsPayload, traits::ClonableSink, MixPeerId, MixnetEvent, SendOptions};
+use crate::{
+	core::SurbsPayload, traits::ClonableSink, MixPeerId, MixPublicKey, MixnetEvent, SendOptions,
+};
 use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -128,6 +130,16 @@ impl MixnetCommandSink {
 			.start_send_unpin(Command::RegisterSurbs(message, surb).into())
 			.map_err(|_| crate::Error::WorkerChannelFull)
 	}
+
+	/// Change of allowed peers to route in the mixnet.
+	pub fn new_global_routing_set(
+		&mut self,
+		set: Vec<(MixPeerId, MixPublicKey)>,
+	) -> std::result::Result<(), crate::Error> {
+		self.0
+			.start_send_unpin(Command::NewGlobalRoutingSet(set).into())
+			.map_err(|_| crate::Error::WorkerChannelFull)
+	}
 }
 
 impl NetworkBehaviour for MixnetBehaviour {
@@ -156,6 +168,8 @@ impl NetworkBehaviour for MixnetBehaviour {
 		if !self.connected.contains_key(peer_id) {
 			self.notify_queue.push_back((*peer_id, *con_id));
 			self.connected.insert(*peer_id, *con_id);
+		} else {
+			log::trace!(target: "mixnet", "Inject already here TODO rerun handle in this case");
 		}
 	}
 

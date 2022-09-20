@@ -225,7 +225,7 @@ pub fn spawn_swarms<T: Configuration>(
 	let peer_ids: HashMap<_, _> = workers
 		.iter()
 		.zip(swarms.iter())
-		.map(|(worker, swarm)| (worker.local_id().clone(), swarm.0.local_peer_id().clone()))
+		.map(|(worker, swarm)| (worker.mixnet().local_id().clone(), swarm.0.local_peer_id().clone()))
 		.collect();
 	let peer_ids = Arc::new(peer_ids);
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
@@ -446,7 +446,7 @@ pub fn spawn_workers<T: Configuration>(
 	let mut nodes = Vec::with_capacity(workers.len());
 	let mut workers_futures = Vec::with_capacity(workers.len());
 	for mut worker in workers.into_iter() {
-		nodes.push(*worker.local_id());
+		nodes.push(*worker.mixnet().local_id());
 		let worker = future::poll_fn(move |cx| loop {
 			match worker.poll(cx) {
 				Poll::Ready(false) => {
@@ -495,8 +495,6 @@ pub fn spawn_workers<T: Configuration>(
 pub struct SimpleHandshake<T> {
 	pub local_id: Option<MixPeerId>,
 	pub local_network_id: Option<NetworkPeerId>,
-	pub nb_external: usize,
-	pub max_external: usize,
 	pub topo: T,
 	// key for signing handshake (assert mix_pub_key, MixPeerId is related to
 	// MixPublicKey by signing it (and also dest MixPublicKey to avoid replay).
@@ -509,7 +507,7 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 	}
 
 	fn check_handshake(
-		&mut self,
+		&self,
 		payload: &[u8],
 		_from: &NetworkPeerId,
 	) -> Option<(MixPeerId, MixPublicKey)> {
@@ -526,20 +524,13 @@ impl<T: Topology> mixnet::traits::Handshake for SimpleHandshake<T> {
 		message.extend_from_slice(&pk[..]);
 		if pub_key.verify(&signature, &message[..]).is_ok() {
 			let pk = MixPublicKey::from(pk);
-			if !self.topo.can_route(&peer_id) {
-				if self.nb_external == self.max_external {
-					return None
-				} else {
-					self.nb_external += 1;
-				}
-			}
 			Some((peer_id, pk))
 		} else {
 			None
 		}
 	}
 
-	fn handshake(&mut self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+	fn handshake(&self, with: &NetworkPeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		let mut result = log_unwrap_opt!(self.local_id.as_ref()).to_vec();
 		result.extend_from_slice(&public_key.as_bytes()[..]);
 		if let Some(keypair) = &self.mix_secret_key {
@@ -621,6 +612,16 @@ pub fn send_messages(
 		}
 	}
 }
+
+pub fn new_routing_set(
+	set: &[(MixPeerId, MixPublicKey)],
+	with_swarm_channels: &mut [TestChannels],
+) {
+	for channel in with_swarm_channels.iter_mut() {
+		log_unwrap!(channel.1.new_global_routing_set(set.to_vec()));
+	}
+}
+
 
 pub fn wait_on_messages(
 	conf: &TestConfig,

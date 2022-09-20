@@ -129,7 +129,6 @@ impl Handler {
 		mixnet_worker_sink: SinkToWorker,
 		keep_connection_alive: bool,
 	) -> Self {
-		log::error!("NHAND");
 		Handler {
 			config,
 			pending_errors: VecDeque::with_capacity(2),
@@ -214,24 +213,33 @@ impl ConnectionHandler for Handler {
 			State::ActiveNotSent | State::ActiveInboundNotSent | State::Inactive { .. }
 		) {
 			if self.inbound.is_some() {
-				log::warn!(target: "mixnet", "Dropping inbound");
+				log::warn!(target: "mixnet", "Dropping existing inbound");
 			}
 			self.inbound = Some(stream);
 			self.try_send_connected();
 		} else {
-			log::warn!(target: "mixnet", "Dropping inbound, one was already sent");
+			if matches!(self.state, State::Active) {
+				log::warn!(target: "mixnet", "Inbound receive on an active connection");
+				// means peer dial when we consider state fine (can happen on non routing
+				// connections).
+				// retry connection.
+				self.state = State::ActiveNotSent;
+				self.do_outbound_query = true;
+			} else {
+				log::trace!(target: "mixnet", "Dropping inbound, one was already sent");
+			}
 		}
 	}
 
 	fn inject_fully_negotiated_outbound(&mut self, stream: NegotiatedSubstream, (): ()) {
 		if matches!(self.state, State::ActiveNotSent) {
 			if self.outbound.is_some() {
-				log::warn!(target: "mixnet", "Dropping outbound");
+				log::warn!(target: "mixnet", "Dropping existing outbound");
 			}
 			self.outbound = Some(stream);
 			self.try_send_connected();
 		} else {
-			log::warn!(target: "mixnet", "Dropping outbound, one was already sent");
+			log::warn!(target: "mixnet", "Dropping outbound receive on an {:?} connection", self.state);
 		}
 	}
 

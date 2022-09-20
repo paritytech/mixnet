@@ -24,7 +24,7 @@ mod common;
 
 use ambassador::Delegate;
 use common::{
-	send_messages, wait_on_connections, wait_on_messages, SendConf, SimpleHandshake, TestConfig,
+	send_messages, wait_on_connections, wait_on_messages, SendConf, SimpleHandshake, TestConfig, new_routing_set,
 };
 use libp2p_core::PeerId;
 use mixnet::{
@@ -57,7 +57,7 @@ impl TopologyConfig for NotDistributed {
 
 	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
 
-	const DEFAULT_PARAMETERS: Parameters = Parameters { max_external: Some(10) };
+	const DEFAULT_PARAMETERS: Parameters = Parameters { max_external: Some(1) };
 }
 
 #[derive(Delegate)]
@@ -81,124 +81,15 @@ impl mixnet::traits::Handshake for NotDistributed {
 		self.inner.handshake_size()
 	}
 
-	fn check_handshake(
-		&mut self,
-		payload: &[u8],
-		from: &PeerId,
-	) -> Option<(MixPeerId, MixPublicKey)> {
+	fn check_handshake(&self, payload: &[u8], from: &PeerId) -> Option<(MixPeerId, MixPublicKey)> {
 		self.inner.check_handshake(payload, from)
 	}
 
-	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+	fn handshake(&self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
 		self.inner.handshake(with, public_key)
 	}
 }
 
-#[derive(Clone)]
-struct NotDistributedShared {
-	inner: Arc<RwLock<SimpleHandshake<TopologyHashTable<NotDistributed>>>>,
-}
-
-impl mixnet::traits::Topology for NotDistributedShared {
-	fn changed_route(&mut self) -> Option<BTreeSet<MixPeerId>> {
-		self.inner.write().changed_route()
-	}
-
-	fn try_connect(&mut self) -> Option<BTreeMap<MixPeerId, Option<NetworkPeerId>>> {
-		self.inner.write().try_connect()
-	}
-
-	fn first_hop_nodes_external(
-		&self,
-		from: &MixPeerId,
-		to: &MixPeerId,
-	) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.inner.read().first_hop_nodes_external(from, to)
-	}
-
-	fn is_first_node(&self, id: &MixPeerId) -> bool {
-		self.inner.read().is_first_node(id)
-	}
-
-	fn random_recipient(
-		&mut self,
-		from: &MixPeerId,
-		send_options: &crate::SendOptions,
-	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.write().random_recipient(from, send_options)
-	}
-
-	fn routing_to(&self, from: &MixPeerId, to: &MixPeerId) -> bool {
-		self.inner.read().routing_to(from, to)
-	}
-
-	fn random_path(
-		&mut self,
-		start_node: (&MixPeerId, Option<&MixPublicKey>),
-		recipient_node: (&MixPeerId, Option<&MixPublicKey>),
-		nb_chunk: usize,
-		num_hops: usize,
-		max_hops: usize,
-		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
-	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		self.inner.write().random_path(
-			start_node,
-			recipient_node,
-			nb_chunk,
-			num_hops,
-			max_hops,
-			last_query_if_surb,
-		)
-	}
-
-	fn can_route(&self, id: &MixPeerId) -> bool {
-		self.inner.read().can_route(id)
-	}
-
-	fn connected(&mut self, peer_id: MixPeerId, key: MixPublicKey) {
-		self.inner.write().connected(peer_id, key)
-	}
-
-	fn disconnected(&mut self, peer_id: &MixPeerId) {
-		self.inner.write().disconnected(peer_id)
-	}
-
-	fn bandwidth_external(&self, id: &MixPeerId, peers: &PeerCount) -> Option<(usize, usize)> {
-		self.inner.read().bandwidth_external(id, peers)
-	}
-
-	fn accept_peer(&self, peer_id: &MixPeerId, peers: &PeerCount) -> bool {
-		self.inner.read().accept_peer(peer_id, peers)
-	}
-}
-
-impl mixnet::traits::Configuration for NotDistributedShared {
-	fn collect_windows_stats(&self) -> bool {
-		true
-	}
-
-	fn window_stats(&self, _stats: &mixnet::WindowStats, _: &PeerCount) {}
-
-	fn peer_stats(&self, _: &PeerCount) {}
-}
-
-impl mixnet::traits::Handshake for NotDistributedShared {
-	fn handshake_size(&self) -> usize {
-		self.inner.read().handshake_size()
-	}
-
-	fn check_handshake(
-		&mut self,
-		payload: &[u8],
-		from: &PeerId,
-	) -> Option<(MixPeerId, MixPublicKey)> {
-		self.inner.write().check_handshake(payload, from)
-	}
-
-	fn handshake(&mut self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
-		self.inner.write().handshake(with, public_key)
-	}
-}
 
 fn test_messages(conf: TestConfig) {
 	let TestConfig { num_peers, message_size, from_external, .. } = conf;
@@ -254,15 +145,13 @@ fn test_messages(conf: TestConfig) {
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
-		topo.handle_new_routing_set(&nodes[..num_peers], None);
+		topo.handle_new_routing_set(&nodes[..num_peers]);
 		let mix_secret_key = secrets[p].1;
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 
 		let inner = SimpleHandshake {
 			local_id: Some(config.local_id),
 			local_network_id: Some(network_id),
-			nb_external: 0,
-			max_external: 1,
 			topo,
 			mix_secret_key: Some(Arc::new((mix_secret_key, mix_public_key))),
 		};
@@ -421,8 +310,6 @@ fn test_change_routing_set(conf: TestConfig) {
 	let expect_all_connected = false;
 
 	let set_topo = set_1.clone();
-	let mut handle_topos = Vec::new();
-	let handle_topos_ptr = &mut handle_topos;
 
 	let disp = std::sync::atomic::AtomicBool::new(true);
 	let make_topo = move |p: usize,
@@ -443,21 +330,17 @@ fn test_change_routing_set(conf: TestConfig) {
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
-		topo.handle_new_routing_set(&nodes[set_topo.clone()], None);
+		topo.handle_new_routing_set(&nodes[set_topo.clone()]);
 		let mix_secret_key = secrets[p].1;
 		let mix_public_key: ed25519_zebra::VerificationKey = (&mix_secret_key).into();
 
 		let inner = SimpleHandshake {
 			local_id: Some(config.local_id),
 			local_network_id: Some(network_id),
-			nb_external: 0,
-			max_external: 1,
 			topo,
 			mix_secret_key: Some(Arc::new((mix_secret_key, mix_public_key))),
 		};
-		let inner = Arc::new(RwLock::new(inner));
-		handle_topos_ptr.push(inner.clone());
-		NotDistributedShared { inner }
+		NotDistributed { inner }
 	};
 
 	let (handles, mut with_swarm_channels, initial_con) = common::spawn_swarms(
@@ -471,7 +354,14 @@ fn test_change_routing_set(conf: TestConfig) {
 		make_topo,
 	);
 
-	let nodes = common::spawn_workers::<NotDistributedShared>(handles, &executor, single_thread);
+	let nodes_ids: Vec<_> = handles
+		.iter()
+		.map(|worker| {
+			(*worker.mixnet().local_id(), *worker.mixnet().public_key())
+		})
+		.collect();
+
+	let nodes = common::spawn_workers::<NotDistributed>(handles, &executor, single_thread);
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");
@@ -499,21 +389,8 @@ fn test_change_routing_set(conf: TestConfig) {
 	log::trace!(target: "mixnet_test", "after sending messages");
 	wait_on_messages(&conf, send.into_iter(), &mut with_swarm_channels, b"pong");
 	log::trace!(target: "mixnet_test", "success with first set, switching set");
-	let nodes_ids: Vec<_> = handle_topos
-		.iter()
-		.map(|topo| {
-			let topo = topo.read();
-			(*topo.topo.local_id(), topo.topo.local_routing_table().public_key)
-		})
-		.collect();
-	for topo in handle_topos.iter() {
-		// TODO also test switching mix public key of node or even mix public and mix id.
-		// should be different test case where we change all even nodes.
-		// This need to change SimpleConnection fields too.
-		// TODO test wih switch before wait on connection (need to keep connections open
-		// a while).
-		topo.write().topo.handle_new_routing_set(&nodes_ids[set_2.clone()], None);
-	}
+
+	new_routing_set(&nodes_ids[set_2.clone()], &mut with_swarm_channels);
 
 	log::trace!(target: "mixnet_test", "set switched");
 

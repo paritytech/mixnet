@@ -47,6 +47,7 @@ pub(crate) enum Command {
 	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
 	AddPeerInbound(PeerId, NegotiatedSubstream),
 	RemoveConnectedPeer(PeerId),
+	NewGlobalRoutingSet(Vec<(crate::MixPeerId, MixPublicKey)>),
 }
 
 impl Command {
@@ -85,14 +86,6 @@ impl<T: Configuration> MixnetWorker<T> {
 		self.mixnet.restart(new_id, new_keys);
 	}
 
-	pub fn local_id(&self) -> &crate::MixPeerId {
-		self.mixnet.local_id()
-	}
-
-	pub fn public_key(&self) -> &crate::MixPublicKey {
-		self.mixnet.public_key()
-	}
-
 	/// Return false on shutdown.
 	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
 		if self.hits == 0 {
@@ -120,12 +113,23 @@ impl<T: Configuration> MixnetWorker<T> {
 		match result {
 			MixEvent::None => (),
 			MixEvent::Disconnected(peers) =>
-				for (net_id, peer_id) in peers {
+				for (net_id, peer_id, try_reco) in peers {
 					if let Err(e) =
 						self.worker_out.start_send_unpin(MixnetEvent::Disconnected(net_id, peer_id))
 					{
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}, {:?}", e, self.mixnet.local_id());
 						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+					}
+					if try_reco {
+						if let Some(peer_id) = peer_id {
+							log::error!(target: "mixnet_test", "Go reco");
+							if let Err(e) = self
+								.worker_out
+								.start_send_unpin(MixnetEvent::TryConnect(peer_id, Some(net_id)))
+							{
+								log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
+							}
+						}
 					}
 				},
 			MixEvent::TryConnect(peers) =>
@@ -161,14 +165,17 @@ impl<T: Configuration> MixnetWorker<T> {
 					}
 					true
 				},
+				Command::NewGlobalRoutingSet(set) => {
+					self.mixnet.new_global_routing_set(set);
+					true
+				},
 				Command::AddPeer(peer, inbound, outbound, close_handler) => {
-					if let Some(_con) = self.mixnet.connected_mut(&peer) {
-						log::warn!("Trying to replace an existing connection for {:?}", peer);
-					} else {
-						let con = Connection::new(close_handler, inbound, outbound);
-						self.mixnet.insert_connection(peer, con);
+					if let Some(con) = self.mixnet.connected_mut(&peer) {
+						log::warn!(target: "mixnet", "Replacing an existing connection for {:?}", peer);
+						log::warn!(target: "mixnet_test", "Trying to replace an existing connection for {:?}", peer);
 					}
-					log::trace!(target: "mixnet", "added peer out: {:?}", peer);
+					let con = Connection::new(close_handler, inbound, outbound);
+					self.mixnet.insert_connection(peer, con);
 					true
 				},
 				Command::AddPeerInbound(peer, inbound) => {
@@ -209,7 +216,7 @@ impl<T: Configuration> MixnetWorker<T> {
 		&mut self.mixnet
 	}
 
-	pub fn mixnet(&mut self) -> &mut Mixnet<T, Connection> {
-		&mut self.mixnet
+	pub fn mixnet(&self) -> &Mixnet<T, Connection> {
+		&self.mixnet
 	}
 }
