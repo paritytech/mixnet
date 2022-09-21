@@ -213,11 +213,13 @@ impl ConnectionHandler for Handler {
 			State::ActiveNotSent | State::ActiveInboundNotSent | State::Inactive { .. }
 		) {
 			if self.inbound.is_some() {
+				log::warn!(target: "mixnet_test", "Dropping existing inbound");
 				log::warn!(target: "mixnet", "Dropping existing inbound");
 			}
 			self.inbound = Some(stream);
 			self.try_send_connected();
 		} else {
+			log::trace!(target: "mixnet_trace", "Dropping inbound, one was already sent");
 			log::trace!(target: "mixnet", "Dropping inbound, one was already sent");
 			/* TODO rem (broken will simply be followed to reconnect attempt)
 			if matches!(self.state, State::Active) {

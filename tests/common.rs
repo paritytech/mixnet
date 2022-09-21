@@ -30,7 +30,7 @@ use libp2p_core::{
 };
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
-use libp2p_swarm::{Swarm, SwarmEvent};
+use libp2p_swarm::{Swarm, SwarmEvent, DialError};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
 	ambassador_impl_Topology,
@@ -226,7 +226,8 @@ pub fn spawn_swarms<T: Configuration>(
 		.iter()
 		.zip(swarms.iter())
 		.map(|(worker, swarm)| {
-			(worker.mixnet().local_id().clone(), swarm.0.local_peer_id().clone())
+			let addresses: Vec<_> = swarm.0.external_addresses().cloned().collect();
+			(worker.mixnet().local_id().clone(), (swarm.0.local_peer_id().clone(), addresses))
 		})
 		.collect();
 	let peer_ids = Arc::new(peer_ids);
@@ -353,7 +354,7 @@ pub fn spawn_swarms<T: Configuration>(
 								log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
 							}
 						} else {
-							if let Some(network_id) = peer_ids.get(&peer_id) {
+							if let Some((network_id, addresses)) = peer_ids.get(&peer_id) {
 								if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
 									if swarm.is_connected(network_id) {
 										// already connected, just send TryConnect to handler
@@ -363,7 +364,23 @@ pub fn spawn_swarms<T: Configuration>(
 									} else {
 										log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
 										let e = swarm.dial(*network_id);
-										log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
+										if let Err(DialError::NoAddresses) = e {
+											let mut success = false;
+											for addr in addresses {
+												let e = swarm.dial(addr.addr.clone());
+												if e.is_err() {
+													log::warn!(target: "mixnet_test", "Dialing fail with {:?}", e);
+												} else {
+													success = true;
+													break
+												}
+											}
+											if !success {
+												log::error!(target: "mixnet_test", "Dialing fail for all addresses");
+											}
+										} else {
+											log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
+										}
 									}
 								}
 							} else {
