@@ -399,12 +399,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
-		log::warn!(target: "mixnet_test", "Add peer {:?} {:?}", self.local_id, peer);
-		if self.connected_peers.contains_key(&peer) {
-			log::warn!(target: "mixnet_test", "Removing old connection with None, on handshake restart");
-		}
 		if let Some(peer_id) = self.remove_connected_peer(&peer) {
-			log::warn!(target: "mixnet_test", "Removing old connection with {:?}, on handshake restart", peer_id);
 			log::warn!(target: "mixnet", "Removing old connection with {:?}, on handshake restart", peer_id);
 		}
 		let connection = ManagedConnection::new(
@@ -671,7 +666,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				}
 			},
 			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
-				log::error!(target: "mixnet", "Forward message from {:?} to {:?} at {:?}", peer_id, next_id, self.local_id);
 				// See if we can forward the message
 				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
 				let kind = if self.window.stats.is_some() && !self.topology.can_route(&peer_id) {
@@ -812,7 +806,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				} else if let Some(net_id) = self.disconnected_handshaken_peers.remove(&peer_id) {
 					maybe_net_id = Some(net_id);
 				}
-				log::error!("{:?} -> {:?} - {:?}", self.local_id, peer_id, maybe_net_id.is_some());
+				log::trace!(target: "mixnet", "try connect {:?} -> {:?} - {:?}", self.local_id, peer_id, maybe_net_id.is_some());
 				try_connect.push((peer_id, maybe_net_id));
 			}
 			if !try_connect.is_empty() {
@@ -949,16 +943,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						self.topology.should_connect_to();
 					let mut retry = false;
 					if let Some(mixnet_id) = mixnet_id.as_ref() {
-						log::error!("c");
 						if is_static {
-							log::error!("b");
-							// TODO or just peers.contains mixnet_id (would make more sense)
+							// TODO or just peers.contains mixnet_id (could make more sense)
 							if self.topology.routing_to(&self.local_id, &mixnet_id) {
-								log::error!("a");
 								retry = true;
 							}
 						} else {
-							log::error!("d");
 							// TODO should try more prio up to some limit among all disco
 						}
 					}
@@ -999,9 +989,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		if !disconnected.is_empty() {
-			for (peer, _a, _retry) in disconnected.iter() {
-				log::error!(target: "mixnet", "Disconnecting peer {:?} from {:?}, retry {:?}", _a, self.local_id, _retry);
-				log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
+			for (peer, from, retry) in disconnected.iter() {
+				log::trace!(target: "mixnet", "Disconnecting peer {:?} from {:?}, retry {:?}", from, self.local_id, retry);
 				self.remove_connected_peer(peer);
 			}
 

@@ -43,7 +43,6 @@ pub struct Connection {
 
 impl Drop for Connection {
 	fn drop(&mut self) {
-		log::trace!(target: "mixnet_test", "Adprop");
 		self.close_handler.take().map(|s| s.send(()));
 	}
 }

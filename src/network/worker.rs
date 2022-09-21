@@ -162,7 +162,6 @@ impl<T: Configuration> MixnetWorker<T> {
 				Command::AddPeer(peer, inbound, outbound, close_handler) => {
 					if self.mixnet.connected_mut(&peer).is_some() {
 						log::warn!(target: "mixnet", "Replacing an existing connection for {:?}", peer);
-						log::warn!(target: "mixnet_test", "Trying to replace an existing connection for {:?}", peer);
 					}
 					let con = Connection::new(close_handler, inbound, outbound);
 					self.mixnet.insert_connection(peer, con);
@@ -194,7 +193,6 @@ impl<T: Configuration> MixnetWorker<T> {
 
 	fn disconnect_peer(&mut self, peer: &PeerId) {
 		log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
-		log::error!(target: "mixnet", "Disconnecting peer {:?}", peer);
 		let peer_id = self.mixnet.remove_connected_peer(peer);
 		if let Err(e) = self
 			.worker_out

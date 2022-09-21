@@ -36,7 +36,6 @@ use mixnet::{
 	},
 	Error, MixPeerId, MixPublicKey, MixSecretKey, NetworkPeerId, PeerCount, SendOptions,
 };
-use parking_lot::RwLock;
 use rand::RngCore;
 use std::{
 	collections::{BTreeMap, BTreeSet},
@@ -303,7 +302,6 @@ fn test_change_routing_set(conf: TestConfig) {
 	let source_message = &source_message;
 
 	let executor = log_unwrap!(futures::executor::ThreadPool::new());
-	let keep_connection_alive = true;
 	let expect_all_connected = false;
 
 	let set_topo = set_1.clone();

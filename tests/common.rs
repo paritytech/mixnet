@@ -226,7 +226,6 @@ pub fn spawn_swarms<T: Configuration>(
 		.zip(swarms.iter())
 		.enumerate()
 		.map(|(p, (worker, swarm))| {
-			let address: Option<Multiaddr> = None;
 			(worker.mixnet().local_id().clone(), (swarm.0.local_peer_id().clone(), p))
 		})
 		.collect();
@@ -362,15 +361,15 @@ pub fn spawn_swarms<T: Configuration>(
 					)) =>
 						if let Some(network_id) = o_network_id {
 							log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
-							let e = swarm.dial(network_id);
-							log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
+							if let Err(e) = swarm.dial(network_id) {
+								log::trace!(target: "mixnet_test", "Dialing fail with id only {:?}", e);
+							}
 						} else {
 							if let Some((network_id, p)) = peer_ids.get(&peer_id) {
 								if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
 									log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
 									let e = swarm.dial(*network_id);
 									if let Err(DialError::NoAddresses) = e {
-										let mut success = false;
 										if let Some(address) = addresses.read()[*p].as_ref() {
 											let e = swarm.dial(address.clone());
 											if e.is_err() {
@@ -613,7 +612,7 @@ pub fn send_messages(
 ) {
 	let TestConfig { message_count, with_surb, .. } = *conf;
 
-	for (i, send_conf) in send.into_iter().enumerate() {
+	for send_conf in send.into_iter() {
 		let recipient = &nodes[send_conf.to];
 		log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
 		for _ in 0..message_count {
@@ -645,7 +644,7 @@ pub fn wait_on_messages(
 
 	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
 
-	for (i, sent) in sent.into_iter().enumerate() {
+	for sent in sent.into_iter() {
 		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
 		nb.0 += message_count;
 		if with_surb {
