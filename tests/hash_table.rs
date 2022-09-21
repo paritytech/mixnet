@@ -130,8 +130,6 @@ fn test_messages(conf: TestConfig) {
 	let source_message = &source_message;
 
 	let executor = log_unwrap!(futures::executor::ThreadPool::new());
-	// 	mut make_topo: impl FnMut(&[(MixPeerId, MixPublicKey)], &Config) -> T,
-	let keep_connection_alive = config_proto.keep_handshaken_disconnected_address;
 	let expect_all_connected = false;
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
@@ -163,7 +161,6 @@ fn test_messages(conf: TestConfig) {
 		from_external,
 		&executor,
 		expect_all_connected,
-		keep_connection_alive,
 		&mut rng,
 		&config_proto,
 		make_topo,
@@ -348,7 +345,6 @@ fn test_change_routing_set(conf: TestConfig) {
 		from_external,
 		&executor,
 		expect_all_connected,
-		keep_connection_alive,
 		&mut rng,
 		&config_proto,
 		make_topo,

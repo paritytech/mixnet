@@ -101,8 +101,6 @@ pub struct Handler {
 	outbound: Option<NegotiatedSubstream>,
 	/// Peer id kept until we got outbound.
 	peer_id: Option<PeerId>,
-	/// Should we remove handler when mixnet do not manage a connection.
-	keep_connection_alive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,11 +122,7 @@ enum State {
 
 impl Handler {
 	/// Builds a new `Handler` with the given configuration.
-	pub fn new(
-		config: Config,
-		mixnet_worker_sink: SinkToWorker,
-		keep_connection_alive: bool,
-	) -> Self {
+	pub fn new(config: Config, mixnet_worker_sink: SinkToWorker) -> Self {
 		Handler {
 			config,
 			pending_errors: VecDeque::with_capacity(2),
@@ -139,7 +133,6 @@ impl Handler {
 			state: State::ActiveNotSent,
 			mixnet_worker_sink,
 			connection_closed: None,
-			keep_connection_alive,
 		}
 	}
 }
@@ -191,7 +184,6 @@ impl Handler {
 #[derive(Debug)]
 pub enum HandlerEvent {
 	NetworkId(PeerId),
-	TryReConnect,
 }
 
 impl ConnectionHandler for Handler {
@@ -208,6 +200,7 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_fully_negotiated_inbound(&mut self, stream: NegotiatedSubstream, _: ()) {
+		log::trace!(target: "mixnet_test", "Got inbound");
 		if matches!(
 			self.state,
 			State::ActiveNotSent | State::ActiveInboundNotSent | State::Inactive { .. }
@@ -219,7 +212,7 @@ impl ConnectionHandler for Handler {
 			self.inbound = Some(stream);
 			self.try_send_connected();
 		} else {
-			log::trace!(target: "mixnet_trace", "Dropping inbound, one was already sent");
+			log::trace!(target: "mixnet_test", "Dropping inbound, one was already sent");
 			log::trace!(target: "mixnet", "Dropping inbound, one was already sent");
 			/* TODO rem (broken will simply be followed to reconnect attempt)
 			if matches!(self.state, State::Active) {
@@ -236,6 +229,7 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_fully_negotiated_outbound(&mut self, stream: NegotiatedSubstream, (): ()) {
+		log::trace!(target: "mixnet_test", "Got outbound");
 		if matches!(self.state, State::ActiveNotSent) {
 			if self.outbound.is_some() {
 				log::warn!(target: "mixnet", "Dropping existing outbound");
@@ -243,6 +237,7 @@ impl ConnectionHandler for Handler {
 			self.outbound = Some(stream);
 			self.try_send_connected();
 		} else {
+			log::error!(target: "mixnet_test", "Dropping outbound receive on an {:?} connection", self.state);
 			log::warn!(target: "mixnet", "Dropping outbound receive on an {:?} connection", self.state);
 		}
 	}
@@ -256,10 +251,6 @@ impl ConnectionHandler for Handler {
 					self.peer_id = Some(peer);
 					self.try_send_connected();
 				},
-			HandlerEvent::TryReConnect => {
-				self.state = State::ActiveNotSent;
-				self.do_outbound_query = true;
-			},
 		}
 	}
 
@@ -291,11 +282,7 @@ impl ConnectionHandler for Handler {
 				Poll::Pending => (),
 				_ => {
 					log::trace!(target: "mixnet", "Connection closed, closing handler.");
-					if !self.keep_connection_alive {
-						return Poll::Ready(ConnectionHandlerEvent::Close(Failure::Unsupported))
-					} else {
-						self.state = State::Inactive { reported: false };
-					}
+					return Poll::Ready(ConnectionHandlerEvent::Close(Failure::Unsupported))
 				},
 			}
 		}

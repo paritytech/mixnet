@@ -241,6 +241,9 @@ pub struct Mixnet<T, C> {
 	// dial.
 	// TODO also manage change of peer id from distant peer.
 	// This allows filtering try_reconnect while handshaking.
+	// TODO just remove, handshake ar with networkpeerid
+	// and presence in connected_peers simply.
+	// If something it would be last try reconnect.
 	pending_handshake: HashMap<MixPeerId, NetworkPeerId>,
 
 	handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
@@ -396,6 +399,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
+		log::warn!(target: "mixnet_test", "Add peer {:?} {:?}", self.local_id, peer);
+		if self.connected_peers.contains_key(&peer) {
+			log::warn!(target: "mixnet_test", "Removing old connection with None, on handshake restart");
+		}
+		if let Some(peer_id) = self.remove_connected_peer(&peer) {
+			log::warn!(target: "mixnet_test", "Removing old connection with {:?}, on handshake restart", peer_id);
+			log::warn!(target: "mixnet", "Removing old connection with {:?}, on handshake restart", peer_id);
+		}
 		let connection = ManagedConnection::new(
 			peer,
 			connection,
@@ -934,18 +945,18 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					}
 				},
 				Poll::Ready(ConnectionEvent::Broken(mixnet_id)) => {
-					let ShouldConnectTo { peers: _, number, is_static } =
+					let ShouldConnectTo { peers: _, number: _, is_static } =
 						self.topology.should_connect_to();
 					let mut retry = false;
 					if let Some(mixnet_id) = mixnet_id.as_ref() {
 						log::error!("c");
 						if is_static {
-								log::error!("b");
-								// TODO or just peers.contains mixnet_id (would make more sense)
-								if self.topology.routing_to(&self.local_id, &mixnet_id) {
-									log::error!("a");
-									retry = true;
-								}
+							log::error!("b");
+							// TODO or just peers.contains mixnet_id (would make more sense)
+							if self.topology.routing_to(&self.local_id, &mixnet_id) {
+								log::error!("a");
+								retry = true;
+							}
 						} else {
 							log::error!("d");
 							// TODO should try more prio up to some limit among all disco

@@ -111,7 +111,8 @@ pub enum MixnetEvent {
 
 	/// Peer connection dropped, sending info to behaviour for
 	/// cleanup.
-	Disconnected(NetworkPeerId, Option<MixPeerId>),
+	/// Possibly attempt new connection.
+	Disconnected(NetworkPeerId, Option<MixPeerId>, bool),
 
 	/// Connection with a given peer id is needed.
 	TryConnect(MixPeerId, Option<NetworkPeerId>),

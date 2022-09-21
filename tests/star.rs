@@ -331,7 +331,6 @@ fn test_messages(conf: TestConfig) {
 	let source_message = &source_message;
 
 	let executor = futures::executor::ThreadPool::new().unwrap();
-	let keep_connection_alive = config_proto.keep_handshaken_disconnected_address;
 	let expect_all_connected = true;
 
 	let make_topo = move |p: usize,
@@ -358,7 +357,6 @@ fn test_messages(conf: TestConfig) {
 		from_external,
 		&executor,
 		expect_all_connected,
-		keep_connection_alive,
 		&mut rng,
 		&config_proto,
 		make_topo,

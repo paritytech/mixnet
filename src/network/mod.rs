@@ -57,34 +57,19 @@ pub struct MixnetBehaviour {
 	connected: HashMap<PeerId, ConnectionId>,
 	// connection handler notify queue
 	notify_queue: VecDeque<(PeerId, ConnectionId)>,
-	try_connect: VecDeque<PeerId>,
-	// if true when mixnet do not accept a peer we do not
-	// cut the swarm connection: can make sense in case it
-	// is multiplexed. Then it disconnect depending on ttl
-	// or can be disconnected manually.
-	keep_connection_alive: bool,
+	queued_event: VecDeque<MixnetEvent>,
 }
 
 impl MixnetBehaviour {
 	/// Creates a new network behaviour for a worker.
-	pub fn new(
-		worker_in: SinkToWorker,
-		worker_out: StreamFromWorker,
-		keep_connection_alive: bool,
-	) -> Self {
+	pub fn new(worker_in: SinkToWorker, worker_out: StreamFromWorker) -> Self {
 		Self {
 			mixnet_worker_sink: worker_in,
 			mixnet_worker_stream: worker_out,
 			notify_queue: Default::default(),
-			try_connect: Default::default(),
+			queued_event: Default::default(),
 			connected: Default::default(),
-			keep_connection_alive,
 		}
-	}
-
-	/// Try connect mixnet without dial if swarm is already connected.
-	pub fn try_connect(&mut self, peer_id: PeerId) {
-		self.try_connect.push_back(peer_id);
 	}
 }
 
@@ -147,11 +132,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 	type OutEvent = MixnetEvent;
 
 	fn new_handler(&mut self) -> Self::ConnectionHandler {
-		Handler::new(
-			handler::Config::default(),
-			dyn_clone::clone_box(&*self.mixnet_worker_sink),
-			self.keep_connection_alive,
-		)
+		Handler::new(handler::Config::default(), dyn_clone::clone_box(&*self.mixnet_worker_sink))
 	}
 
 	fn inject_event(&mut self, _: PeerId, _: ConnectionId, _: ()) {}
@@ -164,7 +145,6 @@ impl NetworkBehaviour for MixnetBehaviour {
 		_: Option<&Vec<Multiaddr>>,
 		_: usize,
 	) {
-		log::trace!(target: "mixnet", "Connected: {}", peer_id);
 		if !self.connected.contains_key(peer_id) {
 			self.notify_queue.push_back((*peer_id, *con_id));
 			self.connected.insert(*peer_id, *con_id);
@@ -202,19 +182,13 @@ impl NetworkBehaviour for MixnetBehaviour {
 	fn poll(
 		&mut self,
 		cx: &mut Context,
-		params: &mut impl PollParameters,
+		_params: &mut impl PollParameters,
 	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-		if let Some(network_id) = self.try_connect.pop_front() {
-			// TODO cx waker
-			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-				peer_id: network_id,
-				handler: NotifyHandler::Any,
-				event: handler::HandlerEvent::TryReConnect,
-			})
+		if let Some(event) = self.queued_event.pop_front() {
+			return Poll::Ready(NetworkBehaviourAction::GenerateEvent(event))
 		}
 
 		if let Some((id, connection)) = self.notify_queue.pop_front() {
-			// TODO cx waker
 			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
 				peer_id: id,
 				handler: NotifyHandler::One(connection),
@@ -224,36 +198,28 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 		match self.mixnet_worker_stream.poll_next_unpin(cx) {
 			Poll::Ready(Some(out)) => match out {
-				MixnetEvent::TryConnect(mixnet_id, Some(network_id)) => {
-					if let Some(con_id) = self.connected.get(&network_id) {
-						return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-							peer_id: network_id,
-							handler: NotifyHandler::One(*con_id),
-							event: handler::HandlerEvent::TryReConnect,
-						})
-					}
-					// TODO just go for NotifyHanler::Any? but then need to handle error.
+				MixnetEvent::TryConnect(mixnet_id, Some(network_id)) =>
 					Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
 						mixnet_id,
 						Some(network_id),
-					)))
-				},
+					))),
 				MixnetEvent::TryConnect(mixnet_id, None) => Poll::Ready(
 					NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(mixnet_id, None)),
 				),
-				MixnetEvent::Disconnected(network_id, mixnet_id) =>
-					if self.keep_connection_alive {
-						Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-							MixnetEvent::Disconnected(network_id, mixnet_id),
-						))
-					} else if let Some(con_id) = self.connected.remove(&network_id) {
+				MixnetEvent::Disconnected(network_id, mixnet_id, try_reco) => {
+					if let Some(con_id) = self.connected.remove(&network_id) {
+						self.queued_event
+							.push_back(MixnetEvent::Disconnected(network_id, mixnet_id, try_reco));
 						Poll::Ready(NetworkBehaviourAction::CloseConnection {
 							peer_id: network_id,
 							connection: CloseConnection::One(con_id),
 						})
 					} else {
-						self.poll(cx, params)
-					},
+						return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+							MixnetEvent::Disconnected(network_id, mixnet_id, try_reco),
+						))
+					}
+				},
 				e => Poll::Ready(NetworkBehaviourAction::GenerateEvent(e)),
 			},
 			Poll::Ready(None) =>

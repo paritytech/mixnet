@@ -30,7 +30,7 @@ use libp2p_core::{
 };
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
-use libp2p_swarm::{Swarm, SwarmEvent, DialError};
+use libp2p_swarm::{DialError, Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use mixnet::{
 	ambassador_impl_Topology,
@@ -39,6 +39,7 @@ use mixnet::{
 	MixnetWorker, PeerCount, SendOptions, SinkToWorker, StreamFromWorker, WorkerChannels,
 	WorkerCommand,
 };
+use parking_lot::RwLock;
 use rand::{rngs::SmallRng, RngCore};
 use std::{
 	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -135,13 +136,11 @@ fn mk_transports(
 
 fn mk_swarms(
 	transports: Vec<NewTransport>,
-	keep_connection_alive: bool,
 ) -> Vec<(Swarm<MixnetBehaviour>, mpsc::Sender<WorkerCommand>)> {
 	let mut swarms = Vec::with_capacity(transports.len());
 
 	for (peer_id, trans, to_worker_sink, from_worker_stream, to_worker) in transports.into_iter() {
-		let mixnet =
-			mixnet::MixnetBehaviour::new(to_worker_sink, from_worker_stream, keep_connection_alive);
+		let mixnet = mixnet::MixnetBehaviour::new(to_worker_sink, from_worker_stream);
 		let mut swarm = Swarm::new(trans, mixnet, peer_id);
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		log_unwrap!(swarm.listen_on(addr));
@@ -201,7 +200,6 @@ pub fn spawn_swarms<T: Configuration>(
 	from_external: bool,
 	executor: &ThreadPool,
 	expect_all_connected: bool,
-	keep_connection_alive: bool,
 	rng: &mut SmallRng,
 	config_proto: &Config,
 	make_topo: impl FnMut(
@@ -219,18 +217,22 @@ pub fn spawn_swarms<T: Configuration>(
 	};
 
 	let (transports, handles) = mk_transports(num_peers, extra_external);
-	let swarms = mk_swarms(transports, keep_connection_alive);
+	let swarms = mk_swarms(transports);
+
 	let workers = mk_workers(handles, rng, config_proto, make_topo);
 
 	let peer_ids: HashMap<_, _> = workers
 		.iter()
 		.zip(swarms.iter())
-		.map(|(worker, swarm)| {
-			let addresses: Vec<_> = swarm.0.external_addresses().cloned().collect();
-			(worker.mixnet().local_id().clone(), (swarm.0.local_peer_id().clone(), addresses))
+		.enumerate()
+		.map(|(p, (worker, swarm))| {
+			let address: Option<Multiaddr> = None;
+			(worker.mixnet().local_id().clone(), (swarm.0.local_peer_id().clone(), p))
 		})
 		.collect();
+	let addresses: Vec<Option<Multiaddr>> = vec![None; swarms.len()];
 	let peer_ids = Arc::new(peer_ids);
+	let addresses = Arc::new(RwLock::new(addresses));
 	// to_wait and to_notify just synched the peer starting, so all dial are succesful.
 	// This should be remove or optional if mixnet got non connected use case.
 	// TODO just test dial (list of peers) and retry dial simple system (synch is complex for no
@@ -275,6 +277,7 @@ pub fn spawn_swarms<T: Configuration>(
 		let mut to_notify = std::mem::take(&mut to_notify[p]);
 		let mut to_wait = std::mem::take(&mut to_wait[p]);
 		let peer_ids = peer_ids.clone();
+		let addresses = addresses.clone();
 		let inital_connection = inital_connection.clone();
 		let poll_fn = async move {
 			let mut num_connected = 0isize;
@@ -282,9 +285,15 @@ pub fn spawn_swarms<T: Configuration>(
 			let mut handshake_done = HashSet::new();
 			let mut expect_all_connected = expect_all_connected && target_peers.is_some();
 			let mut count_connected = true;
+			let mut next_event = None;
 			loop {
-				match swarm.select_next_some().await {
+				match if let Some(e) = next_event.take() {
+					e
+				} else {
+					swarm.select_next_some().await
+				} {
 					SwarmEvent::NewListenAddr { address, .. } => {
+						addresses.write()[p] = Some(address.clone());
 						for mut tx in to_notify.drain(..) {
 							log_unwrap!(tx.send(address.clone()).await)
 						}
@@ -316,7 +325,8 @@ pub fn spawn_swarms<T: Configuration>(
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(
 						peer_id,
-						_omixnet_id,
+						omix_id,
+						try_reco,
 					)) => {
 						// when keep_connection_alive is true TODO factor the decrease and increase
 						// code
@@ -338,56 +348,43 @@ pub fn spawn_swarms<T: Configuration>(
 								target_peers = None;
 							}
 						}
+						if try_reco {
+							if let Some(mix_id) = omix_id {
+								next_event = Some(SwarmEvent::Behaviour(
+									mixnet::MixnetEvent::TryConnect(mix_id, Some(peer_id)),
+								));
+							}
+						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::TryConnect(
 						peer_id,
 						o_network_id,
-					)) => {
+					)) =>
 						if let Some(network_id) = o_network_id {
-							if swarm.is_connected(&network_id) {
-								// already connected, just send TryConnect to handler
-								let mixnet_behaviour: &mut MixnetBehaviour = swarm.behaviour_mut();
-								mixnet_behaviour.try_connect(network_id);
-							} else {
-								log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
-								let e = swarm.dial(network_id);
-								log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
-							}
+							log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+							let e = swarm.dial(network_id);
+							log::trace!(target: "mixnet_test", "Dialing to {:?}", e);
 						} else {
-							if let Some((network_id, addresses)) = peer_ids.get(&peer_id) {
+							if let Some((network_id, p)) = peer_ids.get(&peer_id) {
 								if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
-									if swarm.is_connected(network_id) {
-										// already connected, just send TryConnect to handler
-										let mixnet_behaviour: &mut MixnetBehaviour =
-											swarm.behaviour_mut();
-										mixnet_behaviour.try_connect(*network_id);
-									} else {
-										log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
-										let e = swarm.dial(*network_id);
-										if let Err(DialError::NoAddresses) = e {
-											let mut success = false;
-											for addr in addresses {
-												let e = swarm.dial(addr.addr.clone());
-												if e.is_err() {
-													log::warn!(target: "mixnet_test", "Dialing fail with {:?}", e);
-												} else {
-													success = true;
-													break
-												}
+									log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+									let e = swarm.dial(*network_id);
+									if let Err(DialError::NoAddresses) = e {
+										let mut success = false;
+										if let Some(address) = addresses.read()[*p].as_ref() {
+											let e = swarm.dial(address.clone());
+											if e.is_err() {
+												log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
 											}
-											if !success {
-												log::error!(target: "mixnet_test", "Dialing fail for all addresses");
-											}
-										} else {
-											log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
 										}
+									} else {
+										log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
 									}
 								}
 							} else {
 								log::error!(target: "mixnet_test", "Could not try connect");
 							}
-						}
-					},
+						},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
 						log_unwrap!(
 							from_swarm_sink.send(PeerTestReply::ReceiveMessage(message)).await
