@@ -415,7 +415,7 @@ fn testing_mess() {
 	test_change_routing_set(TestConfig {
 		num_peers: 4,
 		num_hops: 3,
-		message_count: 1,
+		message_count: 2,
 		message_size: 1, // max 256 * 1024
 		with_surb: false,
 		from_external: false,
