@@ -376,7 +376,10 @@ impl<C: Connection> ManagedConnection<C> {
 	) -> Result<(), crate::Error> {
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
 			if packet.injected_packet() {
-				if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
+				if !(self.kind.is_consumer() ||
+					self.kind.routing_forward() ||
+					self.gracefull_nb_packet_send > 0)
+				{
 					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
 					return Err(crate::Error::NoPath(Some(*peer_id)))
 				}
