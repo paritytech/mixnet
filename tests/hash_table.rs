@@ -34,7 +34,7 @@ use mixnet::{
 		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
 		NewRoutingSet, ShouldConnectTo, Topology,
 	},
-	Error, MixPeerId, MixPublicKey, MixSecretKey, NetworkPeerId, PeerCount, SendOptions,
+	Error, MixPublicKey, MixSecretKey, MixnetId, NetworkId, PeerCount, SendOptions,
 };
 use rand::RngCore;
 use std::{
@@ -81,7 +81,7 @@ impl mixnet::traits::Handshake for NotDistributed {
 		self.inner.handshake_size()
 	}
 
-	fn check_handshake(&self, payload: &[u8], from: &PeerId) -> Option<(MixPeerId, MixPublicKey)> {
+	fn check_handshake(&self, payload: &[u8], from: &PeerId) -> Option<(MixnetId, MixPublicKey)> {
 		self.inner.check_handshake(payload, from)
 	}
 
@@ -132,7 +132,7 @@ fn test_messages(conf: TestConfig) {
 	let expect_all_connected = false;
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
-	                      nodes: &[(MixPeerId, MixPublicKey)],
+	                      nodes: &[(MixnetId, MixPublicKey)],
 	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
 	                      config: &mixnet::Config| {
 		let mut topo = TopologyHashTable::new(
@@ -309,7 +309,7 @@ fn test_change_routing_set(conf: TestConfig) {
 	let disp = std::sync::atomic::AtomicBool::new(true);
 	let make_topo = move |p: usize,
 	                      network_id: PeerId,
-	                      nodes: &[(MixPeerId, MixPublicKey)],
+	                      nodes: &[(MixnetId, MixPublicKey)],
 	                      secrets: &[(MixSecretKey, ed25519_zebra::SigningKey)],
 	                      config: &mixnet::Config| {
 		if disp.swap(false, std::sync::atomic::Ordering::Relaxed) {

@@ -20,9 +20,12 @@
 
 // libp2p connection handler for the mixnet protocol.
 
-use crate::network::{protocol, Command, SinkToWorker};
+use crate::{
+	network::{protocol, Command, SinkToWorker},
+	NetworkId,
+};
 use futures::prelude::*;
-use libp2p_core::{upgrade::NegotiationError, PeerId, UpgradeError};
+use libp2p_core::{upgrade::NegotiationError, UpgradeError};
 use libp2p_swarm::{
 	ConnectionHandler, ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive,
 	NegotiatedSubstream, SubstreamProtocol,
@@ -100,7 +103,7 @@ pub struct Handler {
 	/// Outbound sink kept until we know peer_id.
 	outbound: Option<NegotiatedSubstream>,
 	/// Peer id kept until we got outbound.
-	peer_id: Option<PeerId>,
+	peer_id: Option<NetworkId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +186,7 @@ impl Handler {
 
 #[derive(Debug)]
 pub enum HandlerEvent {
-	NetworkId(PeerId),
+	NetworkId(NetworkId),
 }
 
 impl ConnectionHandler for Handler {

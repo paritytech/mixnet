@@ -20,7 +20,7 @@
 
 //! Mixnet configuration.
 
-use crate::{MixPeerId, MixPublicKey, MixSecretKey};
+use crate::{MixPublicKey, MixSecretKey, MixnetId};
 use std::time::Duration;
 
 /// Default bandwidth to maintain for each connection.
@@ -40,7 +40,7 @@ pub struct Config {
 	/// DH public key for this node
 	pub public_key: MixPublicKey,
 	/// Local node id.
-	pub local_id: MixPeerId,
+	pub local_id: MixnetId,
 	/// Target traffic rate. This is combined for the stream of real and cover messages. If the
 	/// stream of real messages exceeds this rate incoming messages will be dropped.
 	pub target_bytes_per_second: u32,
@@ -92,16 +92,12 @@ pub struct Config {
 }
 
 impl Config {
-	pub fn new(id: MixPeerId) -> Self {
+	pub fn new(id: MixnetId) -> Self {
 		let (public_key, secret_key) = super::generate_new_keys();
 		Self::new_with_keys(id, public_key, secret_key)
 	}
 
-	pub fn new_with_keys(
-		id: MixPeerId,
-		public_key: MixPublicKey,
-		secret_key: MixSecretKey,
-	) -> Self {
+	pub fn new_with_keys(id: MixnetId, public_key: MixPublicKey, secret_key: MixSecretKey) -> Self {
 		let average_message_delay_ms: u32 = 500;
 		let target_bytes_per_second = DEFAULT_PEER_CONNECTION;
 		let packet_duration_ms = crate::PACKET_SIZE as u64 * 1_000 / target_bytes_per_second as u64;

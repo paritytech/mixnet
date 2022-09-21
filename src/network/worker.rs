@@ -25,13 +25,12 @@ use crate::{
 	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsPayload},
 	network::connection::Connection,
 	traits::Configuration,
-	MixnetEvent, SendOptions,
+	MixnetEvent, MixnetId, NetworkId, SendOptions,
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
 	Sink, SinkExt, Stream, StreamExt,
 };
-use libp2p_core::PeerId;
 use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
 
@@ -42,12 +41,12 @@ pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Sen
 pub struct WorkerCommand(pub(crate) Command);
 
 pub(crate) enum Command {
-	RegisterMessage(Option<crate::MixPeerId>, Vec<u8>, SendOptions),
+	RegisterMessage(Option<MixnetId>, Vec<u8>, SendOptions),
 	RegisterSurbs(Vec<u8>, Box<SurbsPayload>),
-	AddPeer(PeerId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
-	AddPeerInbound(PeerId, NegotiatedSubstream),
-	RemoveConnectedPeer(PeerId),
-	NewGlobalRoutingSet(Vec<(crate::MixPeerId, MixPublicKey)>),
+	AddPeer(NetworkId, Option<NegotiatedSubstream>, NegotiatedSubstream, OneShotSender<()>),
+	AddPeerInbound(NetworkId, NegotiatedSubstream),
+	RemoveConnectedPeer(NetworkId),
+	NewGlobalRoutingSet(Vec<(MixnetId, MixPublicKey)>),
 }
 
 impl Command {
@@ -80,7 +79,7 @@ impl<T: Configuration> MixnetWorker<T> {
 
 	pub fn restart(
 		&mut self,
-		new_id: Option<crate::MixPeerId>,
+		new_id: Option<MixnetId>,
 		new_keys: Option<(MixPublicKey, crate::MixSecretKey)>,
 	) {
 		self.mixnet.restart(new_id, new_keys);
@@ -189,7 +188,7 @@ impl<T: Configuration> MixnetWorker<T> {
 		}
 	}
 
-	fn disconnect_peer(&mut self, peer: &PeerId) {
+	fn disconnect_peer(&mut self, peer: &NetworkId) {
 		log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
 		let peer_id = self.mixnet.remove_connected_peer(peer);
 		if let Err(e) = self

@@ -29,7 +29,7 @@ use crate::{
 		WINDOW_MARGIN_PERCENT,
 	},
 	traits::{Configuration, Connection, Handshake, Topology},
-	MixPeerId, MixPublicKey, NetworkPeerId, Packet, PeerCount, PACKET_SIZE,
+	MixPublicKey, MixnetId, NetworkId, Packet, PeerCount, PACKET_SIZE,
 };
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -43,18 +43,18 @@ use std::{
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) enum ConnectionEvent {
-	Established(MixPeerId, MixPublicKey),
+	Established(MixnetId, MixPublicKey),
 	Received((Packet, bool)),
-	Broken(Option<MixPeerId>),
+	Broken(Option<MixnetId>),
 	None,
 }
 
 pub(crate) struct ManagedConnection<C> {
-	local_id: MixPeerId,
+	local_id: MixnetId,
 	local_public_key: MixPublicKey,
 	connection: C,
-	mixnet_id: Option<MixPeerId>,
-	network_id: NetworkPeerId,
+	mixnet_id: Option<MixnetId>,
+	network_id: NetworkId,
 	kind: ConnectedKind,
 	handshake_queue: bool,
 	handshake_sent: bool,
@@ -86,9 +86,9 @@ pub(crate) struct ManagedConnection<C> {
 
 impl<C: Connection> ManagedConnection<C> {
 	pub fn new(
-		local_id: MixPeerId,
+		local_id: MixnetId,
 		local_public_key: MixPublicKey,
-		network_id: NetworkPeerId,
+		network_id: NetworkId,
 		connection: C,
 		current_window: Wrapping<usize>,
 		with_stats: bool,
@@ -171,11 +171,11 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
-	pub fn mixnet_id(&self) -> Option<&MixPeerId> {
+	pub fn mixnet_id(&self) -> Option<&MixnetId> {
 		self.mixnet_id.as_ref()
 	}
 
-	pub fn network_id(&self) -> NetworkPeerId {
+	pub fn network_id(&self) -> NetworkId {
 		self.network_id
 	}
 
@@ -284,7 +284,7 @@ impl<C: Connection> ManagedConnection<C> {
 		cx: &mut Context,
 		topology: &mut impl Configuration,
 		peers: &PeerCount,
-	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
+	) -> Poll<Result<(MixnetId, MixPublicKey), ()>> {
 		if self.handshake_received {
 			// ignore
 			return Poll::Pending

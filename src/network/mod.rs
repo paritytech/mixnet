@@ -30,11 +30,12 @@ mod worker;
 pub(crate) use crate::network::worker::Command;
 pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
 use crate::{
-	core::SurbsPayload, traits::ClonableSink, MixPeerId, MixPublicKey, MixnetEvent, SendOptions,
+	core::SurbsPayload, traits::ClonableSink, MixPublicKey, MixnetEvent, MixnetId, NetworkId,
+	SendOptions,
 };
 use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
-use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
+use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr};
 use libp2p_swarm::{
 	CloseConnection, IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction,
 	NotifyHandler, PollParameters,
@@ -54,9 +55,9 @@ pub struct MixnetBehaviour {
 	mixnet_worker_sink: SinkToWorker,
 	mixnet_worker_stream: StreamFromWorker,
 	// avoid two connections from a single peer.
-	connected: HashMap<PeerId, ConnectionId>,
+	connected: HashMap<NetworkId, ConnectionId>,
 	// connection handler notify queue
-	notify_queue: VecDeque<(PeerId, ConnectionId)>,
+	notify_queue: VecDeque<(NetworkId, ConnectionId)>,
 	queued_event: VecDeque<MixnetEvent>,
 }
 
@@ -96,7 +97,7 @@ impl MixnetCommandSink {
 	/// When attaching a surb, it is send using this surbs infos.
 	pub fn send(
 		&mut self,
-		to: Option<MixPeerId>,
+		to: Option<MixnetId>,
 		message: Vec<u8>,
 		send_options: SendOptions,
 	) -> std::result::Result<(), crate::Error> {
@@ -119,7 +120,7 @@ impl MixnetCommandSink {
 	/// Change of allowed peers to route in the mixnet.
 	pub fn new_global_routing_set(
 		&mut self,
-		set: Vec<(MixPeerId, MixPublicKey)>,
+		set: Vec<(MixnetId, MixPublicKey)>,
 	) -> std::result::Result<(), crate::Error> {
 		self.0
 			.start_send_unpin(Command::NewGlobalRoutingSet(set).into())
@@ -135,11 +136,11 @@ impl NetworkBehaviour for MixnetBehaviour {
 		Handler::new(handler::Config::default(), dyn_clone::clone_box(&*self.mixnet_worker_sink))
 	}
 
-	fn inject_event(&mut self, _: PeerId, _: ConnectionId, _: ()) {}
+	fn inject_event(&mut self, _: NetworkId, _: ConnectionId, _: ()) {}
 
 	fn inject_connection_established(
 		&mut self,
-		peer_id: &PeerId,
+		peer_id: &NetworkId,
 		con_id: &ConnectionId,
 		_: &ConnectedPoint,
 		_: Option<&Vec<Multiaddr>>,
@@ -155,7 +156,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 	fn inject_connection_closed(
 		&mut self,
-		peer_id: &PeerId,
+		peer_id: &NetworkId,
 		con_id: &ConnectionId,
 		_: &ConnectedPoint,
 		_: <Self::ConnectionHandler as IntoConnectionHandler>::Handler,
@@ -174,7 +175,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		}
 	}
 
-	fn addresses_of_peer(&mut self, _peer: &PeerId) -> Vec<Multiaddr> {
+	fn addresses_of_peer(&mut self, _peer: &NetworkId) -> Vec<Multiaddr> {
 		// This will only need to be cached if dialing at some point.
 		vec![]
 	}

@@ -31,7 +31,7 @@ pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection, NewRoutingSet, ShouldConnectTo},
-	DecodedMessage, MessageType, MixPeerId, MixnetEvent, NetworkPeerId, SendOptions, WorkerSink2,
+	DecodedMessage, MessageType, MixnetEvent, MixnetId, NetworkId, SendOptions, WorkerSink2,
 };
 pub use config::Config;
 pub use error::Error;
@@ -140,12 +140,12 @@ impl Packet {
 }
 
 pub enum MixEvent {
-	Disconnected(Vec<(NetworkPeerId, Option<MixPeerId>, bool)>),
-	TryConnect(Vec<(MixPeerId, Option<NetworkPeerId>)>),
+	Disconnected(Vec<(NetworkId, Option<MixnetId>, bool)>),
+	TryConnect(Vec<(MixnetId, Option<NetworkId>)>),
 	None,
 }
 
-pub fn to_sphinx_id(id: &NetworkPeerId) -> Result<MixPeerId, Error> {
+pub fn to_sphinx_id(id: &NetworkId) -> Result<MixnetId, Error> {
 	let hash = id.as_ref();
 	match libp2p_core::multihash::Code::try_from(hash.code()) {
 		Ok(libp2p_core::multihash::Code::Identity) => {
@@ -230,15 +230,16 @@ impl QueuedPacket {
 pub struct Mixnet<T, C> {
 	pub topology: T,
 	num_hops: usize,
-	local_id: MixPeerId,
+	local_id: MixnetId,
 	public: MixPublicKey,
 	secret: MixSecretKey,
-	connected_peers: HashMap<NetworkPeerId, ManagedConnection<C>>,
+	connected_peers: HashMap<NetworkId, ManagedConnection<C>>,
 	peer_counts: PeerCount,
 
-	handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
+	handshaken_peers: HashMap<MixnetId, NetworkId>,
 	// TODO ttl map this and clean connected somehow
-	disconnected_handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
+	// TODO consider removal
+	disconnected_handshaken_peers: HashMap<MixnetId, NetworkId>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
 	// Message waiting for surb.
@@ -366,7 +367,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	pub fn restart(
 		&mut self,
-		new_id: Option<crate::MixPeerId>,
+		new_id: Option<crate::MixnetId>,
 		new_keys: Option<(MixPublicKey, crate::MixSecretKey)>,
 	) {
 		if let Some(id) = new_id {
@@ -387,7 +388,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		self.topology.peer_stats(&self.peer_counts);
 	}
 
-	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
+	pub fn insert_connection(&mut self, peer: NetworkId, connection: C) {
 		if let Some(peer_id) = self.remove_connected_peer(&peer) {
 			log::warn!(target: "mixnet", "Removing old connection with {:?}, on handshake restart", peer_id);
 		}
@@ -404,11 +405,11 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		self.topology.peer_stats(&self.peer_counts);
 	}
 
-	pub fn connected_mut(&mut self, peer: &NetworkPeerId) -> Option<&mut C> {
+	pub fn connected_mut(&mut self, peer: &NetworkId) -> Option<&mut C> {
 		self.connected_peers.get_mut(peer).map(|c| c.connection_mut())
 	}
 
-	pub fn local_id(&self) -> &MixPeerId {
+	pub fn local_id(&self) -> &MixnetId {
 		&self.local_id
 	}
 
@@ -418,7 +419,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	fn queue_packet(
 		&mut self,
-		recipient: MixPeerId,
+		recipient: MixnetId,
 		data: Packet,
 		delay: Duration,
 		kind: PacketType,
@@ -456,7 +457,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	// and sent immediatly.
 	fn queue_external_packet(
 		&mut self,
-		recipient: MixPeerId,
+		recipient: MixnetId,
 		data: Packet,
 		kind: PacketType,
 	) -> Result<(), Error> {
@@ -483,7 +484,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// random recipient is selected.
 	pub fn register_message(
 		&mut self,
-		peer_id: Option<MixPeerId>,
+		peer_id: Option<MixnetId>,
 		peer_pub_key: Option<MixPublicKey>,
 		message: Vec<u8>,
 		send_options: SendOptions,
@@ -575,7 +576,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	/// Change of globablly allowed peer to be in routing set.
-	pub fn new_global_routing_set(&mut self, set: Vec<(MixPeerId, MixPublicKey)>) {
+	pub fn new_global_routing_set(&mut self, set: Vec<(MixnetId, MixPublicKey)>) {
 		self.topology.handle_new_routing_set(NewRoutingSet { peers: &set })
 	}
 
@@ -608,7 +609,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// fragment completes the message, full message is returned.
 	fn import_message(
 		&mut self,
-		peer_id: MixPeerId,
+		peer_id: MixnetId,
 		message: Packet,
 	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
 		let next_delay =
@@ -671,7 +672,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	/// Should be called when a peer is disconnected.
-	pub fn remove_connected_peer(&mut self, id: &NetworkPeerId) -> Option<MixPeerId> {
+	pub fn remove_connected_peer(&mut self, id: &NetworkId) -> Option<MixnetId> {
 		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|mut c| {
 			self.peer_counts.remove_peer(c.disconnected_kind());
 			c.mixnet_id().cloned()
@@ -689,12 +690,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	fn random_paths(
 		&mut self,
-		recipient: &MixPeerId,
+		recipient: &MixnetId,
 		recipient_key: Option<&MixPublicKey>,
 		num_hops: &Option<usize>,
 		count: usize,
-		last_query_if_surb: Option<&Vec<(MixPeerId, MixPublicKey)>>,
-	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
+		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
+	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
 		let (start, recipient) = if last_query_if_surb.is_some() {
 			((recipient, recipient_key), (&self.local_id, Some(&self.public)))
 		} else {
@@ -988,12 +989,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 	}
 
-	fn import_packet(
-		&mut self,
-		peer: MixPeerId,
-		packet: Packet,
-		results: &mut WorkerSink2,
-	) -> bool {
+	fn import_packet(&mut self, peer: MixnetId, packet: Packet, results: &mut WorkerSink2) -> bool {
 		match self.import_message(peer, packet) {
 			Ok(Some((message, kind))) => {
 				if let Err(e) = results.start_send_unpin(MixnetEvent::Message(DecodedMessage {
@@ -1173,9 +1169,9 @@ where
 }
 
 struct QueuedUnconnectedPackets {
-	messages: HashMap<MixPeerId, VecDeque<(QueuedPacket, Wrapping<usize>)>>,
+	messages: HashMap<MixnetId, VecDeque<(QueuedPacket, Wrapping<usize>)>>,
 	expiration: Duration,
-	exp_deque: VecDeque<(Instant, Option<MixPeerId>)>,
+	exp_deque: VecDeque<(Instant, Option<MixnetId>)>,
 	exp_deque_offset: Wrapping<usize>,
 	queue_message_unconnected_number: u32,
 }
@@ -1191,7 +1187,7 @@ impl QueuedUnconnectedPackets {
 		}
 	}
 
-	fn insert(&mut self, recipient: MixPeerId, packet: QueuedPacket, now: Instant) {
+	fn insert(&mut self, recipient: MixnetId, packet: QueuedPacket, now: Instant) {
 		let expires = now + self.expiration;
 		let ix = self.exp_deque_offset + Wrapping(self.exp_deque.len());
 		let queue = self.messages.entry(recipient).or_default();
@@ -1208,7 +1204,7 @@ impl QueuedUnconnectedPackets {
 
 	fn remove(
 		&mut self,
-		recipient: &MixPeerId,
+		recipient: &MixnetId,
 	) -> Option<VecDeque<(QueuedPacket, Wrapping<usize>)>> {
 		let result = self.messages.remove(recipient);
 		if let Some(paquets) = result.as_ref() {
@@ -1250,7 +1246,7 @@ impl QueuedUnconnectedPackets {
 	}
 }
 
-pub(crate) fn cover_message_to(peer_id: &MixPeerId, peer_key: MixPublicKey) -> Option<Packet> {
+pub(crate) fn cover_message_to(peer_id: &MixnetId, peer_key: MixPublicKey) -> Option<Packet> {
 	let mut rng = rand::thread_rng();
 	let message = fragment::Fragment::create_cover_fragment(&mut rng);
 	let hops = vec![sphinx::PathHop { id: *peer_id, public_key: peer_key }];
@@ -1309,8 +1305,8 @@ pub struct PeerCount {
 impl PeerCount {
 	fn add_peer<T: Configuration>(
 		&mut self,
-		local_id: &MixPeerId,
-		peer: &MixPeerId,
+		local_id: &MixnetId,
+		peer: &MixnetId,
 		topology: &T,
 	) -> ConnectedKind {
 		self.nb_connected += 1;

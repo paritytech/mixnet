@@ -35,10 +35,10 @@ pub use crate::{
 };
 
 /// Mixnet peer identity.
-pub type MixPeerId = [u8; 32];
+pub type MixnetId = [u8; 32];
 
 /// Mixnet network peer identity.
-pub type NetworkPeerId = libp2p_core::PeerId;
+pub type NetworkId = libp2p_core::PeerId;
 
 /// Options for sending a message in the mixnet.
 pub struct SendOptions {
@@ -62,7 +62,7 @@ pub enum MessageType {
 	WithSurbs(Box<SurbsPayload>),
 	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
-	FromSurbs(Option<Vec<u8>>, Box<(MixPeerId, MixPublicKey)>),
+	FromSurbs(Option<Vec<u8>>, Box<(MixnetId, MixPublicKey)>),
 }
 
 impl MessageType {
@@ -93,7 +93,7 @@ impl MessageType {
 pub struct DecodedMessage {
 	/// The peer ID of the last hop that we have received the message from. This is not the message
 	/// origin.
-	pub peer: MixPeerId,
+	pub peer: MixnetId,
 	/// Message data.
 	pub message: Vec<u8>,
 	/// Message kind.
@@ -107,15 +107,15 @@ pub enum MixnetEvent {
 	Message(DecodedMessage),
 
 	/// A new peer has connected and handshake.
-	Connected(NetworkPeerId, MixPublicKey),
+	Connected(NetworkId, MixPublicKey),
 
 	/// Peer connection dropped, sending info to behaviour for
 	/// cleanup.
 	/// Possibly attempt new connection.
-	Disconnected(NetworkPeerId, Option<MixPeerId>, bool),
+	Disconnected(NetworkId, Option<MixnetId>, bool),
 
 	/// Connection with a given peer id is needed.
-	TryConnect(MixPeerId, Option<NetworkPeerId>),
+	TryConnect(MixnetId, Option<NetworkId>),
 
 	/// Handle of a stream or channel was dropped,
 	/// this behavior and worker cannot be use properly

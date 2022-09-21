@@ -148,7 +148,7 @@ pub enum Unwrapped {
 	Forward((NodeId, Delay, Packet)),
 	Payload(Vec<u8>),
 	SurbsQuery(Vec<u8>, Vec<u8>),
-	SurbsReply(Vec<u8>, Option<Vec<u8>>, Box<(crate::MixPeerId, crate::MixPublicKey)>),
+	SurbsReply(Vec<u8>, Option<Vec<u8>>, Box<(crate::MixnetId, crate::MixPublicKey)>),
 }
 
 enum DoNextHop {
@@ -161,7 +161,7 @@ enum DoNextHop {
 pub struct SurbsPersistance {
 	pub keys: Vec<SprpKey>,
 	pub query: Option<Vec<u8>>,
-	pub recipient: (crate::MixPeerId, crate::MixPublicKey),
+	pub recipient: (crate::MixnetId, crate::MixPublicKey),
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
