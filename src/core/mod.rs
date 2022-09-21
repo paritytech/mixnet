@@ -230,21 +230,11 @@ impl QueuedPacket {
 pub struct Mixnet<T, C> {
 	pub topology: T,
 	num_hops: usize,
-	pub public: MixPublicKey,
-	secret: MixSecretKey,
 	local_id: MixPeerId,
+	public: MixPublicKey,
+	secret: MixSecretKey,
 	connected_peers: HashMap<NetworkPeerId, ManagedConnection<C>>,
-	peer_stats: PeerCount, // TODO rename to peer_counts: if number are wrong, some things are
-	// broken: not just stats
-
-	// TODO for reconnect and topo with known mix peer id have it from
-	// dial.
-	// TODO also manage change of peer id from distant peer.
-	// This allows filtering try_reconnect while handshaking.
-	// TODO just remove, handshake ar with networkpeerid
-	// and presence in connected_peers simply.
-	// If something it would be last try reconnect.
-	pending_handshake: HashMap<MixPeerId, NetworkPeerId>,
+	peer_counts: PeerCount,
 
 	handshaken_peers: HashMap<MixPeerId, NetworkPeerId>,
 	// TODO ttl map this and clean connected somehow
@@ -344,13 +334,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			replay_filter: ReplayFilter::new(&config),
 			persist_surb_query: config.persist_surb_query,
 			num_hops: config.num_hops as usize,
+			local_id: config.local_id,
 			public: config.public_key,
 			secret: config.secret_key,
-			local_id: config.local_id,
 			fragments: MessageCollection::new(),
 			connected_peers: Default::default(),
-			peer_stats: Default::default(),
-			pending_handshake: Default::default(),
+			peer_counts: Default::default(),
 			handshaken_peers: Default::default(),
 			disconnected_handshaken_peers: Default::default(),
 			pending_events: Default::default(),
@@ -381,7 +370,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		new_keys: Option<(MixPublicKey, crate::MixSecretKey)>,
 	) {
 		if let Some(id) = new_id {
-			self.local_id = id
+			self.local_id = id;
 		}
 		if let Some((pub_key, priv_key)) = new_keys {
 			self.public = pub_key;
@@ -389,13 +378,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 		// disconnect all (need a new handshake).
 		for (_mix_id, mut connection) in std::mem::take(&mut self.connected_peers).into_iter() {
-			self.peer_stats.remove_peer(connection.disconnected_kind());
+			self.peer_counts.remove_peer(connection.disconnected_kind());
 			if let Some(mix_id) = connection.mixnet_id() {
 				self.handshaken_peers.remove(mix_id);
 				self.topology.disconnected(mix_id);
 			}
 		}
-		self.topology.peer_stats(&self.peer_stats);
+		self.topology.peer_stats(&self.peer_counts);
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkPeerId, connection: C) {
@@ -403,14 +392,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			log::warn!(target: "mixnet", "Removing old connection with {:?}, on handshake restart", peer_id);
 		}
 		let connection = ManagedConnection::new(
+			self.local_id,
+			self.public,
 			peer,
 			connection,
 			self.window.current,
 			self.window.stats.is_some(),
-			&mut self.peer_stats,
+			&mut self.peer_counts,
 		);
 		self.connected_peers.insert(peer, connection);
-		self.topology.peer_stats(&self.peer_stats);
+		self.topology.peer_stats(&self.peer_counts);
 	}
 
 	pub fn connected_mut(&mut self, peer: &NetworkPeerId) -> Option<&mut C> {
@@ -442,7 +433,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				QueuedPacket { deadline, data, kind },
 				self.window.packet_per_window,
 				&self.topology,
-				&self.peer_stats,
+				&self.peer_counts,
 			)?;
 		} else {
 			if let Some(queue) = self.forward_unconnected_message_queue.as_mut() {
@@ -479,7 +470,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				QueuedPacket { deadline, data, kind },
 				self.window.packet_per_window,
 				&self.topology,
-				&self.peer_stats,
+				&self.peer_counts,
 			)?;
 		} else {
 			return Err(Error::Unreachable)
@@ -682,7 +673,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Should be called when a peer is disconnected.
 	pub fn remove_connected_peer(&mut self, id: &NetworkPeerId) -> Option<MixPeerId> {
 		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|mut c| {
-			self.peer_stats.remove_peer(c.disconnected_kind());
+			self.peer_counts.remove_peer(c.disconnected_kind());
 			c.mixnet_id().cloned()
 		}) {
 			self.handshaken_peers.remove(&mix_id);
@@ -741,8 +732,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						connection.set_kind_changed(
-							&self.local_id,
-							&mut self.peer_stats,
+							&mut self.peer_counts,
 							&mut self.topology,
 							self.forward_unconnected_message_queue.as_mut(),
 							&self.window,
@@ -760,8 +750,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						if connection.mixnet_id() == Some(&peer_id) {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
 							connection.set_kind_changed(
-								&self.local_id,
-								&mut self.peer_stats,
+								&mut self.peer_counts,
 								&mut self.topology,
 								self.forward_unconnected_message_queue.as_mut(),
 								&self.window,
@@ -791,8 +780,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						} else {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
 							connection.set_kind_changed(
-								&self.local_id,
-								&mut self.peer_stats,
+								&mut self.peer_counts,
 								&mut self.topology,
 								self.forward_unconnected_message_queue.as_mut(),
 								&self.window,
@@ -818,7 +806,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	fn try_reconnect(&mut self) {
 		let mut try_connect = Vec::new();
 		let ShouldConnectTo { peers, number, is_static } = self.topology.should_connect_to();
-		let already_connected = self.peer_stats.nb_connected_forward_routing;
+		let already_connected = self.peer_counts.nb_connected_forward_routing;
 		if already_connected >= number && is_static {
 			return
 		}
@@ -828,9 +816,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				if try_connect.len() == number - already_connected {
 					break
 				}
-				if !self.pending_handshake.contains_key(peer) &&
-					!self.handshaken_peers.contains_key(peer)
-				{
+				if !self.handshaken_peers.contains_key(peer) {
 					let network_id = self.disconnected_handshaken_peers.get(peer);
 					try_connect.push((*peer, network_id.copied()));
 				}
@@ -891,7 +877,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						}
 					}
 
-					self.topology.window_stats(stats, &self.peer_stats);
+					self.topology.window_stats(stats, &self.peer_counts);
 				}
 			}
 
@@ -917,18 +903,16 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
 			match connection.poll(
 				cx,
-				&self.local_id,
-				&self.public,
 				&self.window,
 				&mut self.topology,
-				&mut self.peer_stats,
+				&mut self.peer_counts,
 				self.forward_unconnected_message_queue.as_mut(),
 			) {
 				Poll::Ready(ConnectionEvent::Established(_peer_id, key)) => {
 					all_pending = false;
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						self.topology.connected(*sphinx_id, key);
-						self.topology.peer_stats(&self.peer_stats);
+						self.topology.peer_stats(&self.peer_counts);
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
 					}
 
@@ -945,7 +929,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					if let Some(mixnet_id) = mixnet_id.as_ref() {
 						if is_static {
 							// TODO or just peers.contains mixnet_id (could make more sense)
-							if self.topology.routing_to(&self.local_id, &mixnet_id) {
+							if self.topology.routing_to(&self.local_id, mixnet_id) {
 								retry = true;
 							}
 						} else {

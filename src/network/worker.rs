@@ -168,8 +168,6 @@ impl<T: Configuration> MixnetWorker<T> {
 					true
 				},
 				Command::AddPeerInbound(peer, inbound) => {
-					// TODO remove connected mut and just have mixnet set_inbound and mixnet
-					// has_connected.
 					if let Some(con) = self.mixnet.connected_mut(&peer) {
 						log::trace!(target: "mixnet", "Added inbound to peer: {:?}", peer);
 						con.set_inbound(inbound);

@@ -50,7 +50,8 @@ pub(crate) enum ConnectionEvent {
 }
 
 pub(crate) struct ManagedConnection<C> {
-	// TODO put local_id in it instead of param TODO other param and use ref to them
+	local_id: MixPeerId,
+	local_public_key: MixPublicKey,
 	connection: C,
 	mixnet_id: Option<MixPeerId>,
 	network_id: NetworkPeerId,
@@ -87,6 +88,8 @@ pub(crate) struct ManagedConnection<C> {
 
 impl<C: Connection> ManagedConnection<C> {
 	pub fn new(
+		local_id: MixPeerId,
+		local_public_key: MixPublicKey,
 		network_id: NetworkPeerId,
 		connection: C,
 		current_window: Wrapping<usize>,
@@ -95,6 +98,8 @@ impl<C: Connection> ManagedConnection<C> {
 	) -> Self {
 		peers.nb_pending_handshake += 1;
 		Self {
+			local_id,
+			local_public_key,
 			connection,
 			mixnet_id: None,
 			network_id,
@@ -118,13 +123,12 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
-	pub fn connection_mut(&mut self) -> &mut C {
+	pub(super) fn connection_mut(&mut self) -> &mut C {
 		&mut self.connection
 	}
 
 	pub(super) fn set_kind_changed(
 		&mut self,
-		local_id: &MixPeerId,
 		peers: &mut PeerCount,
 		topology: &mut impl Configuration,
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
@@ -133,7 +137,7 @@ impl<C: Connection> ManagedConnection<C> {
 	) {
 		if on_handshake_success || self.kind != ConnectedKind::PendingHandshake {
 			let old_kind = self.kind;
-			self.add_peer(local_id, topology, forward_queue, peers, window);
+			self.add_peer(topology, forward_queue, peers, window);
 			peers.remove_peer(old_kind);
 			topology.peer_stats(peers);
 
@@ -180,14 +184,13 @@ impl<C: Connection> ManagedConnection<C> {
 
 	fn add_peer(
 		&mut self,
-		local_id: &MixPeerId,
 		topology: &mut impl Configuration,
 		forward_queue: Option<&mut QueuedUnconnectedPackets>,
 		peer_counts: &mut PeerCount,
 		window: &WindowInfo,
 	) {
 		if let Some(peer) = self.mixnet_id.as_ref() {
-			self.kind = peer_counts.add_peer(local_id, peer, topology);
+			self.kind = peer_counts.add_peer(&self.local_id, peer, topology);
 			if self.kind.routing_forward() {
 				if let Some(queue_packets) = forward_queue.and_then(|q| q.remove(peer)) {
 					for (packet, _) in queue_packets {
@@ -214,17 +217,17 @@ impl<C: Connection> ManagedConnection<C> {
 	fn try_send_handshake(
 		&mut self,
 		cx: &mut Context,
-		public_key: &MixPublicKey,
 		topology: &mut impl Handshake,
 	) -> Poll<Result<(), ()>> {
 		if !self.handshake_queue {
-			let handshake =
-				if let Some(handshake) = topology.handshake(&self.network_id, public_key) {
-					handshake
-				} else {
-					log::trace!(target: "mixnet", "Cannot create handshake with {}", self.network_id);
-					return Poll::Ready(Err(()))
-				};
+			let handshake = if let Some(handshake) =
+				topology.handshake(&self.network_id, &self.local_public_key)
+			{
+				handshake
+			} else {
+				log::trace!(target: "mixnet", "Cannot create handshake with {}", self.network_id);
+				return Poll::Ready(Err(()))
+			};
 			if self.connection.try_queue_send(handshake).is_none() {
 				self.handshake_queue = true;
 			} else {
@@ -288,7 +291,6 @@ impl<C: Connection> ManagedConnection<C> {
 		cx: &mut Context,
 		topology: &mut impl Configuration,
 		peers: &PeerCount,
-		local_id: &MixPeerId,
 	) -> Poll<Result<(MixPeerId, MixPublicKey), ()>> {
 		if self.handshake_received {
 			// ignore
@@ -306,7 +308,7 @@ impl<C: Connection> ManagedConnection<C> {
 					self.public_key = Some(pk);
 					self.handshake_received = true;
 					if !accepted {
-						log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?} from {:?}", peer_id, local_id);
+						log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?} from {:?}", peer_id, self.local_id);
 						if self.handshake_sent {
 							Poll::Ready(Err(()))
 						} else {
@@ -321,7 +323,7 @@ impl<C: Connection> ManagedConnection<C> {
 					Poll::Ready(Err(()))
 				}
 			},
-			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology, peers, local_id),
+			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology, peers),
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error receiving handshake from peer, closing: {:?}", self.network_id);
 				Poll::Ready(Err(()))
@@ -334,16 +336,7 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		cx: &mut Context,
 		current_window: Wrapping<usize>,
-		local_id: &MixPeerId,
 	) -> Poll<Result<Packet, ()>> {
-		let from_byte = local_id[0];
-		let to_byte = self.mixnet_id.as_ref().map(|r| r[0]).unwrap_or(255);
-		if from_byte == 30 && to_byte == 31 {
-			log::trace!("dd");
-		}
-		if from_byte == 44 && to_byte == 31 {
-			log::trace!("dd");
-		}
 		if !self.kind.is_mixnet_connected() {
 			// this is actually unreachable but ignore it.
 			return Poll::Pending
@@ -358,7 +351,7 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 				Poll::Ready(Ok(packet))
 			},
-			Poll::Ready(Ok(None)) => self.try_recv_packet(cx, current_window, local_id),
+			Poll::Ready(Ok(None)) => self.try_recv_packet(cx, current_window),
 			Poll::Ready(Err(())) => {
 				log::trace!(target: "mixnet", "Error receiving from peer, closing: {:?}", self.network_id);
 				Poll::Ready(Err(()))
@@ -433,12 +426,9 @@ impl<C: Connection> ManagedConnection<C> {
 		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
 	}
 
-	#[allow(clippy::too_many_arguments)]
 	pub(super) fn poll(
 		&mut self,
 		cx: &mut Context,
-		local_id: &MixPeerId,
-		local_public_key: &MixPublicKey,
 		window: &WindowInfo,
 		topology: &mut impl Configuration,
 		peers: &mut PeerCount,
@@ -453,7 +443,7 @@ impl<C: Connection> ManagedConnection<C> {
 		if !(self.handshake_sent && self.handshake_received) {
 			let mut result = Poll::Pending;
 			if !self.handshake_received {
-				match self.try_recv_handshake(cx, topology, peers, local_id) {
+				match self.try_recv_handshake(cx, topology, peers) {
 					Poll::Ready(Ok(key)) => {
 						self.mixnet_id = Some(key.0);
 						self.public_key = Some(key.1);
@@ -466,7 +456,7 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 			}
 			if !self.handshake_sent {
-				match self.try_send_handshake(cx, local_public_key, topology) {
+				match self.try_send_handshake(cx, topology) {
 					Poll::Ready(Ok(())) =>
 						if matches!(result, Poll::Pending) {
 							result = Poll::Ready(ConnectionEvent::None);
@@ -476,12 +466,12 @@ impl<C: Connection> ManagedConnection<C> {
 				}
 			}
 			if self.handshake_sent && self.handshake_received {
-				log::debug!(target: "mixnet", "Handshake success from {:?} to {:?}", local_id, self.mixnet_id);
+				log::debug!(target: "mixnet", "Handshake success from {:?} to {:?}", self.local_id, self.mixnet_id);
 				if let (Some(mixnet_id), Some(public_key)) = (self.mixnet_id, self.public_key) {
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
-					self.set_kind_changed(local_id, peers, topology, forward_queue, window, true);
+					self.set_kind_changed(peers, topology, forward_queue, window, true);
 					return Poll::Ready(ConnectionEvent::Established(mixnet_id, public_key))
 				} else {
 					// is actually unreachable
@@ -578,7 +568,7 @@ impl<C: Connection> ManagedConnection<C> {
 				current
 			};
 			if self.recv_in_window < current || self.kind.is_external() {
-				match self.try_recv_packet(cx, window.current, local_id) {
+				match self.try_recv_packet(cx, window.current) {
 					Poll::Ready(Ok(packet)) => {
 						self.recv_in_window += 1;
 						if self.gracefull_nb_packet_receive > 0 {

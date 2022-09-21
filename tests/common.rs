@@ -225,9 +225,7 @@ pub fn spawn_swarms<T: Configuration>(
 		.iter()
 		.zip(swarms.iter())
 		.enumerate()
-		.map(|(p, (worker, swarm))| {
-			(worker.mixnet().local_id().clone(), (swarm.0.local_peer_id().clone(), p))
-		})
+		.map(|(p, (worker, swarm))| (*worker.mixnet().local_id(), (*swarm.0.local_peer_id(), p)))
 		.collect();
 	let addresses: Vec<Option<Multiaddr>> = vec![None; swarms.len()];
 	let peer_ids = Arc::new(peer_ids);
@@ -364,25 +362,23 @@ pub fn spawn_swarms<T: Configuration>(
 							if let Err(e) = swarm.dial(network_id) {
 								log::trace!(target: "mixnet_test", "Dialing fail with id only {:?}", e);
 							}
-						} else {
-							if let Some((network_id, p)) = peer_ids.get(&peer_id) {
-								if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
-									log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
-									let e = swarm.dial(*network_id);
-									if let Err(DialError::NoAddresses) = e {
-										if let Some(address) = addresses.read()[*p].as_ref() {
-											let e = swarm.dial(address.clone());
-											if e.is_err() {
-												log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
-											}
+						} else if let Some((network_id, p)) = peer_ids.get(&peer_id) {
+							if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
+								log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+								let e = swarm.dial(*network_id);
+								if let Err(DialError::NoAddresses) = e {
+									if let Some(address) = addresses.read()[*p].as_ref() {
+										let e = swarm.dial(address.clone());
+										if e.is_err() {
+											log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
 										}
-									} else {
-										log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
 									}
+								} else {
+									log::error!(target: "mixnet_test", "Dialing fail with {:?}", e);
 								}
-							} else {
-								log::error!(target: "mixnet_test", "Could not try connect");
 							}
+						} else {
+							log::error!(target: "mixnet_test", "Could not try connect");
 						},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Message(message)) => {
 						log_unwrap!(
@@ -612,7 +608,7 @@ pub fn send_messages(
 ) {
 	let TestConfig { message_count, with_surb, .. } = *conf;
 
-	for send_conf in send.into_iter() {
+	for send_conf in send {
 		let recipient = &nodes[send_conf.to];
 		log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
 		for _ in 0..message_count {
@@ -644,7 +640,7 @@ pub fn wait_on_messages(
 
 	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
 
-	for sent in sent.into_iter() {
+	for sent in sent {
 		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
 		nb.0 += message_count;
 		if with_surb {

@@ -215,7 +215,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 							connection: CloseConnection::One(con_id),
 						})
 					} else {
-						return Poll::Ready(NetworkBehaviourAction::GenerateEvent(
+						Poll::Ready(NetworkBehaviourAction::GenerateEvent(
 							MixnetEvent::Disconnected(network_id, mixnet_id, try_reco),
 						))
 					}
