@@ -352,10 +352,7 @@ pub fn spawn_swarms<T: Configuration>(
 							}
 						}
 					},
-					SwarmEvent::Behaviour(mixnet::MixnetEvent::TryConnect(
-						mix_id,
-						network_id,
-					)) =>
+					SwarmEvent::Behaviour(mixnet::MixnetEvent::TryConnect(mix_id, network_id)) =>
 						if let Some(network_id) = network_id {
 							log::trace!(target: "mixnet_test", "Dialing to {:?}", mix_id);
 							if let Err(e) = swarm.dial(network_id) {

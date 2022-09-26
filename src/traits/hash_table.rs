@@ -64,6 +64,10 @@ pub trait Configuration {
 pub struct Parameters {
 	// limit to external connection
 	pub max_external: Option<usize>,
+
+	// When running as external number of consumer connection
+	// with validator to try to maintain.
+	pub number_consumer_connection: Option<usize>,
 }
 
 pub trait TableVersion: Default + Clone + Eq + PartialEq + Ord + std::fmt::Debug + 'static {
@@ -424,11 +428,12 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {
-		ShouldConnectTo {
-			peers: self.should_connect_to.as_slice(),
-			number: C::NUMBER_CONNECTED_FORWARD,
-			is_static: !C::DISTRIBUTE_ROUTES,
-		}
+		let (number, is_static) = if self.routing {
+			(C::NUMBER_CONNECTED_FORWARD, !C::DISTRIBUTE_ROUTES)
+		} else {
+			(self.params.number_consumer_connection.unwrap_or(usize::MAX), false)
+		};
+		ShouldConnectTo { peers: self.should_connect_to.as_slice(), number, is_static }
 	}
 
 	fn handle_new_routing_set(&mut self, set: NewRoutingSet) {
@@ -479,12 +484,16 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 	/// Change ids.
 	/// TODO this should be part of handle_new_routing_set on trait
-	pub fn change_local(&mut self, local_id: Option<MixnetId>, node_public_key: Option<MixPublicKey>) {
+	pub fn change_local(
+		&mut self,
+		local_id: Option<MixnetId>,
+		node_public_key: Option<MixPublicKey>,
+	) {
 		if let Some(id) = local_id {
-			self.local_id = id; 
+			self.local_id = id;
 		}
 		if let Some(key) = node_public_key {
-			self.routing_table.public_key = key; 
+			self.routing_table.public_key = key;
 		}
 	}
 

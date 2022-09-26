@@ -60,6 +60,10 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 /// TODO in conf
 pub const TRY_RECONNECT_MS: usize = 5_000;
 
+/// Attempt reconnect every nb attempt to try reconnect.
+/// This apply twice less for peer above a given threshold.
+pub const TRY_RECONNECT_DYN_NB: usize = 3;
+
 /// Size of a mixnet packet.
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
@@ -226,6 +230,12 @@ impl QueuedPacket {
 	}
 }
 
+#[derive(Default)]
+struct DisconnectedPeer {
+	handshaken: Option<NetworkId>,
+	next_reconnect_attempt: usize,
+}
+
 /// Mixnet core. Mixes messages, tracks fragments and delays.
 pub struct Mixnet<T, C> {
 	pub topology: T,
@@ -239,7 +249,7 @@ pub struct Mixnet<T, C> {
 	handshaken_peers: HashMap<MixnetId, NetworkId>,
 	// TODO ttl map this and clean connected somehow
 	// TODO consider removal
-	disconnected_handshaken_peers: HashMap<MixnetId, NetworkId>,
+	disconnected_peers: HashMap<MixnetId, DisconnectedPeer>,
 	// Incomplete incoming message fragments.
 	fragments: fragment::MessageCollection,
 	// Message waiting for surb.
@@ -342,7 +352,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			connected_peers: Default::default(),
 			peer_counts: Default::default(),
 			handshaken_peers: Default::default(),
-			disconnected_handshaken_peers: Default::default(),
+			disconnected_peers: Default::default(),
 			pending_events: Default::default(),
 			forward_unconnected_message_queue,
 			keep_handshaken_disconnected_address: config.keep_handshaken_disconnected_address,
@@ -680,7 +690,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			self.handshaken_peers.remove(&mix_id);
 			self.topology.disconnected(&mix_id);
 			if self.keep_handshaken_disconnected_address {
-				self.disconnected_handshaken_peers.insert(mix_id, *id);
+				self.disconnected_peers.insert(
+					mix_id,
+					DisconnectedPeer {
+						handshaken: Some(*id),
+						next_reconnect_attempt: TRY_RECONNECT_DYN_NB,
+					},
+				);
 			}
 			Some(mix_id)
 		} else {
@@ -792,8 +808,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					} else {
 						maybe_net_id = Some(*net_id);
 					}
-				} else if let Some(net_id) = self.disconnected_handshaken_peers.remove(&peer_id) {
-					maybe_net_id = Some(net_id);
+				} else if let Some(net_id) = self.disconnected_peers.get(&peer_id) {
+					maybe_net_id = net_id.handshaken.clone();
 				}
 				log::trace!(target: "mixnet", "try connect {:?} -> {:?} - {:?}", self.local_id, peer_id, maybe_net_id.is_some());
 				try_connect.push((peer_id, maybe_net_id));
@@ -818,13 +834,31 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					break
 				}
 				if !self.handshaken_peers.contains_key(peer) {
-					let network_id = self.disconnected_handshaken_peers.get(peer);
-					try_connect.push((*peer, network_id.copied()));
+					let disco_peer = self.disconnected_peers.get(peer);
+					try_connect.push((*peer, disco_peer.and_then(|peer| peer.handshaken.clone())));
 				}
 			}
 		} else {
-			// TODO some params on number. Also should not be always the very first, but always
-			// more prior than already connected if enough con
+			// try connect more
+			for (i, peer) in peers.iter().enumerate() {
+				if i > number {
+					if try_connect.len() >= number - already_connected {
+						// this means that peers late in should connect
+						// will see their connection attempt not decrease.
+						// Could be parameterized for a less steep curve.
+						break
+					}
+				}
+				if !self.handshaken_peers.contains_key(peer) {
+					let disco_peer = self.disconnected_peers.entry(*peer).or_default();
+					if disco_peer.next_reconnect_attempt == 0 {
+						try_connect.push((*peer, disco_peer.handshaken.clone()));
+						disco_peer.next_reconnect_attempt = TRY_RECONNECT_DYN_NB;
+					} else {
+						disco_peer.next_reconnect_attempt -= 1;
+					}
+				}
+			}
 		};
 
 		if !try_connect.is_empty() {
@@ -914,6 +948,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						self.topology.connected(*sphinx_id, key);
 						self.topology.peer_stats(&self.peer_counts);
+						self.disconnected_peers.remove(sphinx_id);
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
 					}
 
