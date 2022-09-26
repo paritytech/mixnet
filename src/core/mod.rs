@@ -575,8 +575,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		Ok(())
 	}
 
-	/// Change of globablly allowed peer to be in routing set.
-	pub fn new_global_routing_set(&mut self, set: Vec<(MixnetId, MixPublicKey)>) {
+	/// Change of globably allowed peer to be in routing set.
+	pub fn new_global_routing_set(&mut self, set: &[(MixnetId, MixPublicKey)]) {
 		self.topology.handle_new_routing_set(NewRoutingSet { peers: &set })
 	}
 

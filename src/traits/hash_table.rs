@@ -477,6 +477,17 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
+	/// Change ids.
+	/// TODO this should be part of handle_new_routing_set on trait
+	pub fn change_local(&mut self, local_id: Option<MixnetId>, node_public_key: Option<MixPublicKey>) {
+		if let Some(id) = local_id {
+			self.local_id = id; 
+		}
+		if let Some(key) = node_public_key {
+			self.routing_table.public_key = key; 
+		}
+	}
+
 	fn has_enough_nodes_to_send(&self) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			self.routing_peers

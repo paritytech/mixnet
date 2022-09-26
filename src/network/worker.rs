@@ -155,7 +155,7 @@ impl<T: Configuration> MixnetWorker<T> {
 					true
 				},
 				Command::NewGlobalRoutingSet(set) => {
-					self.mixnet.new_global_routing_set(set);
+					self.mixnet.new_global_routing_set(&set[..]);
 					true
 				},
 				Command::AddPeer(peer, inbound, outbound, close_handler) => {

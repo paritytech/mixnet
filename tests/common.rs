@@ -320,8 +320,8 @@ pub fn spawn_swarms<T: Configuration>(
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::Disconnected(
-						peer_id,
-						omix_id,
+						network_id,
+						mix_id,
 						try_reco,
 					)) => {
 						// when keep_connection_alive is true TODO factor the decrease and increase
@@ -331,7 +331,7 @@ pub fn spawn_swarms<T: Configuration>(
 						if count_connected && !expect_all_connected {
 							// non expected connection will disconnect peer, count it
 							// as negotiated connection.
-							handshake_done.insert(peer_id);
+							handshake_done.insert(network_id);
 
 							if Some(handshake_done.len()) == target_peers {
 								expect_all_connected = false;
@@ -345,25 +345,25 @@ pub fn spawn_swarms<T: Configuration>(
 							}
 						}
 						if try_reco {
-							if let Some(mix_id) = omix_id {
+							if let Some(mix_id) = mix_id {
 								next_event = Some(SwarmEvent::Behaviour(
-									mixnet::MixnetEvent::TryConnect(mix_id, Some(peer_id)),
+									mixnet::MixnetEvent::TryConnect(mix_id, Some(network_id)),
 								));
 							}
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::MixnetEvent::TryConnect(
-						peer_id,
-						o_network_id,
+						mix_id,
+						network_id,
 					)) =>
-						if let Some(network_id) = o_network_id {
-							log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+						if let Some(network_id) = network_id {
+							log::trace!(target: "mixnet_test", "Dialing to {:?}", mix_id);
 							if let Err(e) = swarm.dial(network_id) {
 								log::trace!(target: "mixnet_test", "Dialing fail with id only {:?}", e);
 							}
-						} else if let Some((network_id, p)) = peer_ids.get(&peer_id) {
+						} else if let Some((network_id, p)) = peer_ids.get(&mix_id) {
 							if inital_connection.load(std::sync::atomic::Ordering::Relaxed) {
-								log::trace!(target: "mixnet_test", "Dialing to {:?}", peer_id);
+								log::trace!(target: "mixnet_test", "Dialing to {:?}", mix_id);
 								let e = swarm.dial(*network_id);
 								if let Err(DialError::NoAddresses) = e {
 									if let Some(address) = addresses.read()[*p].as_ref() {
