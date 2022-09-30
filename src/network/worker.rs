@@ -22,10 +22,10 @@
 //! a worker allows sending the process to a queue instead of runing it directly.
 
 use crate::{
-	core::{Config, MixEvent, MixPublicKey, Mixnet, SurbsPayload},
+	core::{Config, MixPublicKey, Mixnet, MixnetEvent, SurbsPayload},
 	network::connection::Connection,
 	traits::Configuration,
-	MixnetEvent, MixnetId, NetworkId, SendOptions,
+	MixnetId, MixnetToBehaviorEvent, NetworkId, SendOptions,
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
@@ -35,7 +35,7 @@ use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
 
 pub type WorkerStream = Box<dyn Stream<Item = WorkerCommand> + Unpin + Send>;
-pub type WorkerSink = Box<dyn Sink<MixnetEvent, Error = SendError> + Unpin + Send>;
+pub(crate) type WorkerSink = Box<dyn Sink<MixnetToBehaviorEvent, Error = SendError> + Unpin + Send>;
 
 /// Opaque worker command.
 pub struct WorkerCommand(pub(crate) Command);
@@ -86,51 +86,28 @@ impl<T: Configuration> MixnetWorker<T> {
 	}
 
 	/// Return false on shutdown.
-	pub fn poll(&mut self, cx: &mut Context) -> Poll<bool> {
-		if self.hits == 0 {
-			self.hits = self.budget;
-			cx.waker().wake_by_ref();
-			return Poll::Pending
-		}
+	pub fn poll(&mut self, cx: &mut Context) -> Poll<MixnetEvent> {
+		loop {
+			// TODO this hits could probably be removed or make local
+			if self.hits == 0 {
+				self.hits = self.budget;
+				cx.waker().wake_by_ref();
+				return Poll::Pending
+			}
 
-		if let Poll::Ready(event) = self.worker_in.poll_next_unpin(cx) {
-			// consumming worker command first TODO select version makes all slower
-			return Poll::Ready(self.on_command(event))
-		}
-		let result =
-			self.mixnet.poll(cx, &mut self.worker_out).map(|mixnet| self.on_mixnet(mixnet));
+			if let Poll::Ready(event) = self.worker_in.poll_next_unpin(cx) {
+				if !self.on_command(event) {
+					return Poll::Ready(MixnetEvent::Shutdown)
+				}
+			}
+			match self.mixnet.poll(cx) {
+				Poll::Pending => return Poll::Pending,
+				Poll::Ready(MixnetEvent::None) => (),
+				Poll::Ready(event) => return Poll::Ready(event),
+			}
 
-		if result == Poll::Ready(true) {
 			self.hits -= 1;
-		} else {
-			self.hits = self.budget;
 		}
-		result
-	}
-
-	fn on_mixnet(&mut self, result: MixEvent) -> bool {
-		match result {
-			MixEvent::None => (),
-			MixEvent::Disconnected(peers) =>
-				for (net_id, peer_id, try_reco) in peers {
-					if let Err(e) = self
-						.worker_out
-						.start_send_unpin(MixnetEvent::Disconnected(net_id, peer_id, try_reco))
-					{
-						log::error!(target: "mixnet", "Error sending full message to channel: {:?}, {:?}", e, self.mixnet.local_id());
-						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-					}
-				},
-			MixEvent::TryConnect(peers) =>
-				for (peer_id, net_id) in peers {
-					if let Err(e) =
-						self.worker_out.start_send_unpin(MixnetEvent::TryConnect(peer_id, net_id))
-					{
-						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-					}
-				},
-		}
-		true
 	}
 
 	fn on_command(&mut self, result: Option<WorkerCommand>) -> bool {
@@ -190,10 +167,8 @@ impl<T: Configuration> MixnetWorker<T> {
 
 	fn disconnect_peer(&mut self, peer: &NetworkId) {
 		log::trace!(target: "mixnet", "Disconnecting peer {:?}", peer);
-		let peer_id = self.mixnet.remove_connected_peer(peer);
-		if let Err(e) = self
-			.worker_out
-			.start_send_unpin(MixnetEvent::Disconnected(*peer, peer_id, false))
+		let _ = self.mixnet.remove_connected_peer(peer, true);
+		if let Err(e) = self.worker_out.start_send_unpin(MixnetToBehaviorEvent::Disconnected(*peer))
 		{
 			log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
 		}

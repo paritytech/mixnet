@@ -157,17 +157,23 @@ fn test_messages(conf: TestConfig) {
 		NotDistributed { inner }
 	};
 
-	let (handles, mut with_swarm_channels, _) = common::spawn_swarms(
+	let (handles, _) = common::spawn_swarms(
 		num_peers,
 		from_external,
 		&executor,
-		expect_all_connected,
 		&mut rng,
 		&config_proto,
 		make_topo,
 	);
 
-	let nodes = common::spawn_workers::<NotDistributed>(handles, &executor, single_thread);
+	let (nodes, mut with_swarm_channels) = common::spawn_workers::<NotDistributed>(
+		num_peers,
+		from_external,
+		expect_all_connected,
+		handles,
+		&executor,
+		single_thread,
+	);
 
 	log::trace!(target: "mixnet_test", "before waiting connections");
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
@@ -340,11 +346,10 @@ fn test_change_routing_set(conf: TestConfig) {
 		NotDistributed { inner }
 	};
 
-	let (handles, mut with_swarm_channels, initial_con) = common::spawn_swarms(
+	let (handles, initial_con) = common::spawn_swarms(
 		num_peers,
 		from_external,
 		&executor,
-		expect_all_connected,
 		&mut rng,
 		&config_proto,
 		make_topo,
@@ -352,10 +357,17 @@ fn test_change_routing_set(conf: TestConfig) {
 
 	let nodes_ids: Vec<_> = handles
 		.iter()
-		.map(|worker| (*worker.mixnet().local_id(), *worker.mixnet().public_key()))
+		.map(|worker| (*worker.0.mixnet().local_id(), *worker.0.mixnet().public_key()))
 		.collect();
 
-	let nodes = common::spawn_workers::<NotDistributed>(handles, &executor, single_thread);
+	let (nodes, mut with_swarm_channels) = common::spawn_workers::<NotDistributed>(
+		num_peers,
+		from_external,
+		expect_all_connected,
+		handles,
+		&executor,
+		single_thread,
+	);
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");

@@ -352,17 +352,23 @@ fn test_messages(conf: TestConfig) {
 		ConfigGraph { inner: handshake }
 	};
 
-	let (handles, mut with_swarm_channels, _) = common::spawn_swarms(
+	let (handles, _) = common::spawn_swarms(
 		num_peers,
 		from_external,
 		&executor,
-		expect_all_connected,
 		&mut rng,
 		&config_proto,
 		make_topo,
 	);
 
-	let nodes = common::spawn_workers::<ConfigGraph>(handles, &executor, single_thread);
+	let (nodes, mut with_swarm_channels) = common::spawn_workers::<ConfigGraph>(
+		num_peers,
+		from_external,
+		expect_all_connected,
+		handles,
+		&executor,
+		single_thread,
+	);
 
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 

@@ -27,11 +27,11 @@ mod handler;
 mod protocol;
 mod worker;
 
-pub(crate) use crate::network::worker::Command;
-pub use crate::network::worker::{WorkerCommand, WorkerSink as WorkerSink2};
+pub use crate::network::worker::WorkerCommand;
+pub(crate) use crate::network::worker::{Command, WorkerSink as WorkerToBehaviourSink};
 use crate::{
-	core::SurbsPayload, traits::ClonableSink, MixPublicKey, MixnetEvent, MixnetId, NetworkId,
-	SendOptions,
+	core::SurbsPayload, traits::ClonableSink, MixPublicKey, MixnetId, MixnetToBehaviorEvent,
+	NetworkId, SendOptions,
 };
 use futures::{SinkExt, Stream, StreamExt};
 use handler::Handler;
@@ -46,9 +46,9 @@ use std::{
 };
 pub use worker::MixnetWorker;
 
-pub type StreamFromWorker = Box<dyn Stream<Item = MixnetEvent> + Unpin + Send>;
+pub type StreamFromWorker = Box<dyn Stream<Item = MixnetToBehaviorEvent> + Unpin + Send>;
 pub type SinkToWorker = Box<dyn ClonableSink>;
-pub type WorkerChannels = (WorkerSink2, worker::WorkerStream);
+pub type WorkerChannels = (WorkerToBehaviourSink, worker::WorkerStream);
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct MixnetBehaviour {
@@ -58,7 +58,6 @@ pub struct MixnetBehaviour {
 	connected: HashMap<NetworkId, ConnectionId>,
 	// connection handler notify queue
 	notify_queue: VecDeque<(NetworkId, ConnectionId)>,
-	queued_event: VecDeque<MixnetEvent>,
 }
 
 impl MixnetBehaviour {
@@ -68,7 +67,6 @@ impl MixnetBehaviour {
 			mixnet_worker_sink: worker_in,
 			mixnet_worker_stream: worker_out,
 			notify_queue: Default::default(),
-			queued_event: Default::default(),
 			connected: Default::default(),
 		}
 	}
@@ -128,9 +126,19 @@ impl MixnetCommandSink {
 	}
 }
 
+pub enum BehaviourEvent {
+	/// Handle of a stream or channel was dropped,
+	/// this behavior and worker cannot be use properly
+	/// anymore.
+	CloseStream,
+
+	/// Can ignore.
+	None,
+}
+
 impl NetworkBehaviour for MixnetBehaviour {
 	type ConnectionHandler = Handler;
-	type OutEvent = MixnetEvent;
+	type OutEvent = BehaviourEvent;
 
 	fn new_handler(&mut self) -> Self::ConnectionHandler {
 		Handler::new(handler::Config::default(), dyn_clone::clone_box(&*self.mixnet_worker_sink))
@@ -185,10 +193,6 @@ impl NetworkBehaviour for MixnetBehaviour {
 		cx: &mut Context,
 		_params: &mut impl PollParameters,
 	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
-		if let Some(event) = self.queued_event.pop_front() {
-			return Poll::Ready(NetworkBehaviourAction::GenerateEvent(event))
-		}
-
 		if let Some((id, connection)) = self.notify_queue.pop_front() {
 			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
 				peer_id: id,
@@ -199,32 +203,19 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 		match self.mixnet_worker_stream.poll_next_unpin(cx) {
 			Poll::Ready(Some(out)) => match out {
-				MixnetEvent::TryConnect(mixnet_id, Some(network_id)) =>
-					Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(
-						mixnet_id,
-						Some(network_id),
-					))),
-				MixnetEvent::TryConnect(mixnet_id, None) => Poll::Ready(
-					NetworkBehaviourAction::GenerateEvent(MixnetEvent::TryConnect(mixnet_id, None)),
-				),
-				MixnetEvent::Disconnected(network_id, mixnet_id, try_reco) => {
+				MixnetToBehaviorEvent::Disconnected(network_id) => {
 					if let Some(con_id) = self.connected.remove(&network_id) {
-						self.queued_event
-							.push_back(MixnetEvent::Disconnected(network_id, mixnet_id, try_reco));
 						Poll::Ready(NetworkBehaviourAction::CloseConnection {
 							peer_id: network_id,
 							connection: CloseConnection::One(con_id),
 						})
 					} else {
-						Poll::Ready(NetworkBehaviourAction::GenerateEvent(
-							MixnetEvent::Disconnected(network_id, mixnet_id, try_reco),
-						))
+						Poll::Ready(NetworkBehaviourAction::GenerateEvent(BehaviourEvent::None))
 					}
 				},
-				e => Poll::Ready(NetworkBehaviourAction::GenerateEvent(e)),
 			},
 			Poll::Ready(None) =>
-				Poll::Ready(NetworkBehaviourAction::GenerateEvent(MixnetEvent::CloseStream)),
+				Poll::Ready(NetworkBehaviourAction::GenerateEvent(BehaviourEvent::CloseStream)),
 			Poll::Pending => Poll::Pending,
 		}
 	}

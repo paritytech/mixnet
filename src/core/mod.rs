@@ -31,11 +31,11 @@ pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
 use crate::{
 	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection, NewRoutingSet, ShouldConnectTo},
-	DecodedMessage, MessageType, MixnetEvent, MixnetId, NetworkId, SendOptions, WorkerSink2,
+	DecodedMessage, MessageType, MixnetId, NetworkId, SendOptions,
 };
 pub use config::Config;
 pub use error::Error;
-use futures::{FutureExt, SinkExt};
+use futures::FutureExt;
 use futures_timer::Delay;
 use rand::{CryptoRng, Rng};
 use rand_distr::Distribution;
@@ -143,9 +143,15 @@ impl Packet {
 	}
 }
 
-pub enum MixEvent {
+pub enum MixnetEvent {
+	/// A new peer has connected and handshake.
+	Connected(NetworkId, MixPublicKey),
 	Disconnected(Vec<(NetworkId, Option<MixnetId>, bool)>),
 	TryConnect(Vec<(MixnetId, Option<NetworkId>)>),
+	/// A message has reached us.
+	Message(DecodedMessage),
+	/// Shutdown signal.
+	Shutdown,
 	None,
 }
 
@@ -274,7 +280,7 @@ pub struct Mixnet<T, C> {
 
 	forward_unconnected_message_queue: Option<QueuedUnconnectedPackets>,
 
-	pending_events: VecDeque<MixEvent>,
+	pending_events: VecDeque<MixnetEvent>,
 
 	/// try to connect to better peers or unconnected peers every N windows.
 	try_reconnect_every: usize,
@@ -399,7 +405,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	pub fn insert_connection(&mut self, peer: NetworkId, connection: C) {
-		if let Some(peer_id) = self.remove_connected_peer(&peer) {
+		if let Some(peer_id) = self.remove_connected_peer(&peer, false) {
 			log::warn!(target: "mixnet", "Removing old connection with {:?}, on handshake restart", peer_id);
 		}
 		let connection = ManagedConnection::new(
@@ -682,11 +688,21 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	}
 
 	/// Should be called when a peer is disconnected.
-	pub fn remove_connected_peer(&mut self, id: &NetworkId) -> Option<MixnetId> {
-		if let Some(mix_id) = self.connected_peers.remove(id).and_then(|mut c| {
+	pub fn remove_connected_peer(&mut self, id: &NetworkId, with_event: bool) -> Option<MixnetId> {
+		let mix_id = self.connected_peers.remove(id).and_then(|mut c| {
 			self.peer_counts.remove_peer(c.disconnected_kind());
 			c.mixnet_id().cloned()
-		}) {
+		});
+
+		if with_event {
+			self.pending_events.push_back(MixnetEvent::Disconnected(vec![(
+				*id,
+				mix_id.clone(),
+				false,
+			)]));
+		}
+
+		if let Some(mix_id) = mix_id {
 			self.handshaken_peers.remove(&mix_id);
 			self.topology.disconnected(&mix_id);
 			if self.keep_handshaken_disconnected_address {
@@ -815,7 +831,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				try_connect.push((peer_id, maybe_net_id));
 			}
 			if !try_connect.is_empty() {
-				self.pending_events.push_back(MixEvent::TryConnect(try_connect));
+				self.pending_events.push_back(MixnetEvent::TryConnect(try_connect));
 			}
 		}
 	}
@@ -862,17 +878,17 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		};
 
 		if !try_connect.is_empty() {
-			self.pending_events.push_back(MixEvent::TryConnect(try_connect));
+			self.pending_events.push_back(MixnetEvent::TryConnect(try_connect));
 		}
 	}
 
 	// Poll for new messages to send over the wire.
-	pub fn poll(&mut self, cx: &mut Context<'_>, results: &mut WorkerSink2) -> Poll<MixEvent> {
-		self.try_apply_topology_change();
+	pub(crate) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixnetEvent> {
 		if let Some(event) = self.pending_events.pop_front() {
 			return Poll::Ready(event)
 		}
 
+		self.try_apply_topology_change();
 		let mut try_reconnect = false;
 
 		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
@@ -952,11 +968,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
 					}
 
-					if let Err(e) = results
-						.start_send_unpin(MixnetEvent::Connected(connection.network_id(), key))
-					{
-						log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-					}
+					self.pending_events
+						.push_back(MixnetEvent::Connected(connection.network_id(), key));
 				},
 				Poll::Ready(ConnectionEvent::Broken(mixnet_id)) => {
 					let ShouldConnectTo { peers: _, number: _, is_static } =
@@ -990,7 +1003,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		for (peer, (packet, external)) in recv_packets {
-			if !self.import_packet(peer, packet, results) {
+			if !self.import_packet(peer, packet) {
 				// warning this only indicate a peer send wrong packet, but cannot presume
 				// who (can be external).
 				log::trace!(target: "mixnet", "Error importing packet, wrong format.");
@@ -1011,32 +1024,27 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		if !disconnected.is_empty() {
 			for (peer, from, retry) in disconnected.iter() {
 				log::trace!(target: "mixnet", "Disconnecting peer {:?} from {:?}, retry {:?}", from, self.local_id, retry);
-				self.remove_connected_peer(peer);
+				self.remove_connected_peer(peer, false);
 			}
 
-			return Poll::Ready(MixEvent::Disconnected(disconnected))
+			return Poll::Ready(MixnetEvent::Disconnected(disconnected))
 		}
 
 		if all_pending {
 			Poll::Pending
 		} else {
-			Poll::Ready(MixEvent::None)
+			Poll::Ready(MixnetEvent::None)
 		}
 	}
 
-	fn import_packet(&mut self, peer: MixnetId, packet: Packet, results: &mut WorkerSink2) -> bool {
+	fn import_packet(&mut self, peer: MixnetId, packet: Packet) -> bool {
 		match self.import_message(peer, packet) {
 			Ok(Some((message, kind))) => {
-				if let Err(e) = results.start_send_unpin(MixnetEvent::Message(DecodedMessage {
+				self.pending_events.push_back(MixnetEvent::Message(DecodedMessage {
 					peer,
 					message,
 					kind,
-				})) {
-					log::error!(target: "mixnet", "Error sending full message to channel: {:?}", e);
-					if e.is_disconnected() {
-						return false
-					}
-				}
+				}));
 			},
 			Ok(None) => (),
 			Err(e) => {
