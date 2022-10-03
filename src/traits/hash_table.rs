@@ -92,17 +92,17 @@ pub struct TopologyHashTable<C: Configuration> {
 
 	routing_table: RoutingTable<C::Version>,
 
-	// The connected nodes (for first hop use `rtouting_peers` joined `connected_nodes`).
+	// The connected nodes (for first hop use `routing_peers` joined `connected_nodes`).
 	connected_nodes: HashSet<MixnetId>,
 
-	// All rooting peers are considered connected (when building message except first hop).
-	allowed_routing: BTreeSet<MixnetId>,
+	routing_set: BTreeSet<MixnetId>,
 
 	changed_routing: BTreeSet<MixnetId>,
 
 	try_connect: BTreeMap<MixnetId, Option<NetworkId>>,
 
 	// This is only routing peers we got info for.
+	// Can be redundant with `routing_set`.
 	routing_peers: BTreeMap<MixnetId, RoutingTable<C::Version>>,
 
 	default_num_hop: usize,
@@ -185,7 +185,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		}
 		let mut bad = HashSet::new();
 		loop {
-			debug!(target: "mixnet", "rdest {:?}", (&from, &bad));
+			debug!(target: "mixnet", "Path fo random recipient {:?}", (&from, &bad));
 			if let Some(peer) = self.random_dest(|p| p == from || bad.contains(p)) {
 				debug!(target: "mixnet", "Trying random dest {:?}.", peer);
 				let nb_hop = send_options.num_hop.unwrap_or(self.default_num_hop);
@@ -364,7 +364,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		if &self.local_id == id {
 			self.routing
 		} else {
-			self.allowed_routing.contains(id)
+			self.routing_set.contains(id)
 		}
 	}
 
@@ -464,7 +464,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		};
 		TopologyHashTable {
 			local_id,
-			allowed_routing: BTreeSet::new(),
+			routing_set: BTreeSet::new(),
 			connected_nodes: HashSet::new(),
 			changed_routing: BTreeSet::new(),
 			try_connect: BTreeMap::new(),
@@ -505,7 +505,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 				.count() >= C::LOW_MIXNET_THRESHOLD
 		} else {
 			// all nodes are seen as live.
-			self.allowed_routing.len() >= C::LOW_MIXNET_THRESHOLD
+			self.routing_set.len() >= C::LOW_MIXNET_THRESHOLD
 		}
 	}
 
@@ -615,13 +615,13 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 		// all previously allowed will see their routing change.
 		let mut prev =
-			std::mem::replace(&mut self.changed_routing, std::mem::take(&mut self.allowed_routing));
+			std::mem::replace(&mut self.changed_routing, std::mem::take(&mut self.routing_set));
 		self.changed_routing.append(&mut prev);
 		self.routing_peers.clear();
 		self.routing = false;
 
 		for peer_id in set {
-			self.allowed_routing.insert(*peer_id);
+			self.routing_set.insert(*peer_id);
 			if &self.local_id == peer_id {
 				debug!(target: "mixnet", "In new routing set, routing.");
 				self.routing = true;
@@ -659,8 +659,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 	) {
 		assert!(C::DISTRIBUTE_ROUTES);
 		self.handle_new_routing_set_start(set.iter(), new_self);
-		self.should_connect_to =
-			should_connect_to(&self.local_id, &self.allowed_routing, usize::MAX);
+		self.should_connect_to = should_connect_to(&self.local_id, &self.routing_set, usize::MAX);
 		for (index, id) in self.should_connect_to.iter().enumerate() {
 			self.should_connect_pending.insert(*id, (index, true));
 		}
@@ -745,7 +744,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 					id,
 					public_key,
 					Some(&self.routing_table),
-					&self.allowed_routing,
+					&self.routing_set,
 					&mut self.should_connect_to,
 				) {
 					// TODO could also add receive_from.
@@ -764,7 +763,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 					id,
 					public_key,
 					past,
-					&self.allowed_routing,
+					&self.routing_set,
 					&mut self.should_connect_to,
 				) {
 					self.routing_peers.insert(*id, table);
@@ -774,7 +773,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			}
 		}
 
-		for id in self.allowed_routing.iter() {
+		for id in self.routing_set.iter() {
 			if id == &self.local_id {
 				if let Some(from) = Self::refresh_connection_table_from(
 					id,
@@ -803,11 +802,10 @@ impl<C: Configuration> TopologyHashTable<C> {
 		from: &MixnetId,
 		from_key: &MixPublicKey,
 		past: Option<&RoutingTable<C::Version>>,
-		allowed_routing: &BTreeSet<MixnetId>,
+		routing_set: &BTreeSet<MixnetId>,
 		should_connect_to_dest: &mut Vec<MixnetId>,
 	) -> Option<RoutingTable<C::Version>> {
-		*should_connect_to_dest =
-			should_connect_to(from, allowed_routing, C::NUMBER_CONNECTED_FORWARD);
+		*should_connect_to_dest = should_connect_to(from, routing_set, C::NUMBER_CONNECTED_FORWARD);
 		let mut routing_table = RoutingTable {
 			public_key: *from_key,
 			version: Default::default(), // No version when refreshing from peer set only
@@ -925,13 +923,13 @@ fn paths_mem_size(
 
 fn should_connect_to(
 	from: &MixnetId,
-	allowed_routing: &BTreeSet<MixnetId>,
+	routing_set: &BTreeSet<MixnetId>,
 	nb: usize,
 ) -> Vec<MixnetId> {
 	// TODO cache common seed when all got init
 	// or/and have something faster
 	let mut common_seed = [0u8; 32];
-	for id in allowed_routing.iter() {
+	for id in routing_set.iter() {
 		let hash = crate::core::hash(id);
 		for i in 0..32 {
 			common_seed[i] ^= hash[i];
@@ -942,7 +940,7 @@ fn should_connect_to(
 		hash[i] ^= common_seed[i];
 	}
 
-	let mut allowed: Vec<_> = allowed_routing.iter().filter(|a| a != &from).collect();
+	let mut allowed: Vec<_> = routing_set.iter().filter(|a| a != &from).collect();
 	let mut nb_allowed = allowed.len();
 	let mut result = Vec::with_capacity(std::cmp::min(nb, nb_allowed));
 	let mut cursor = 0;
@@ -1120,68 +1118,116 @@ fn count_paths(
 	total
 }
 
-#[test]
-fn test_fill_paths() {
-	/*let nb_peers: u16 = 1000;
-	let nb_forward = 10;
-	let depth = 5;*/
-	let nb_peers: u16 = 5;
-	let nb_forward = 3;
-	let depth = 4;
+#[cfg(test)]
+mod test {
+	use super::*;
 
-	let peers: Vec<[u8; 32]> = (0..nb_peers)
-		.map(|i| {
-			let mut id = [0u8; 32];
-			id[0] = (i % 8) as u8;
-			id[1] = (i / 8) as u8;
-			id
-		})
-		.collect();
-	let local_id = [255u8; 32];
-	let allowed_routing: BTreeSet<_> =
-		peers.iter().chain(std::iter::once(&local_id)).cloned().collect();
-
-	let mut from_to: HashMap<MixnetId, Vec<MixnetId>> = Default::default();
-	for p in peers.iter().chain(std::iter::once(&local_id)) {
-		let tos = should_connect_to(p, &allowed_routing, nb_forward);
-		from_to.insert(*p, tos);
+	#[derive(Debug, Clone, Copy)]
+	struct TestFillConf {
+		nb_peers: u16,
+		nb_disco: u16,
+		nb_forward: usize,
+		depth: usize,
 	}
-	let mut to_from: HashMap<MixnetId, Vec<MixnetId>> = Default::default();
-	//	let from_to2: BTreeMap<_, _> = from_to.iter().map(|(k, v)|(k.clone(), v.clone())).collect();
-	for (from, tos) in from_to.iter() {
-		for to in tos.iter() {
-			to_from.entry(*to).or_default().push(*from);
+
+	#[derive(Debug)]
+	struct TestFillResult {
+		average_number_connection: f64,
+		number_reachable: usize,
+		reachable_ratio: f64,
+	}
+
+	#[test]
+	fn test_fill_paths() {
+		let targets_single_layer = vec![(1000, 0, 10, 5, 5), (5, 0, 3, 4, 0)];
+		for i in targets_single_layer {
+			let conf = TestFillConf { nb_peers: i.0, nb_disco: i.1, nb_forward: i.2, depth: i.3 };
+			let percent_margin = i.4 as f64;
+			let percent_margin = (100.0 - percent_margin) / 100.0;
+			let result = test_all_accessible(conf);
+			println!("{:?} for {:?}", result, conf);
+			assert!(result.reachable_ratio >= percent_margin);
+			assert!(result.average_number_connection >= conf.nb_forward as f64 * percent_margin);
 		}
+		//	panic!("to print");
 	}
-	//		let from_to = from_to.clone();
-	//		let to_from = to_from.clone();
-	let mut paths = BTreeMap::new();
-	let paths_depth = 0;
-	fill_paths_inner(to_from, &mut paths, paths_depth, depth);
-	//	println!("{:?}", paths);
-	println!("size {:?}", paths_mem_size(&paths));
 
-	// there is a path but cycle on 0 (depth 4)
-	//	assert!(random_path(&paths, &peers[0], &peers[1], depth).is_none());
-	let nb_path = count_paths(&paths, &local_id, &peers[1], depth);
-	println!("nb_path {:?}", nb_path);
-	let path = random_path(&paths, &local_id, &peers[1], depth);
-	if path.is_none() {
-		assert_eq!(nb_path, 0);
-	}
-	println!("{:?}", path);
-	let mut nb_reachable = 0;
-	let mut med_nb_con = 0;
-	for i in 1..nb_peers as usize {
-		let path = random_path(&paths, &peers[0], &peers[i], depth);
-		if path.is_some() {
-			nb_reachable += 1;
+	fn test_all_accessible(conf: TestFillConf) -> TestFillResult {
+		let TestFillConf { nb_peers, nb_disco, nb_forward, depth } = conf;
+		let peers: Vec<[u8; 32]> = (0..nb_peers)
+			.map(|i| {
+				let mut id = [0u8; 32];
+				id[0] = (i % 8) as u8;
+				id[1] = (i / 8) as u8;
+				id
+			})
+			.collect();
+		let disco: HashSet<[u8; 32]> = peers[..nb_disco as usize].iter().cloned().collect();
+		let local_id = [255u8; 32];
+		let routing_set: BTreeSet<_> =
+			peers.iter().chain(std::iter::once(&local_id)).cloned().collect();
+
+		let mut from_to: HashMap<MixnetId, Vec<MixnetId>> = Default::default();
+		for p in peers[nb_disco as usize..].iter().chain(std::iter::once(&local_id)) {
+			let tos = should_connect_to(p, &routing_set, nb_forward);
+			let tos = if disco.len() > 0 {
+				tos.into_iter().filter(|t| !disco.contains(t)).collect()
+			} else {
+				tos
+			};
+			from_to.insert(*p, tos);
 		}
-		let nb_path = count_paths(&paths, &peers[0], &peers[i], depth);
-		med_nb_con += nb_path;
+		let mut to_from: HashMap<MixnetId, Vec<MixnetId>> = Default::default();
+		for (from, tos) in from_to.iter() {
+			for to in tos.iter() {
+				to_from.entry(*to).or_default().push(*from);
+			}
+		}
+		let mut paths = BTreeMap::new();
+		let paths_depth = 0;
+		fill_paths_inner(to_from, &mut paths, paths_depth, depth);
+		println!("size {:?}", paths_mem_size(&paths));
+
+		let nb_path = count_paths(&paths, &local_id, peers.last().unwrap(), depth);
+		println!("nb_path {:?}", nb_path);
+		let path = random_path(&paths, &local_id, peers.last().unwrap(), depth);
+		if path.is_none() {
+			assert_eq!(nb_path, 0);
+		}
+		//println!("{:?}", path);
+		let mut number_reachable = 0;
+		let mut med_nb_con = 0;
+		for i in nb_disco as usize..(nb_peers - 1) as usize {
+			let path = random_path(&paths, peers.last().unwrap(), &peers[i], depth);
+			if path.is_some() {
+				number_reachable += 1;
+			}
+			let nb_path = count_paths(&paths, peers.last().unwrap(), &peers[i], depth);
+			med_nb_con += nb_path;
+		}
+		let average_number_connection = med_nb_con as f64 / (nb_peers as f64 - 1.0);
+		let reachable_ratio = number_reachable as f64 / (nb_peers as f64 - 1.0);
+		TestFillResult { average_number_connection, reachable_ratio, number_reachable }
 	}
-	let med_nb_con = med_nb_con as f64 / (nb_peers as f64 - 1.0);
-	let reachable = nb_reachable as f64 / (nb_peers as f64 - 1.0);
-	println!("Reachable {:?}, Med nb {:?}", reachable, med_nb_con);
-	//	panic!("to print");
+
+	// should have some command line checkers.
+	#[test]
+	fn launch_find_limit() {
+		let percent_margin = 10f64;
+		let percent_disco = 5f64;
+		let mut conf = TestFillConf { nb_peers: 0, nb_disco: 0, nb_forward: 5, depth: 4 };
+		for nb_peers in &[5, 10, 20, 40, 80] {
+			conf.nb_peers = *nb_peers;
+			conf.nb_disco = (conf.nb_peers as f64 * percent_disco / 100.0) as u16;
+			let percent_margin = (100.0 - percent_margin) / 100.0;
+			let result = test_all_accessible(conf);
+
+			let left = result.reachable_ratio >= percent_margin;
+			//let right = result.average_number_connection >= conf.nb_forward as f64 *
+			// percent_margin;
+			let right = true;
+			println!("{:} - {:?} -> {:?}", left && right, conf, result);
+		}
+		panic!("disp");
+	}
 }
