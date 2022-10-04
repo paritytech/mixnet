@@ -71,6 +71,7 @@ pub trait Topology: Sized {
 		&self,
 		_from: &MixnetId,
 		_to: &MixnetId,
+		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)>;
 
 	/// Check if a peer is in topology, do not need to be connected.
@@ -216,6 +217,7 @@ impl Topology for NoTopology {
 		&self,
 		_from: &MixnetId,
 		_to: &MixnetId,
+		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)> {
 		Vec::new()
 	}

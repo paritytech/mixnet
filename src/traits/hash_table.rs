@@ -99,7 +99,8 @@ impl TableVersion for () {
 pub struct TopologyHashTable<C: Configuration> {
 	local_id: MixnetId,
 
-	// TODO this do not need to be stored
+	// if routing it is routing node, if consumer, we should only connect to this
+	// layer index peers.
 	local_layer_ix: u8,
 
 	// true when we are in routing set.
@@ -177,15 +178,23 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		&self,
 		from: &MixnetId,
 		to: &MixnetId,
+		num_hops: usize,
 	) -> Vec<(MixnetId, MixPublicKey)> {
+		let routing_set = if self.layered_routing_set.is_empty() {
+			&self.routing_set
+		} else {
+			let dest_ix =
+				layer_dest(self.local_layer_ix as usize, self.layered_routing_set.len(), num_hops);
+			&self.layered_routing_set[dest_ix]
+		};
 		// allow for all
-		self.routing_peers
+		routing_set
 			.iter()
-			.filter(|(id, _key)| from != *id)
-			.filter(|(id, _key)| to != *id)
-			.filter(|(id, _key)| &self.local_id != *id)
-			.filter(|(id, _key)| self.connected_nodes.contains(*id))
-			.map(|(k, table)| (*k, table.public_key))
+			.filter(|id| from != *id)
+			.filter(|id| to != *id)
+			.filter(|id| &self.local_id != *id)
+			.filter(|id| self.connected_nodes.contains(*id))
+			.filter_map(|k| self.routing_peers.get(k).map(|table| (*k, table.public_key)))
 			.collect()
 	}
 
@@ -207,9 +216,9 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		let mut bad = HashSet::new();
 		loop {
 			debug!(target: "mixnet", "Path fo random recipient {:?}", (&from, &bad));
-			if let Some(peer) = self.random_dest(|p| p == from || bad.contains(p)) {
+			let nb_hop = send_options.num_hop.unwrap_or(self.default_num_hop);
+			if let Some(peer) = self.random_dest(|p| p == from || bad.contains(p), nb_hop) {
 				debug!(target: "mixnet", "Trying random dest {:?}.", peer);
-				let nb_hop = send_options.num_hop.unwrap_or(self.default_num_hop);
 				Self::fill_paths(
 					&self.local_id,
 					&self.routing_table,
@@ -223,7 +232,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 					// TODO should return path directly rather than random here that could be
 					// different that path one -> then the check on count could be part of path
 					// building
-					let firsts = self.first_hop_nodes_external(from, &peer);
+					let firsts = self.first_hop_nodes_external(from, &peer, nb_hop);
 					if firsts.is_empty() {
 						return None
 					}
@@ -283,7 +292,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return Err(Error::TooManyHops)
 			}
 
-			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0);
+			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0, num_hops);
 			if firsts.is_empty() {
 				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
@@ -538,28 +547,58 @@ impl<C: Configuration> TopologyHashTable<C> {
 		self.routing_peers.len() >= C::LOW_MIXNET_THRESHOLD
 	}
 
-	fn random_dest(&self, skip: impl Fn(&MixnetId) -> bool) -> Option<MixnetId> {
+	fn update_first_hop_layer(&mut self) {
+		if !self.routing {
+			if !self.layered_routing_set.is_empty() {
+				// use layer with most connect.
+				let mut count = vec![0usize; self.layered_routing_set.len()];
+				for (id, _) in self.routing_peers.iter() {
+					if self.connected_nodes.contains(id) {
+						if let Some(ix) = self.layered_routing_set_ix.get(id) {
+							count[*ix as usize] += 1;
+						}
+					}
+				}
+				self.local_layer_ix =
+					count.iter().enumerate().max_by_key(|k| k.1).map(|k| k.0).unwrap_or(0) as u8;
+			}
+		}
+	}
+
+	fn random_dest(&self, skip: impl Fn(&MixnetId) -> bool, num_hops: usize) -> Option<MixnetId> {
+		let routing_set = if self.layered_routing_set.is_empty() {
+			&self.routing_set
+		} else {
+			let dest_ix =
+				layer_dest(self.local_layer_ix as usize, self.layered_routing_set.len(), num_hops);
+			&self.layered_routing_set[dest_ix]
+		};
+
 		use rand::RngCore;
 		// Warning this assume that NetworkId is a randomly distributed value.
 		let mut ix = [0u8; 32];
 		rand::thread_rng().fill_bytes(&mut ix[..]);
 
-		trace!(target: "mixnet", "routing {:?}, ix {:?}", self.routing_peers, ix);
-		for (key, table) in self.routing_peers.range(ix..) {
-			// TODO alert on low receive_from
-			if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
-				debug!(target: "mixnet", "Random route node");
-				return Some(*key)
-			} else {
-				debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
+		trace!(target: "mixnet", "routing {:?}, ix {:?}", routing_set, ix);
+		for key in routing_set.range(ix..) {
+			if let Some(table) = self.routing_peers.get(key) {
+				// TODO alert on low receive_from
+				if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
+					debug!(target: "mixnet", "Random route node");
+					return Some(*key)
+				} else {
+					debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
+				}
 			}
 		}
-		for (key, table) in self.routing_peers.range(..ix).rev() {
-			if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
-				debug!(target: "mixnet", "Random route node");
-				return Some(*key)
-			} else {
-				debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
+		for key in routing_set.range(..ix).rev() {
+			if let Some(table) = self.routing_peers.get(key) {
+				if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
+					debug!(target: "mixnet", "Random route node");
+					return Some(*key)
+				} else {
+					debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
+				}
 			}
 		}
 		None
@@ -608,6 +647,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 				}
 			}
 		}
+		self.update_first_hop_layer();
 	}
 
 	fn add_disconnected_peer(&mut self, peer_id: &MixnetId) {
@@ -620,6 +660,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 				}
 			}
 		}
+		self.update_first_hop_layer();
 	}
 
 	fn handle_new_routing_set_start<'a>(
@@ -662,6 +703,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			self.layered_routing_set_ix = overlays_ix;
 			self.local_layer_ix = at;
 		}
+		self.update_first_hop_layer();
 	}
 
 	pub fn distributed_try_connect(&mut self) {
@@ -694,7 +736,14 @@ impl<C: Configuration> TopologyHashTable<C> {
 	) {
 		assert!(C::DISTRIBUTE_ROUTES);
 		self.handle_new_routing_set_start(set.iter(), new_self);
-		self.should_connect_to = should_connect_to(&self.local_id, &self.routing_set, usize::MAX);
+
+		let routing_set = if self.layered_routing_set.is_empty() {
+			&self.routing_set
+		} else {
+			&self.layered_routing_set[self.local_layer_ix as usize]
+		};
+
+		self.should_connect_to = should_connect_to(&self.local_id, routing_set, usize::MAX);
 		for (index, id) in self.should_connect_to.iter().enumerate() {
 			self.should_connect_pending.insert(*id, (index, true));
 		}
@@ -775,11 +824,17 @@ impl<C: Configuration> TopologyHashTable<C> {
 	fn refresh_static_routing_tables(&mut self, set: &[(MixnetId, MixPublicKey)]) {
 		for (id, public_key) in set.iter() {
 			if id == &self.local_id {
+				let routing_set = if self.layered_routing_set.is_empty() {
+					&self.routing_set
+				} else {
+					&self.layered_routing_set[self.local_layer_ix as usize]
+				};
+
 				if let Some(table) = Self::refresh_connection_table_to(
 					id,
 					public_key,
 					Some(&self.routing_table),
-					&self.routing_set,
+					routing_set,
 					&mut self.should_connect_to,
 				) {
 					// TODO could also add receive_from.
@@ -794,11 +849,24 @@ impl<C: Configuration> TopologyHashTable<C> {
 				}
 			} else {
 				let past = self.routing_peers.get(id);
+
+				let routing_set = if self.layered_routing_set.is_empty() {
+					&self.routing_set
+				} else {
+					if let Some(ix) = self.layered_routing_set_ix.get(id) {
+						&self.layered_routing_set[*ix as usize]
+					} else {
+						// skip
+						log::error!(target: "mixnet", "Routing overlay should be define for routing set peer {:?}, ignoring.", id);
+						continue
+					}
+				};
+
 				if let Some(table) = Self::refresh_connection_table_to(
 					id,
 					public_key,
 					past,
-					&self.routing_set,
+					routing_set,
 					&mut self.should_connect_to,
 				) {
 					self.routing_peers.insert(*id, table);
@@ -1057,7 +1125,7 @@ fn refresh_overlay(
 	Some((layered_routing_set, layered_routing_set_ix, local_layer_ix))
 }
 
-fn layer_dest(from: usize, nb_layer: usize, nb_hops: usize ) -> usize {
+fn layer_dest(from: usize, nb_layer: usize, nb_hops: usize) -> usize {
 	// origin an dest are in nb_hops so -1
 	(from + nb_hops - 1) % nb_layer
 }
@@ -1230,7 +1298,10 @@ mod test {
 
 	#[test]
 	fn test_fill_paths() {
-		let targets_single_layer = vec![(1000, 0, 10, 5, 5), (5, 0, 3, 4, 0)];
+		let targets_single_layer = vec![
+			(1000, 0, 10, 5, 5),
+			(5, 0, 3, 4, 0),
+		];
 		let nb_layers = 3;
 		let min_layer_size = 5;
 		for i in targets_single_layer {
@@ -1314,7 +1385,7 @@ mod test {
 				if let Some(ix) = ixs.get(&peers[i]) {
 					// skip not reachable
 					if *ix as usize != layer_dest(from_overlay as usize, sets.len(), conf.depth) {
-						continue;
+						continue
 					}
 				}
 			}
@@ -1326,12 +1397,12 @@ mod test {
 			let nb_path = count_paths(&paths, from, &peers[i], depth);
 			med_nb_con += nb_path;
 		}
-		let average_number_connection = med_nb_con as f64 / (nb_dest as f64 - 1.0);
-		let reachable_ratio = number_reachable as f64 / (nb_dest as f64 - 1.0);
+		let average_number_connection = med_nb_con as f64 / nb_dest as f64;
+		let reachable_ratio = number_reachable as f64 / nb_dest as f64;
 		let dest_size = overlayed_set
 			.as_ref()
 			.map(|s| s.0.iter().map(|s| s.len()).collect())
-			.unwrap_or(vec![conf.nb_peers as usize + 1]);
+			.unwrap_or(vec![conf.nb_peers as usize]);
 		TestFillResult { average_number_connection, reachable_ratio, number_reachable, dest_size }
 	}
 
