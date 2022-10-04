@@ -375,10 +375,10 @@ fn test_messages(conf: TestConfig) {
 
 	let send = if from_external {
 		// ext 1 can route through peer 0 (only peer accepting ext)
-		vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
+		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
 	} else {
 		(1..num_peers)
-			.map(|to| SendConf { from: 0, to, message: source_message.clone() })
+			.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
 			.collect()
 	};
 	send_messages(&conf, send.clone().into_iter(), &nodes, &mut with_swarm_channels);
@@ -394,6 +394,7 @@ fn message_exchange_no_surb() {
 		message_size: 1,
 		with_surb: false,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -406,6 +407,7 @@ fn fragmented_messages_no_surb() {
 		message_size: 8 * 1024,
 		with_surb: false,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -418,6 +420,7 @@ fn message_exchange_with_surb() {
 		message_size: 1,
 		with_surb: true,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -430,6 +433,7 @@ fn fragmented_messages_with_surb() {
 		message_size: 8 * 1024,
 		with_surb: true,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -442,6 +446,7 @@ fn from_external_with_surb() {
 		message_size: 100,
 		with_surb: true,
 		from_external: true,
+		random_dest: false,
 	})
 }
 
@@ -454,5 +459,6 @@ fn from_external_no_surb() {
 		message_size: 4 * 1024,
 		with_surb: false,
 		from_external: true,
+		random_dest: false,
 	})
 }

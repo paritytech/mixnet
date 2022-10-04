@@ -97,7 +97,7 @@ impl mixnet::traits::Handshake for NotDistributed {
 }
 
 fn test_messages(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, from_external, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, random_dest, .. } = conf;
 
 	let seed: u64 = 0;
 	let single_thread = true;
@@ -185,10 +185,12 @@ fn test_messages(conf: TestConfig) {
 	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {
 		// ext 1 can route through peer 0 (only peer accepting ext)
-		vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
+		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
+	} else if random_dest {
+		vec![SendConf { from: 0, to: None, message: source_message.clone() }]
 	} else {
 		(1..num_peers)
-			.map(|to| SendConf { from: 0, to, message: source_message.clone() })
+			.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
 			.collect()
 	};
 	log::trace!(target: "mixnet_test", "before sending messages");
@@ -206,6 +208,7 @@ fn message_exchange_no_surb() {
 		message_size: 1,
 		with_surb: false,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -218,6 +221,7 @@ fn fragmented_messages_no_surb() {
 		message_size: 8 * 1024,
 		with_surb: false,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -230,6 +234,7 @@ fn message_exchange_with_surb() {
 		message_size: 1,
 		with_surb: true,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -242,6 +247,7 @@ fn fragmented_messages_with_surb() {
 		message_size: 8 * 1024,
 		with_surb: true,
 		from_external: false,
+		random_dest: false,
 	})
 }
 
@@ -254,6 +260,7 @@ fn from_external_with_surb() {
 		message_size: 100,
 		with_surb: true,
 		from_external: true,
+		random_dest: false,
 	})
 }
 
@@ -266,14 +273,12 @@ fn from_external_no_surb() {
 		message_size: 4 * 1024,
 		with_surb: false,
 		from_external: true,
+		random_dest: false,
 	})
 }
 
 #[test]
 fn surb_and_layer_local() {
-	// TODO change test_messages to only
-	// target peers that are part of reachable
-	// layer
 	test_messages(TestConfig {
 		num_peers: 20,
 		num_hops: 4,
@@ -281,14 +286,12 @@ fn surb_and_layer_local() {
 		message_size: 1,
 		with_surb: true,
 		from_external: false,
+		random_dest: true,
 	})
 }
 
 #[test]
 fn surb_and_layer_external() {
-	// TODO change test_messages to only
-	// target peers that are part of reachable
-	// layer
 	test_messages(TestConfig {
 		num_peers: 20,
 		num_hops: 4,
@@ -296,11 +299,12 @@ fn surb_and_layer_external() {
 		message_size: 1,
 		with_surb: true,
 		from_external: true,
+		random_dest: true,
 	})
 }
 
 fn test_change_routing_set(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, from_external, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, random_dest, .. } = conf;
 
 	let set_1 = 0..num_peers;
 	let half_set = num_peers / 2;
@@ -412,14 +416,16 @@ fn test_change_routing_set(conf: TestConfig) {
 	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {
 		// ext 1 can route through peer 0 (only peer accepting ext)
-		vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
+		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
+	} else if random_dest {
+		vec![SendConf { from: set_1.start, to: None, message: source_message.clone() }]
 	} else {
 		let start = set_1.start;
 		let end = set_1.end;
 		(set_1)
 			.map(|from| SendConf {
 				from,
-				to: if from + 1 == end { start } else { from + 1 },
+				to: Some(if from + 1 == end { start } else { from + 1 }),
 				message: source_message.clone(),
 			})
 			.collect()
@@ -439,13 +445,15 @@ fn test_change_routing_set(conf: TestConfig) {
 		// TODO implement connect for external on demand
 		// vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
 		return
+	} else if random_dest {
+		vec![SendConf { from: set_2.start, to: None, message: source_message.clone() }]
 	} else {
 		let start = set_2.start;
 		let end = set_2.end;
 		(set_2)
 			.map(|from| SendConf {
 				from,
-				to: if from + 1 == end { start } else { from + 1 },
+				to: Some(if from + 1 == end { start } else { from + 1 }),
 				message: source_message.clone(),
 			})
 			.collect()
@@ -465,5 +473,6 @@ fn testing_mess() {
 		message_size: 1, // max 256 * 1024
 		with_surb: false,
 		from_external: false,
+		random_dest: false,
 	})
 }

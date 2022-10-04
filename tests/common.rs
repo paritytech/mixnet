@@ -567,6 +567,7 @@ pub struct TestConfig {
 	pub message_size: usize,
 	pub with_surb: bool,
 	pub from_external: bool,
+	pub random_dest: bool,
 }
 
 pub fn wait_on_connections(conf: &TestConfig, with_swarm_channels: &mut [TestChannels]) {
@@ -598,7 +599,7 @@ pub fn wait_on_connections(conf: &TestConfig, with_swarm_channels: &mut [TestCha
 #[derive(Clone)]
 pub struct SendConf {
 	pub from: usize,
-	pub to: usize,
+	pub to: Option<usize>,
 	pub message: Vec<u8>,
 }
 
@@ -611,11 +612,11 @@ pub fn send_messages(
 	let TestConfig { message_count, with_surb, .. } = *conf;
 
 	for send_conf in send {
-		let recipient = &nodes[send_conf.to];
+		let recipient = send_conf.to.as_ref().map(|to| nodes[*to]);
 		log::trace!(target: "mixnet_test", "{}: Sending {} messages to {:?}", send_conf.from, message_count, recipient);
 		for _ in 0..message_count {
 			log_unwrap!(with_swarm_channels[send_conf.from].1.send(
-				Some(*recipient),
+				recipient,
 				send_conf.message.clone(),
 				SendOptions { num_hop: None, with_surb },
 			));
@@ -635,18 +636,31 @@ pub fn wait_on_messages(
 	with_swarm_channels: &mut [TestChannels],
 	surb_reply: &[u8],
 ) {
-	let TestConfig { message_count, with_surb, .. } = *conf;
+	let TestConfig { message_count, with_surb, random_dest, .. } = *conf;
 
 	let mut expect: HashMap<usize, HashMap<Vec<u8>, (usize, usize)>> = Default::default();
 
-	for sent in sent {
-		let nb = expect.entry(sent.to).or_default().entry(sent.message).or_default();
-		nb.0 += message_count;
-		if with_surb {
-			let nb = expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
-			nb.1 += message_count;
+	if !conf.random_dest {
+		for sent in sent {
+			let to = sent.to.unwrap();
+			let nb = expect.entry(to).or_default().entry(sent.message).or_default();
+			nb.0 += message_count;
+			if with_surb {
+				let nb = expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
+				nb.1 += message_count;
+			}
+		}
+	} else {
+		for to in 0..conf.num_peers {
+			expect.entry(to).or_default();
 		}
 	}
+
+	let target_len = if !conf.random_dest {
+		0
+	} else {
+		expect.len() - (1 + with_surb as usize)
+	};
 
 	let mut received_messages: Vec<_> = with_swarm_channels
 		.iter_mut()
@@ -659,6 +673,9 @@ pub fn wait_on_messages(
 						Poll::Ready(Some(PeerTestReply::ReceiveMessage(
 							mixnet::DecodedMessage { peer, message, mut kind },
 						))) => {
+							if random_dest {
+								return Poll::Ready(true);
+							}
 							log::trace!(target: "mixnet_test", "Decoded message {} bytes, from {:?}", message.len(), peer);
 							let nb = messages.remove(&message).map(|mut nb| {
 								if let Some(_o_query) = kind.extract_surb_query() {
@@ -688,7 +705,7 @@ pub fn wait_on_messages(
 			})
 		})
 		.collect();
-	while !received_messages.is_empty() {
+	while received_messages.len() != target_len {
 		let (_, p, remaining) =
 			async_std::task::block_on(futures::future::select_all(received_messages));
 		log::trace!(target: "mixnet", "Connecting {} completed", p);
