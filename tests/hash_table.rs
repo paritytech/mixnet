@@ -53,6 +53,10 @@ impl TopologyConfig for NotDistributed {
 
 	const NUMBER_CONNECTED_FORWARD: usize = 4;
 
+	const NUMBER_LAYER: u8 = 1;
+
+	const MIN_LAYER_SIZE: usize = 5;
+
 	const NUMBER_CONNECTED_BACKWARD: usize = Self::NUMBER_CONNECTED_FORWARD - 2;
 
 	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);

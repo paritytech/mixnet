@@ -47,6 +47,18 @@ pub trait Configuration {
 	/// Number of connection a routing peer should have active (with
 	/// constant message bandwidth).
 	const NUMBER_CONNECTED_FORWARD: usize;
+
+	/// Split routing set in different layers.
+	/// Layers are connected with next layer and last layer is connected
+	/// with first.
+	/// If no or single layer, just connect peers between themselve in
+	/// an single routing set.
+	const NUMBER_LAYER: u8;
+
+	/// Minimal size for a layer, this can lower the number of layer when
+	/// not enough peers in routing set.
+	const MIN_LAYER_SIZE: usize;
+
 	// Since hashing routed, should be same as NUMBER_CONNECTED_BACKWARD,
 	// just we allow some lower value for margin.
 	const NUMBER_CONNECTED_BACKWARD: usize;
@@ -87,6 +99,9 @@ impl TableVersion for () {
 pub struct TopologyHashTable<C: Configuration> {
 	local_id: MixnetId,
 
+	// TODO this do not need to be stored
+	local_layer_ix: u8,
+
 	// true when we are in routing set.
 	routing: bool,
 
@@ -98,6 +113,12 @@ pub struct TopologyHashTable<C: Configuration> {
 	routing_set: BTreeSet<MixnetId>,
 
 	changed_routing: BTreeSet<MixnetId>,
+
+	// TODO this do not need to be stored
+	layered_routing_set: Vec<BTreeSet<MixnetId>>,
+
+	// TODO this do not need to be stored
+	layered_routing_set_ix: HashMap<MixnetId, u8>,
 
 	try_connect: BTreeMap<MixnetId, Option<NetworkId>>,
 
@@ -464,7 +485,10 @@ impl<C: Configuration> TopologyHashTable<C> {
 		};
 		TopologyHashTable {
 			local_id,
+			local_layer_ix: 0,
 			routing_set: BTreeSet::new(),
+			layered_routing_set: Vec::new(),
+			layered_routing_set_ix: HashMap::new(),
 			connected_nodes: HashSet::new(),
 			changed_routing: BTreeSet::new(),
 			try_connect: BTreeMap::new(),
@@ -626,6 +650,17 @@ impl<C: Configuration> TopologyHashTable<C> {
 				debug!(target: "mixnet", "In new routing set, routing.");
 				self.routing = true;
 			}
+		}
+		self.refresh_overlay();
+	}
+
+	fn refresh_overlay(&mut self) {
+		if let Some((overlays, overlays_ix, at)) =
+			refresh_overlay(&self.local_id, &self.routing_set, C::NUMBER_LAYER, C::MIN_LAYER_SIZE)
+		{
+			self.layered_routing_set = overlays;
+			self.layered_routing_set_ix = overlays_ix;
+			self.local_layer_ix = at;
 		}
 	}
 
@@ -974,6 +1009,59 @@ fn should_connect_to(
 	result
 }
 
+fn refresh_overlay(
+	local_id: &MixnetId,
+	routing_set: &BTreeSet<MixnetId>,
+	number_layer: u8,
+	min_layer_size: usize,
+) -> Option<(Vec<BTreeSet<MixnetId>>, HashMap<MixnetId, u8>, u8)> {
+	let nb_peers = routing_set.len();
+	let nb_overlay = if number_layer > 0 {
+		let max_nb_layer = nb_peers / min_layer_size;
+		std::cmp::min(max_nb_layer, number_layer as usize)
+	} else {
+		1
+	};
+	if nb_overlay < 2 {
+		return None
+	}
+	let mut layered_routing_set: Vec<BTreeSet<MixnetId>> = vec![Default::default(); nb_overlay];
+	let mut layered_routing_set_ix: HashMap<MixnetId, u8> = Default::default();
+	// TODO cache common seed when all got init
+	// or/and have something faster
+	let mut common_seed = [0u8; 32];
+	for id in routing_set.iter() {
+		let hash = crate::core::hash(id);
+		for i in 0..32 {
+			common_seed[i] ^= hash[i];
+		}
+	}
+	let mut common_ix = 0u8;
+	for i in 0..32 {
+		common_ix ^= common_seed[i];
+	}
+	let mut local_layer_ix = 0u8;
+	for peer in routing_set.iter() {
+		let hash = crate::core::hash(peer);
+		let mut layer_ix = common_ix;
+		for i in 0..32 {
+			layer_ix ^= hash[i];
+		}
+		layer_ix = layer_ix % (nb_overlay as u8);
+		layered_routing_set[layer_ix as usize].insert(*peer);
+		if local_id == peer {
+			local_layer_ix = layer_ix;
+		}
+		layered_routing_set_ix.insert(*peer, layer_ix);
+	}
+	Some((layered_routing_set, layered_routing_set_ix, local_layer_ix))
+}
+
+fn layer_dest(from: usize, nb_layer: usize, nb_hops: usize ) -> usize {
+	// origin an dest are in nb_hops so -1
+	(from + nb_hops - 1) % nb_layer
+}
+
 fn random_path_inner(
 	rng: &mut rand::rngs::ThreadRng,
 	routes: &Vec<MixnetId>,
@@ -1128,6 +1216,8 @@ mod test {
 		nb_disco: u16,
 		nb_forward: usize,
 		depth: usize,
+		nb_layers: u8,
+		min_layer_size: usize,
 	}
 
 	#[derive(Debug)]
@@ -1135,13 +1225,23 @@ mod test {
 		average_number_connection: f64,
 		number_reachable: usize,
 		reachable_ratio: f64,
+		dest_size: Vec<usize>,
 	}
 
 	#[test]
 	fn test_fill_paths() {
 		let targets_single_layer = vec![(1000, 0, 10, 5, 5), (5, 0, 3, 4, 0)];
+		let nb_layers = 3;
+		let min_layer_size = 5;
 		for i in targets_single_layer {
-			let conf = TestFillConf { nb_peers: i.0, nb_disco: i.1, nb_forward: i.2, depth: i.3 };
+			let conf = TestFillConf {
+				nb_peers: i.0,
+				nb_disco: i.1,
+				nb_forward: i.2,
+				depth: i.3,
+				nb_layers,
+				min_layer_size,
+			};
 			let percent_margin = i.4 as f64;
 			let percent_margin = (100.0 - percent_margin) / 100.0;
 			let result = test_all_accessible(conf);
@@ -1153,7 +1253,8 @@ mod test {
 	}
 
 	fn test_all_accessible(conf: TestFillConf) -> TestFillResult {
-		let TestFillConf { nb_peers, nb_disco, nb_forward, depth } = conf;
+		let TestFillConf { nb_peers, nb_disco, nb_forward, depth, nb_layers, min_layer_size } =
+			conf;
 		let peers: Vec<[u8; 32]> = (0..nb_peers)
 			.map(|i| {
 				let mut id = [0u8; 32];
@@ -1167,9 +1268,17 @@ mod test {
 		let routing_set: BTreeSet<_> =
 			peers.iter().chain(std::iter::once(&local_id)).cloned().collect();
 
+		let overlayed_set = refresh_overlay(&local_id, &routing_set, nb_layers, min_layer_size);
+
 		let mut from_to: HashMap<MixnetId, Vec<MixnetId>> = Default::default();
 		for p in peers[nb_disco as usize..].iter().chain(std::iter::once(&local_id)) {
-			let tos = should_connect_to(p, &routing_set, nb_forward);
+			let routing_set = if let Some((sets, ixs, _)) = &overlayed_set {
+				let ix = *ixs.get(p).unwrap() as usize + 1;
+				&sets[ix % sets.len()]
+			} else {
+				&routing_set
+			};
+			let tos = should_connect_to(p, routing_set, nb_forward);
 			let tos = if disco.len() > 0 {
 				tos.into_iter().filter(|t| !disco.contains(t)).collect()
 			} else {
@@ -1197,17 +1306,33 @@ mod test {
 		//println!("{:?}", path);
 		let mut number_reachable = 0;
 		let mut med_nb_con = 0;
+		let from = peers.last().unwrap();
+		let from_overlay = overlayed_set.as_ref().and_then(|s| s.1.get(from).copied()).unwrap_or(0);
+		let mut nb_dest = 0;
 		for i in nb_disco as usize..(nb_peers - 1) as usize {
-			let path = random_path(&paths, peers.last().unwrap(), &peers[i], depth);
+			if let Some((sets, ixs, _)) = &overlayed_set {
+				if let Some(ix) = ixs.get(&peers[i]) {
+					// skip not reachable
+					if *ix as usize != layer_dest(from_overlay as usize, sets.len(), conf.depth) {
+						continue;
+					}
+				}
+			}
+			nb_dest += 1;
+			let path = random_path(&paths, from, &peers[i], depth);
 			if path.is_some() {
 				number_reachable += 1;
 			}
-			let nb_path = count_paths(&paths, peers.last().unwrap(), &peers[i], depth);
+			let nb_path = count_paths(&paths, from, &peers[i], depth);
 			med_nb_con += nb_path;
 		}
-		let average_number_connection = med_nb_con as f64 / (nb_peers as f64 - 1.0);
-		let reachable_ratio = number_reachable as f64 / (nb_peers as f64 - 1.0);
-		TestFillResult { average_number_connection, reachable_ratio, number_reachable }
+		let average_number_connection = med_nb_con as f64 / (nb_dest as f64 - 1.0);
+		let reachable_ratio = number_reachable as f64 / (nb_dest as f64 - 1.0);
+		let dest_size = overlayed_set
+			.as_ref()
+			.map(|s| s.0.iter().map(|s| s.len()).collect())
+			.unwrap_or(vec![conf.nb_peers as usize + 1]);
+		TestFillResult { average_number_connection, reachable_ratio, number_reachable, dest_size }
 	}
 
 	// should have some command line checkers.
@@ -1215,7 +1340,14 @@ mod test {
 	fn launch_find_limit() {
 		let percent_margin = 10f64;
 		let percent_disco = 5f64;
-		let mut conf = TestFillConf { nb_peers: 0, nb_disco: 0, nb_forward: 5, depth: 4 };
+		let mut conf = TestFillConf {
+			nb_peers: 0,
+			nb_disco: 0,
+			nb_forward: 5,
+			depth: 4,
+			nb_layers: 3,
+			min_layer_size: 5,
+		};
 		for nb_peers in &[5, 10, 20, 40, 80] {
 			conf.nb_peers = *nb_peers;
 			conf.nb_disco = (conf.nb_peers as f64 * percent_disco / 100.0) as u16;
