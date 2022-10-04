@@ -53,9 +53,9 @@ impl TopologyConfig for NotDistributed {
 
 	const NUMBER_CONNECTED_FORWARD: usize = 4;
 
-	const NUMBER_LAYER: u8 = 1;
+	const NUMBER_LAYER: u8 = 3;
 
-	const MIN_LAYER_SIZE: usize = 5;
+	const MIN_LAYER_SIZE: usize = 6;
 
 	const NUMBER_CONNECTED_BACKWARD: usize = Self::NUMBER_CONNECTED_FORWARD - 2;
 
@@ -265,6 +265,36 @@ fn from_external_no_surb() {
 		message_count: 1,
 		message_size: 4 * 1024,
 		with_surb: false,
+		from_external: true,
+	})
+}
+
+#[test]
+fn surb_and_layer_local() {
+	// TODO change test_messages to only
+	// target peers that are part of reachable
+	// layer
+	test_messages(TestConfig {
+		num_peers: 20,
+		num_hops: 4,
+		message_count: 1,
+		message_size: 1,
+		with_surb: true,
+		from_external: false,
+	})
+}
+
+#[test]
+fn surb_and_layer_external() {
+	// TODO change test_messages to only
+	// target peers that are part of reachable
+	// layer
+	test_messages(TestConfig {
+		num_peers: 20,
+		num_hops: 4,
+		message_count: 1,
+		message_size: 1,
+		with_surb: true,
 		from_external: true,
 	})
 }
