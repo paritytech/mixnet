@@ -276,7 +276,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		start_node: (&MixnetId, Option<&MixPublicKey>),
 		recipient_node: (&MixnetId, Option<&MixPublicKey>),
 		nb_chunk: usize,
-		num_hops: usize,
+		mut num_hops: usize,
 		max_hops: usize,
 		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
@@ -284,9 +284,11 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		// return same result for all routing peer building all possible path is not usefull.
 		let mut add_start = None;
 		let mut add_end = None;
+		let mut is_external = false;
 		let start = if self.is_first_node(start_node.0) {
 			*start_node.0
 		} else {
+			is_external = true;
 			trace!(target: "mixnet", "External node");
 			if num_hops + 1 > max_hops {
 				return Err(Error::TooManyHops)
@@ -303,7 +305,38 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			firsts[n].0
 		};
 
-		let recipient = if self.can_route(recipient_node.0) {
+		let mut is_accessible = false;
+		if self.can_route(recipient_node.0) {
+			if !self.layered_routing_set.is_empty() {
+				if let Some(start_layer) = self.layered_routing_set_ix.get(start_node.0) {
+					if let Some(dest_layer) = self.layered_routing_set_ix.get(recipient_node.0) {
+						if *dest_layer as usize ==
+							layer_dest(
+								*start_layer as usize,
+								self.layered_routing_set.len(),
+								num_hops,
+							) {
+							is_accessible = true;
+						} else if last_query_if_surb.is_some() {
+							// Allow more hop of surb reply.
+							let distance = layer_distance(
+								*start_layer as usize,
+								*dest_layer as usize,
+								self.layered_routing_set.len(),
+								num_hops,
+							);
+							if (distance + is_external as usize) < max_hops {
+								num_hops = distance;
+								is_accessible = true;
+							}
+						}
+					}
+				}
+			} else {
+				is_accessible = true;
+			}
+		}
+		let recipient = if is_accessible {
 			*recipient_node.0
 		} else {
 			trace!(target: "mixnet", "Non routing recipient");
@@ -1127,7 +1160,23 @@ fn refresh_overlay(
 
 fn layer_dest(from: usize, nb_layer: usize, nb_hops: usize) -> usize {
 	// origin an dest are in nb_hops so -1
-	(from + nb_hops - 1) % nb_layer
+	let dest = (from + nb_hops - 1) % nb_layer;
+	debug_assert!(layer_ori(dest, nb_layer, nb_hops) == from);
+	debug_assert!(layer_distance(from, dest, nb_layer, nb_hops) == nb_hops);
+	dest
+}
+
+fn layer_ori(dest: usize, nb_layer: usize, nb_hops: usize) -> usize {
+	let avoid_underflow = ((nb_hops / nb_layer) + 1) * nb_layer;
+	(avoid_underflow + dest + 1 - nb_hops) % nb_layer
+}
+
+fn layer_distance(ori: usize, dest: usize, nb_layer: usize, min_distance: usize) -> usize {
+	let mut distance = if dest > ori { dest - ori + 1 } else { nb_layer - ori + dest + 1 };
+	while distance < min_distance {
+		distance += nb_layer;
+	}
+	distance
 }
 
 fn random_path_inner(
@@ -1298,10 +1347,7 @@ mod test {
 
 	#[test]
 	fn test_fill_paths() {
-		let targets_single_layer = vec![
-			(1000, 0, 10, 5, 5),
-			(5, 0, 3, 4, 0),
-		];
+		let targets_single_layer = vec![(1000, 0, 10, 5, 5), (5, 0, 3, 4, 0)];
 		let nb_layers = 3;
 		let min_layer_size = 5;
 		for i in targets_single_layer {
