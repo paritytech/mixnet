@@ -674,6 +674,9 @@ pub fn wait_on_messages(
 							mixnet::DecodedMessage { peer, message, mut kind },
 						))) => {
 							if random_dest {
+								if let Some(reply) = kind.surb() {
+									log_unwrap!(sender.surb(surb_reply.to_vec(), reply));
+								}
 								return Poll::Ready(true);
 							}
 							log::trace!(target: "mixnet_test", "Decoded message {} bytes, from {:?}", message.len(), peer);
