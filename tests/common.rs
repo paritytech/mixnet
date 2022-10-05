@@ -646,21 +646,18 @@ pub fn wait_on_messages(
 			let nb = expect.entry(to).or_default().entry(sent.message).or_default();
 			nb.0 += message_count;
 			if with_surb {
-				let nb = expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
+				let nb =
+					expect.entry(sent.from).or_default().entry(surb_reply.to_vec()).or_default();
 				nb.1 += message_count;
 			}
 		}
 	} else {
-		for to in 0..conf.num_peers {
+		for to in 0..with_swarm_channels.len() {
 			expect.entry(to).or_default();
 		}
 	}
 
-	let target_len = if !conf.random_dest {
-		0
-	} else {
-		expect.len() - (1 + with_surb as usize)
-	};
+	let target_len = if !conf.random_dest { 0 } else { expect.len() - (1 + with_surb as usize) };
 
 	let mut received_messages: Vec<_> = with_swarm_channels
 		.iter_mut()
@@ -677,7 +674,7 @@ pub fn wait_on_messages(
 								if let Some(reply) = kind.surb() {
 									log_unwrap!(sender.surb(surb_reply.to_vec(), reply));
 								}
-								return Poll::Ready(true);
+								return Poll::Ready(true)
 							}
 							log::trace!(target: "mixnet_test", "Decoded message {} bytes, from {:?}", message.len(), peer);
 							let nb = messages.remove(&message).map(|mut nb| {

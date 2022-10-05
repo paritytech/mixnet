@@ -49,6 +49,11 @@ type RawKey = [u8; KEY_SIZE];
 type NewHeader = (Header, TransmitInfo);
 
 /// Maximum hops the packet format supports.
+/// TODO five is low if one need to reply with a surb
+/// and the surb need to grow to loop over topo layers.
+/// TODO this need to be customizable eg using a crate
+/// feature (in this case it would be good to add it as
+/// parameter when building to avoid polluted feature).
 pub const MAX_HOPS: usize = 5;
 pub const OVERHEAD_SIZE: usize = HEADER_SIZE + PAYLOAD_TAG_SIZE;
 
@@ -119,7 +124,7 @@ pub enum Error {
 }
 
 /// PathHop describes a route hop that a Sphinx Packet will traverse,
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PathHop {
 	/// Node id
 	pub id: NodeId,

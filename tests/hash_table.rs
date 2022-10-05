@@ -279,15 +279,17 @@ fn from_external_no_surb() {
 
 #[test]
 fn surb_and_layer_local() {
-	test_messages(TestConfig {
-		num_peers: 20,
-		num_hops: 4,
-		message_count: 1,
-		message_size: 1,
-		with_surb: true,
-		from_external: false,
-		random_dest: true,
-	})
+	for num_hops in 3..5 {
+		test_messages(TestConfig {
+			num_peers: 20,
+			num_hops,
+			message_count: 1,
+			message_size: 1,
+			with_surb: true,
+			from_external: false,
+			random_dest: true,
+		})
+	}
 }
 
 #[test]

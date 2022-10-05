@@ -548,7 +548,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				.into_iter()
 				.map(|(id, public_key)| sphinx::PathHop { id, public_key })
 				.collect();
-
 			Some((first_node, paths))
 		} else {
 			None
