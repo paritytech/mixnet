@@ -82,6 +82,11 @@ pub struct Config {
 	/// Note that this period should be the same for all peers.
 	pub graceful_topology_change_period_ms: u64,
 
+	/// When defined, a given of bandwidth is allowed to be receive
+	/// ahead.
+	/// Otherwhise transport buffer is filled.
+	pub receive_margin_ms: Option<u64>,
+
 	/// Keep forwarded messages in queue for a given time.
 	/// (message is only queued if topology allows it and the
 	/// peer will potentially connect).
@@ -124,6 +129,7 @@ impl Config {
 				.as_millis()
 				.try_into()
 				.expect("Window duration too big"),
+			receive_margin_ms: None,
 		}
 	}
 }

@@ -126,6 +126,7 @@ fn test_messages(conf: TestConfig) {
 		surb_ttl_ms: 100_000,
 		window_size_ms: 2_000,
 		keep_handshaken_disconnected_address: true,
+		receive_margin_ms: None,
 	};
 	let mut source_message = Vec::new();
 	use rand::SeedableRng;
@@ -341,6 +342,7 @@ fn test_change_routing_set(conf: TestConfig) {
 		surb_ttl_ms: 100_000,
 		window_size_ms: 2_000,
 		keep_handshaken_disconnected_address: true,
+		receive_margin_ms: None,
 	};
 	let mut source_message = Vec::new();
 	use rand::SeedableRng;

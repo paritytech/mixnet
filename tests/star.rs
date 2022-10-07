@@ -323,6 +323,7 @@ fn test_messages(conf: TestConfig) {
 		keep_handshaken_disconnected_address: true,
 		queue_message_unconnected_ms: 0,
 		queue_message_unconnected_number: 0,
+		receive_margin_ms: None,
 	};
 	let mut source_message = Vec::new();
 	use rand::SeedableRng;

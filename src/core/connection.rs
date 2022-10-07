@@ -34,7 +34,7 @@ use crate::{
 use futures::FutureExt;
 use futures_timer::Delay;
 use std::{
-	collections::BinaryHeap,
+	collections::{BinaryHeap, VecDeque},
 	num::Wrapping,
 	task::{Context, Poll},
 	time::{Duration, Instant},
@@ -81,6 +81,13 @@ pub(crate) struct ManagedConnection<C> {
 	// disconnect when connection broken or gracefull_nb_packet
 	// both at 0.
 	gracefull_disconnecting: Option<Instant>,
+	// Receive is only call to match the expecteed bandwidth.
+	// Yet with most transport it will just make the transport
+	// buffer grow.
+	// Using an internal buffer we can just drop connection earlier
+	// by receiving all and dropping when this buffer grow out
+	// of the expected badwidth limits.
+	receive_buffer: Option<(VecDeque<(Packet, bool)>, usize, usize)>,
 	stats: Option<(ConnectionStats, Option<PacketType>)>,
 }
 
@@ -93,6 +100,7 @@ impl<C: Connection> ManagedConnection<C> {
 		current_window: Wrapping<usize>,
 		with_stats: bool,
 		peers: &mut PeerCount,
+		receive_buffer: Option<usize>,
 	) -> Self {
 		peers.nb_pending_handshake += 1;
 		Self {
@@ -117,6 +125,7 @@ impl<C: Connection> ManagedConnection<C> {
 			gracefull_nb_packet_receive: 0,
 			gracefull_nb_packet_send: 0,
 			gracefull_disconnecting: None,
+			receive_buffer: receive_buffer.map(|size| (VecDeque::new(), 0, size)),
 		}
 	}
 
@@ -555,24 +564,44 @@ impl<C: Connection> ManagedConnection<C> {
 			} else {
 				current
 			};
-			if self.recv_in_window < current || self.kind.is_external() {
-				match self.try_recv_packet(cx, window.current) {
-					Poll::Ready(Ok(packet)) => {
-						self.recv_in_window += 1;
-						if self.gracefull_nb_packet_receive > 0 {
-							self.gracefull_nb_packet_receive -= 1;
-							if self.gracefull_nb_packet_send == 0 &&
-								self.gracefull_nb_packet_receive == 0 &&
-								self.gracefull_disconnecting.is_some()
-							{
-								self.gracefull_disconnecting = Some(window.last_now);
+			let can_receive = self.recv_in_window < current || self.kind.is_external();
+			if self.receive_buffer.is_some() || can_receive {
+				loop {
+					match self.try_recv_packet(cx, window.current) {
+						Poll::Ready(Ok(packet)) => {
+							self.recv_in_window += 1;
+							if self.gracefull_nb_packet_receive > 0 {
+								self.gracefull_nb_packet_receive -= 1;
+								if self.gracefull_nb_packet_send == 0 &&
+									self.gracefull_nb_packet_receive == 0 &&
+									self.gracefull_disconnecting.is_some()
+								{
+									self.gracefull_disconnecting = Some(window.last_now);
+								}
 							}
-						}
 
-						result = Poll::Ready(ConnectionEvent::Received((packet, external)));
-					},
-					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-					Poll::Pending => (),
+							if let Some((buf, underbuf, limit)) = self.receive_buffer.as_mut() {
+								buf.push_back((packet, external));
+								if buf.len() > *limit + *underbuf {
+									log::warn!(target: "mixnet", "Disconnecting, received too many messages");
+									return self.broken_connection(topology, peers)
+								}
+							} else {
+								result = Poll::Ready(ConnectionEvent::Received((packet, external)));
+								break
+							}
+						},
+						Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+						Poll::Pending => break,
+					}
+				}
+
+				if can_receive {
+					if let Some((buf, _underbuf, _limit)) = self.receive_buffer.as_mut() {
+						if let Some(mess) = buf.pop_front() {
+							result = Poll::Ready(ConnectionEvent::Received(mess));
+						}
+					}
 				}
 			}
 
@@ -595,6 +624,11 @@ impl<C: Connection> ManagedConnection<C> {
 
 				self.current_window = window.current;
 				self.sent_in_window = 0;
+				if let Some((_buff, underbuf, _limit)) = self.receive_buffer.as_mut() {
+					if self.recv_in_window < window.packet_per_window {
+						*underbuf += window.packet_per_window - self.recv_in_window;
+					}
+				}
 				self.recv_in_window = 0;
 			}
 		} else {

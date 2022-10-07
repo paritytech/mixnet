@@ -287,6 +287,12 @@ pub struct Mixnet<T, C> {
 
 	/// Countdown to next attempt at finding new connections.
 	next_try_reconnect: usize,
+
+	/// If define we use internal reception buffer with limitted lenience.
+	/// We receive eagerly and if buffer limit size is exceeded, we close connection.
+	/// First window after a connection is always ignored.
+	/// TODO do not allow reconnect on close connection.
+	receive_buffer: Option<usize>,
 }
 
 /// Mixnet window current state.
@@ -331,6 +337,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					nb_packet as usize,
 				)
 			});
+		let receive_buffer = config
+			.receive_margin_ms
+			.map(|size_ms| (size_ms * 1_000_000 / packet_duration_nanos) as usize);
 		let forward_unconnected_message_queue = (config.queue_message_unconnected_ms > 0 &&
 			config.queue_message_unconnected_number > 0)
 			.then(|| {
@@ -378,6 +387,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				current_packet_limit: 0,
 				stats,
 			},
+			receive_buffer,
 		}
 	}
 
@@ -416,6 +426,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			self.window.current,
 			self.window.stats.is_some(),
 			&mut self.peer_counts,
+			self.receive_buffer,
 		);
 		self.connected_peers.insert(peer, connection);
 		self.topology.peer_stats(&self.peer_counts);
