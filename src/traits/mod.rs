@@ -57,6 +57,7 @@ pub trait Topology: Sized {
 	/// E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
 	/// Return `None` if no such selection is possible.
+	/// TODO rem
 	fn random_recipient(
 		&mut self,
 		local_id: &MixnetId,
@@ -70,7 +71,7 @@ pub trait Topology: Sized {
 	fn first_hop_nodes_external(
 		&self,
 		_from: &MixnetId,
-		_to: &MixnetId,
+		_to: Option<&MixnetId>,
 		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)>;
 
@@ -88,10 +89,16 @@ pub trait Topology: Sized {
 	/// Warning number of hops is indicative and for some topology
 	/// could be higher (eg if `start` or `recipient` are not routing
 	/// a hop should be added).
+	///
+	/// When recipient is undefined, a random recipient among reachable
+	/// routing peers is used.
+	///	E.g. this can select a random validator that can accept the blockchain
+	/// transaction into the block.
+	/// Error when no recipient is reachable.
 	fn random_path(
 		&mut self,
 		start_node: (&MixnetId, Option<&MixPublicKey>),
-		recipient_node: (&MixnetId, Option<&MixPublicKey>),
+		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		num_hops: usize,
 		max_hops: usize,
@@ -178,17 +185,10 @@ impl Topology for NoTopology {
 
 	fn random_recipient(
 		&mut self,
-		from: &MixnetId,
+		_from: &MixnetId,
 		_: &SendOptions,
 	) -> Option<(MixnetId, MixPublicKey)> {
-		use rand::prelude::IteratorRandom;
-		let mut rng = rand::thread_rng();
-		// Select a random connected peer
-		self.connected_peers
-			.iter()
-			.filter(|(k, _v)| k != &from)
-			.choose(&mut rng)
-			.map(|(k, v)| (*k, *v))
+		unimplemented!("TODO rem")
 	}
 
 	fn bandwidth_external(&self, _id: &MixnetId, _: &PeerCount) -> Option<(usize, usize)> {
@@ -197,14 +197,31 @@ impl Topology for NoTopology {
 
 	fn random_path(
 		&mut self,
-		_start: (&MixnetId, Option<&MixPublicKey>),
-		recipient: (&MixnetId, Option<&MixPublicKey>),
+		from: (&MixnetId, Option<&MixPublicKey>),
+		recipient: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		_num_hops: usize,
 		_max_hops: usize,
 		_last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
 		log::warn!(target: "mixnet", "No topology, direct transmission");
+
+		let recipient = recipient.or_else(|| {
+			use rand::prelude::IteratorRandom;
+			let mut rng = rand::thread_rng();
+			// Select a random connected peer
+			self.connected_peers
+				.iter()
+				.filter(|(k, _v)| k != &from.0)
+				.choose(&mut rng)
+				.map(|(k, v)| (k, Some(v)))
+		});
+		let recipient = if let Some(recipient) = recipient {
+			recipient
+		} else {
+			return Err(Error::NoPath(None))
+		};
+
 		// No topology is defined. Check if direct connection is possible.
 		match self.connected_peers.get(recipient.0) {
 			Some(key) => Ok(vec![vec![(*recipient.0, *key)]; count]),
@@ -216,7 +233,7 @@ impl Topology for NoTopology {
 	fn first_hop_nodes_external(
 		&self,
 		_from: &MixnetId,
-		_to: &MixnetId,
+		_to: Option<&MixnetId>,
 		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)> {
 		Vec::new()

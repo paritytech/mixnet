@@ -752,7 +752,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
 		self.topology.random_path(
 			start,
-			recipient,
+			Some(recipient),
 			count,
 			num_hops,
 			sphinx::MAX_HOPS,

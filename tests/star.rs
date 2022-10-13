@@ -126,7 +126,7 @@ impl Topology for TopologyGraph {
 	fn first_hop_nodes_external(
 		&self,
 		_from: &MixnetId,
-		_to: &MixnetId,
+		_to: Option<&MixnetId>,
 		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)> {
 		// allow only with peer 0
@@ -152,7 +152,7 @@ impl Topology for TopologyGraph {
 	fn random_path(
 		&mut self,
 		start_node: (&MixnetId, Option<&MixPublicKey>),
-		recipient_node: (&MixnetId, Option<&MixPublicKey>),
+		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		num_hops: usize,
 		max_hops: usize,
@@ -164,29 +164,39 @@ impl Topology for TopologyGraph {
 		let mut rng = rand::thread_rng();
 		let mut add_start = None;
 		let mut add_end = None;
+		let recipient_id = recipient_node.map(|r| r.0);
 		let start = if self.is_first_node(start_node.0) {
 			*start_node.0
 		} else {
-			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0, num_hops);
+			let firsts = self.first_hop_nodes_external(start_node.0, recipient_id, num_hops);
 			if firsts.is_empty() {
-				return Err(Error::NoPath(Some(*recipient_node.0)))
+				return Err(Error::NoPath(recipient_id.cloned()))
 			}
 			let n: usize = rng.gen_range(0..firsts.len());
 			add_start = Some(firsts[n]);
 			firsts[n].0
 		};
-		let recipient = if self.can_route(recipient_node.0) {
-			*recipient_node.0
-		} else if let Some(query) = last_query_if_surb {
-			// reuse a node that was recently connected.
-			if let Some(rec) = query.get(0) {
-				add_end = Some(recipient_node);
-				rec.0
+		let recipient = if let Some(recipient_node) = recipient_node {
+			if self.can_route(recipient_node.0) {
+				*recipient_node.0
+			} else if let Some(query) = last_query_if_surb {
+				// reuse a node that was recently connected.
+				if let Some(rec) = query.get(0) {
+					add_end = Some(recipient_node);
+					rec.0
+				} else {
+					return Err(Error::NoPath(Some(*recipient_node.0)))
+				}
 			} else {
 				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
 		} else {
-			return Err(Error::NoPath(Some(*recipient_node.0)))
+			self.peers
+				.iter()
+				.filter(|(k, _v)| k != start_node.0)
+				.choose(&mut rand::thread_rng())
+				.map(|(k, _)| *k)
+				.ok_or(Error::NoPath(None))?
 		};
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
@@ -208,7 +218,7 @@ impl Topology for TopologyGraph {
 				if let Some(key) = key {
 					path.push((*peer, *key));
 				} else {
-					return Err(Error::NoPath(Some(*recipient_node.0)))
+					return Err(Error::NoPath(recipient_id.cloned()))
 				}
 			}
 			result.push(path);

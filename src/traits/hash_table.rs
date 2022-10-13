@@ -177,7 +177,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	fn first_hop_nodes_external(
 		&self,
 		from: &MixnetId,
-		to: &MixnetId,
+		to: Option<&MixnetId>,
 		num_hops: usize,
 	) -> Vec<(MixnetId, MixPublicKey)> {
 		let routing_set = if self.layered_routing_set.is_empty() {
@@ -191,7 +191,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		routing_set
 			.iter()
 			.filter(|id| from != *id)
-			.filter(|id| to != *id)
+			.filter(|id| to != Some(*id))
 			.filter(|id| &self.local_id != *id)
 			.filter(|id| self.connected_nodes.contains(*id))
 			.filter_map(|k| self.routing_peers.get(k).map(|table| (*k, table.public_key)))
@@ -222,7 +222,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			if let Some(peer) = self.random_dest(|p| p == from || bad.contains(p), nb_hop) {
 				debug!(target: "mixnet", "Trying random dest {:?}.", peer);
 				if self
-					.reachable((from, None), (&peer, None), &mut nb_hop, usize::MAX, None)
+					.reachable((from, None), Some((&peer, None)), &mut nb_hop, usize::MAX, None)
 					.ok()
 					.is_none()
 				{
@@ -255,12 +255,17 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	fn random_path(
 		&mut self,
 		start_node: (&MixnetId, Option<&MixPublicKey>),
-		recipient_node: (&MixnetId, Option<&MixPublicKey>),
+		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		nb_chunk: usize,
 		mut num_hops: usize,
 		max_hops: usize,
 		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
+		if !self.has_enough_nodes_to_send() {
+			debug!(target: "mixnet", "Not enough routing nodes for path.");
+			return Err(Error::NotEnoughRoutingPeers)
+		}
+
 		let (start, recipient, add_start, add_end) = self.reachable(
 			start_node,
 			recipient_node,
@@ -302,11 +307,12 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			}
 
 			if add_end {
-				let (peer, key) = recipient_node;
-				if let Some(key) = key {
-					path.push((*peer, *key));
-				} else {
-					return Err(Error::NoPath(Some(*recipient_node.0)))
+				if let Some((peer, key)) = recipient_node {
+					if let Some(key) = key {
+						path.push((*peer, *key));
+					} else {
+						return Err(Error::NoPath(Some(*peer)))
+					}
 				}
 			}
 			result.push(path);
@@ -881,14 +887,16 @@ impl<C: Configuration> TopologyHashTable<C> {
 	fn reachable(
 		&mut self,
 		start_node: (&MixnetId, Option<&MixPublicKey>),
-		recipient_node: (&MixnetId, Option<&MixPublicKey>),
+		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		num_hops: &mut usize,
 		max_hops: usize,
-		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
+		query_path_for_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<(MixnetId, MixnetId, Option<(MixnetId, MixPublicKey)>, bool), Error> {
+		debug_assert!(!recipient_node.is_none() && query_path_for_surb.is_some());
 		let mut add_start = None;
 		let mut add_end = false;
 		let mut is_external = false;
+		let recipient_id = recipient_node.as_ref().map(|r| r.0);
 		let start = if self.is_first_node(start_node.0) {
 			*start_node.0
 		} else {
@@ -898,9 +906,9 @@ impl<C: Configuration> TopologyHashTable<C> {
 				return Err(Error::TooManyHops)
 			}
 
-			let firsts = self.first_hop_nodes_external(start_node.0, recipient_node.0, *num_hops);
+			let firsts = self.first_hop_nodes_external(start_node.0, recipient_id, *num_hops);
 			if firsts.is_empty() {
-				return Err(Error::NoPath(Some(*recipient_node.0)))
+				return Err(Error::NoPath(recipient_id.cloned()))
 			}
 			let mut rng = rand::thread_rng();
 			use rand::Rng;
@@ -910,55 +918,63 @@ impl<C: Configuration> TopologyHashTable<C> {
 			 // a different one: TODO remove random_recipient and make it an option of
 			 // random_path.
 		};
-		let recipient = if self.can_route(recipient_node.0) {
-			*recipient_node.0
-		} else {
-			trace!(target: "mixnet", "Non routing recipient");
-			if *num_hops + 1 > max_hops {
-				return Err(Error::TooManyHops)
-			}
-
-			if let Some(query) = last_query_if_surb {
-				// use again a node that was recently connected.
-				if let Some(rec) = query.get(0) {
-					trace!(target: "mixnet", "Surbs last: {:?}", rec);
-					add_end = true;
-					rec.0
+		let recipient = recipient_id
+			.map(|id| {
+				if self.can_route(id) {
+					Ok(*id)
 				} else {
-					return Err(Error::NoPath(Some(*recipient_node.0)))
+					trace!(target: "mixnet", "Non routing recipient");
+					if *num_hops + 1 > max_hops {
+						return Err(Error::TooManyHops)
+					}
+
+					if let Some(query) = query_path_for_surb {
+						// use again a node that was recently connected.
+						if let Some(rec) = query.get(0) {
+							trace!(target: "mixnet", "Surbs last: {:?}", rec);
+							add_end = true;
+							Ok(rec.0)
+						} else {
+							Err(Error::NoPath(Some(*id)))
+						}
+					} else {
+						Err(Error::NoPath(Some(*id)))
+					}
 				}
-			} else {
-				return Err(Error::NoPath(Some(*recipient_node.0)))
-			}
-		};
+			})
+			.transpose()?;
 		if !self.layered_routing_set.is_empty() {
 			let mut is_accessible = false;
 			if let Some(start_layer) = self.layered_routing_set_ix.get(&start) {
-				if let Some(dest_layer) = self.layered_routing_set_ix.get(&recipient) {
-					if *dest_layer as usize ==
-						layer_dest(
-							*start_layer as usize,
-							self.layered_routing_set.len(),
-							*num_hops,
-						) {
-						is_accessible = true;
-					} else if last_query_if_surb.is_some() {
-						// Allow more hop of surb reply.
-						let distance = layer_distance(
-							*start_layer as usize,
-							*dest_layer as usize,
-							self.layered_routing_set.len(),
-							*num_hops,
-						);
-						if (distance + is_external as usize) <= max_hops {
-							*num_hops = distance;
+				if let Some(recipient) = recipient.as_ref() {
+					if let Some(dest_layer) = self.layered_routing_set_ix.get(recipient) {
+						if *dest_layer as usize ==
+							layer_dest(
+								*start_layer as usize,
+								self.layered_routing_set.len(),
+								*num_hops,
+							) {
 							is_accessible = true;
+						} else if query_path_for_surb.is_some() {
+							// Allow more hop of surb reply.
+							let distance = layer_distance(
+								*start_layer as usize,
+								*dest_layer as usize,
+								self.layered_routing_set.len(),
+								*num_hops,
+							);
+							if (distance + is_external as usize) <= max_hops {
+								*num_hops = distance;
+								is_accessible = true;
+							}
 						}
 					}
+				} else {
+					is_accessible = true;
 				}
 			}
 			if !is_accessible {
-				return Err(Error::NoPath(Some(*recipient_node.0)))
+				return Err(Error::NoPath(recipient_id.cloned()))
 			}
 		}
 		trace!(target: "mixnet", "number hop: {:?}", num_hops);
@@ -970,7 +986,12 @@ impl<C: Configuration> TopologyHashTable<C> {
 			&self.routing_peers,
 			*num_hops,
 		);
-		let nb_path = count_paths(&self.paths, &start, &recipient, *num_hops);
+		let (nb_path, change_recipient) =
+			count_paths(&self.paths, &start, recipient.as_ref(), *num_hops);
+		let recipient = match (change_recipient, recipient) {
+			(Some(recipient), _) | (None, Some(recipient)) => recipient,
+			_ => return Err(Error::NoPath(None)),
+		};
 		debug!(target: "mixnet", "Number path for dest {:?}.", nb_path);
 		debug!(target: "mixnet", "{:?} to {:?}", start, recipient);
 		if nb_path < C::LOW_MIXNET_PATHS {
@@ -1265,14 +1286,15 @@ fn random_path(
 fn count_paths(
 	paths: &BTreeMap<usize, HashMap<MixnetId, HashMap<MixnetId, Vec<MixnetId>>>>,
 	from: &MixnetId,
-	to: &MixnetId,
+	to: Option<&MixnetId>,
 	size_path: usize,
-) -> usize {
+) -> (usize, Option<MixnetId>) {
 	let mut total = 0;
 	let mut at = size_path;
 	let mut exclude = HashSet::new();
 	exclude.insert(*from);
-	exclude.insert(*to);
+	to.map(|to| exclude.insert(*to));
+	let mut result_dest = None;
 	let mut result = Vec::<(MixnetId, usize)>::with_capacity(size_path); // allocate two extra for case where a node is
 																	 // appended front or/and back.
 	result.push((*from, 0));
@@ -1282,7 +1304,19 @@ fn count_paths(
 		if let Some((paths, at_ix)) = result.last().and_then(|(from, at_ix)| {
 			paths
 				.get(&at)
-				.and_then(|paths| paths.get(to))
+				.and_then(|paths| {
+					if let Some(to) = to {
+						paths.get(to)
+					} else {
+						// select dest with largest number of path (not 100% accurate but don't want
+						// to check path by path).
+						paths.iter().max_by_key(|paths| paths.1.len()).map(|paths| {
+							result_dest = Some(*paths.0);
+							exclude.insert(*paths.0);
+							paths.1
+						})
+					}
+				})
 				.and_then(|paths| paths.get(from))
 				.map(|p| (p, *at_ix))
 		}) {
@@ -1319,7 +1353,7 @@ fn count_paths(
 			at += 1;
 		}
 	}
-	total
+	(total, result_dest)
 }
 
 #[cfg(test)]
@@ -1413,7 +1447,7 @@ mod test {
 		fill_paths_inner(to_from, &mut paths, paths_depth, depth);
 		println!("size {:?}", paths_mem_size(&paths));
 
-		let nb_path = count_paths(&paths, &local_id, peers.last().unwrap(), depth);
+		let (nb_path, _new_dest) = count_paths(&paths, &local_id, peers.last(), depth);
 		println!("nb_path {:?}", nb_path);
 		let path = random_path(&paths, &local_id, peers.last().unwrap(), depth);
 		if path.is_none() {
@@ -1439,7 +1473,7 @@ mod test {
 			if path.is_some() {
 				number_reachable += 1;
 			}
-			let nb_path = count_paths(&paths, from, &peers[i], depth);
+			let (nb_path, _new_dest) = count_paths(&paths, from, Some(&peers[i]), depth);
 			med_nb_con += nb_path;
 		}
 		let average_number_connection = med_nb_con as f64 / nb_dest as f64;
