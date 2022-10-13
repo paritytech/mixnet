@@ -22,7 +22,7 @@
 
 pub mod hash_table;
 
-use crate::{Error, MixPublicKey, MixnetId, NetworkId, PeerCount, SendOptions, WindowStats};
+use crate::{Error, MixPublicKey, MixnetId, NetworkId, PeerCount, WindowStats};
 use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
@@ -52,18 +52,6 @@ pub trait Configuration: Topology + Handshake + Sized + Send + 'static {
 /// Provide network topology information to the mixnet.
 #[delegatable_trait]
 pub trait Topology: Sized {
-	/// Select a random recipient for the message to be delivered. This is
-	/// called when the user sends the message with no recipient specified.
-	/// E.g. this can select a random validator that can accept the blockchain
-	/// transaction into the block.
-	/// Return `None` if no such selection is possible.
-	/// TODO rem
-	fn random_recipient(
-		&mut self,
-		local_id: &MixnetId,
-		send_options: &SendOptions,
-	) -> Option<(MixnetId, MixPublicKey)>;
-
 	/// Check if a peer is in topology, do not need to be connected.
 	fn can_route(&self, id: &MixnetId) -> bool;
 
@@ -181,14 +169,6 @@ pub struct NoTopology {
 impl Topology for NoTopology {
 	fn can_route(&self, _id: &MixnetId) -> bool {
 		false
-	}
-
-	fn random_recipient(
-		&mut self,
-		_from: &MixnetId,
-		_: &SendOptions,
-	) -> Option<(MixnetId, MixPublicKey)> {
-		unimplemented!("TODO rem")
 	}
 
 	fn bandwidth_external(&self, _id: &MixnetId, _: &PeerCount) -> Option<(usize, usize)> {

@@ -127,8 +127,6 @@ pub struct TopologyHashTable<C: Configuration> {
 	// Can be redundant with `routing_set`.
 	routing_peers: BTreeMap<MixnetId, RoutingTable<C::Version>>,
 
-	default_num_hop: usize,
-
 	target_bytes_per_seconds: usize,
 
 	params: Parameters,
@@ -201,40 +199,6 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 	fn is_first_node(&self, id: &MixnetId) -> bool {
 		// allow for all
 		self.can_route(id)
-	}
-
-	// TODO make random_recipient return path directly!!!
-	// or part of random path!!
-	fn random_recipient(
-		&mut self,
-		from: &MixnetId,
-		send_options: &crate::SendOptions,
-	) -> Option<(MixnetId, MixPublicKey)> {
-		if !self.has_enough_nodes_to_send() {
-			debug!(target: "mixnet", "Not enough routing nodes for path.");
-			return None
-		}
-		let mut bad = HashSet::new();
-		loop {
-			debug!(target: "mixnet", "Path fo random recipient {:?}", (&from, &bad));
-			let mut nb_hop = send_options.num_hop.unwrap_or(self.default_num_hop);
-
-			if let Some(peer) = self.random_dest(|p| p == from || bad.contains(p), nb_hop) {
-				debug!(target: "mixnet", "Trying random dest {:?}.", peer);
-				if self
-					.reachable((from, None), Some((&peer, None)), &mut nb_hop, usize::MAX, None)
-					.ok()
-					.is_none()
-				{
-					bad.insert(peer);
-				} else {
-					return self.routing_peers.get(&peer).map(|keys| (peer, keys.public_key))
-				}
-			} else {
-				debug!(target: "mixnet", "No random dest.");
-				return None
-			}
-		}
 	}
 
 	fn routing_to(&self, from: &MixnetId, to: &MixnetId) -> bool {
@@ -440,7 +404,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 			//disconnected_in_routing: Default::default(),
 			target_bytes_per_seconds: config.target_bytes_per_second as usize,
 			params,
-			default_num_hop: config.num_hops as usize,
 			should_connect_to: Default::default(),
 			should_connect_pending: Default::default(),
 		}
@@ -494,45 +457,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 					count.iter().enumerate().max_by_key(|k| k.1).map(|k| k.0).unwrap_or(0) as u8;
 			}
 		}
-	}
-
-	fn random_dest(&self, skip: impl Fn(&MixnetId) -> bool, num_hops: usize) -> Option<MixnetId> {
-		let routing_set = if self.layered_routing_set.is_empty() {
-			&self.routing_set
-		} else {
-			let dest_ix =
-				layer_dest(self.local_layer_ix as usize, self.layered_routing_set.len(), num_hops);
-			&self.layered_routing_set[dest_ix]
-		};
-
-		use rand::RngCore;
-		// Warning this assume that NetworkId is a randomly distributed value.
-		let mut ix = [0u8; 32];
-		rand::thread_rng().fill_bytes(&mut ix[..]);
-
-		trace!(target: "mixnet", "routing {:?}, ix {:?}", routing_set, ix);
-		for key in routing_set.range(ix..) {
-			if let Some(table) = self.routing_peers.get(key) {
-				// TODO alert on low receive_from
-				if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
-					debug!(target: "mixnet", "Random route node");
-					return Some(*key)
-				} else {
-					debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
-				}
-			}
-		}
-		for key in routing_set.range(..ix).rev() {
-			if let Some(table) = self.routing_peers.get(key) {
-				if !skip(key) && table.receive_from.len() >= C::NUMBER_CONNECTED_BACKWARD {
-					debug!(target: "mixnet", "Random route node");
-					return Some(*key)
-				} else {
-					debug!(target: "mixnet", "Skip {:?}, nb {:?}, {:?}", skip(key), table.receive_from.len(), C::NUMBER_CONNECTED_BACKWARD);
-				}
-			}
-		}
-		None
 	}
 
 	// TODO Note that building this is rather brutal, could just make some
@@ -892,7 +816,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 		max_hops: usize,
 		query_path_for_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<(MixnetId, MixnetId, Option<(MixnetId, MixPublicKey)>, bool), Error> {
-		debug_assert!(!recipient_node.is_none() && query_path_for_surb.is_some());
+		debug_assert!(!(recipient_node.is_none() && query_path_for_surb.is_some()));
 		let mut add_start = None;
 		let mut add_end = false;
 		let mut is_external = false;
@@ -914,9 +838,8 @@ impl<C: Configuration> TopologyHashTable<C> {
 			use rand::Rng;
 			let n: usize = rng.gen_range(0..firsts.len());
 			add_start = Some(firsts[n]);
-			firsts[n].0 // TODO this is incorrect for getting random_recipient as the random path may use
-			 // a different one: TODO remove random_recipient and make it an option of
-			 // random_path.
+			// TODO could check for biggest number of paths from all first nodes
+			firsts[n].0
 		};
 		let recipient = recipient_id
 			.map(|id| {

@@ -519,25 +519,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		self.try_apply_topology_change();
 		let mut rng = rand::thread_rng();
 
-		let (maybe_peer_id, peer_pub_key) = if let Some(id) = peer_id {
-			(Some(id), peer_pub_key)
-		} else if let Some((id, key)) =
-			self.topology.random_recipient(&self.local_id, &send_options)
-		{
-			(Some(id), Some(key))
-		} else {
-			(None, None)
-		};
-
-		let peer_id =
-			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
-
 		let mut surb_query =
 			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 
 		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surb)?;
 		let paths = self.random_paths(
-			&peer_id,
+			peer_id.as_ref(),
 			peer_pub_key.as_ref(),
 			&send_options.num_hop,
 			chunks.len(),
@@ -545,9 +532,15 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		)?;
 
 		let mut surb = if send_options.with_surb {
+			let peer_id = if peer_id.is_none() {
+				// a random dest has ben create in path
+				paths.last().and_then(|path| path.last()).map(|peer_id| &peer_id.0)
+			} else {
+				peer_id.as_ref()
+			};
 			let paths = self
 				.random_paths(
-					&peer_id,
+					peer_id,
 					peer_pub_key.as_ref(),
 					&send_options.num_hop,
 					1,
@@ -732,16 +725,21 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 	fn random_paths(
 		&mut self,
-		recipient: &MixnetId,
+		recipient: Option<&MixnetId>,
 		recipient_key: Option<&MixPublicKey>,
 		num_hops: &Option<usize>,
 		count: usize,
 		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
 		let (start, recipient) = if last_query_if_surb.is_some() {
-			((recipient, recipient_key), (&self.local_id, Some(&self.public)))
+			if let Some(recipient) = recipient {
+				((recipient, recipient_key), Some((&self.local_id, Some(&self.public))))
+			} else {
+				// no recipient for a surb could be unreachable too.
+				return Err(Error::NoPath(None))
+			}
 		} else {
-			((&self.local_id, Some(&self.public)), (recipient, recipient_key))
+			((&self.local_id, Some(&self.public)), recipient.map(|r| (r, recipient_key)))
 		};
 
 		let num_hops = num_hops.unwrap_or(self.num_hops);
@@ -752,7 +750,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
 		self.topology.random_path(
 			start,
-			Some(recipient),
+			recipient,
 			count,
 			num_hops,
 			sphinx::MAX_HOPS,

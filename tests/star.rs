@@ -39,7 +39,7 @@ use ambassador::Delegate;
 use mixnet::{
 	ambassador_impl_Topology,
 	traits::{NewRoutingSet, ShouldConnectTo, Topology},
-	Error, MixPublicKey, MixSecretKey, MixnetId, NetworkId, PeerCount, SendOptions,
+	Error, MixPublicKey, MixSecretKey, MixnetId, NetworkId, PeerCount,
 };
 
 #[derive(Delegate)]
@@ -135,18 +135,6 @@ impl Topology for TopologyGraph {
 
 	fn is_first_node(&self, id: &MixnetId) -> bool {
 		self.peers.iter().any(|(p, _)| p == id)
-	}
-
-	fn random_recipient(
-		&mut self,
-		local_id: &MixnetId,
-		_: &SendOptions,
-	) -> Option<(MixnetId, MixPublicKey)> {
-		self.peers
-			.iter()
-			.filter(|(k, _v)| k != local_id)
-			.choose(&mut rand::thread_rng())
-			.map(|(k, v)| (*k, *v))
 	}
 
 	fn random_path(
