@@ -78,10 +78,6 @@ pub struct TransmitInfo {
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum ConnectedKind {
 	PendingHandshake,
-	// from routing node to external
-	Consumer,
-	// from external node connected to anything
-	External,
 	RoutingForward,
 	RoutingReceive,
 	RoutingReceiveForward,
@@ -99,14 +95,6 @@ impl ConnectedKind {
 
 	fn routing_receive(self) -> bool {
 		matches!(self, ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward)
-	}
-
-	fn is_consumer(self) -> bool {
-		matches!(self, ConnectedKind::Consumer)
-	}
-
-	fn is_external(self) -> bool {
-		matches!(self, ConnectedKind::External)
 	}
 }
 
@@ -1336,12 +1324,6 @@ pub struct PeerCount {
 	/// Number of mixnet peer we proxy and receive
 	/// from.
 	pub nb_connected_receive_routing: usize,
-	/// Number of nodes consuming our mixnet
-	/// access.
-	pub nb_connected_external: usize,
-	/// Number of serving mode connected (when
-	/// we don't route).
-	pub nb_connected_consumer: usize,
 }
 
 impl PeerCount {
@@ -1354,8 +1336,7 @@ impl PeerCount {
 		self.nb_connected += 1;
 		if topology.can_route(peer) {
 			if !topology.can_route(local_id) {
-				self.nb_connected_consumer += 1;
-				ConnectedKind::Consumer
+				ConnectedKind::Disconnected
 			} else if topology.routing_to(local_id, peer) {
 				self.nb_connected_forward_routing += 1;
 				if topology.routing_to(peer, local_id) {
@@ -1368,12 +1349,10 @@ impl PeerCount {
 				self.nb_connected_receive_routing += 1;
 				ConnectedKind::RoutingReceive
 			} else {
-				self.nb_connected_external += 1;
-				ConnectedKind::External
+				ConnectedKind::Disconnected
 			}
 		} else {
-			self.nb_connected_external += 1;
-			ConnectedKind::External
+			ConnectedKind::Disconnected
 		}
 	}
 
@@ -1381,14 +1360,6 @@ impl PeerCount {
 		match kind {
 			ConnectedKind::PendingHandshake => {
 				self.nb_pending_handshake -= 1;
-			},
-			ConnectedKind::Consumer => {
-				self.nb_connected -= 1;
-				self.nb_connected_consumer -= 1;
-			},
-			ConnectedKind::External => {
-				self.nb_connected -= 1;
-				self.nb_connected_external -= 1;
 			},
 			ConnectedKind::RoutingReceive => {
 				self.nb_connected -= 1;
