@@ -127,8 +127,6 @@ pub struct TopologyHashTable<C: Configuration> {
 	// Can be redundant with `routing_set`.
 	routing_peers: BTreeMap<MixnetId, RoutingTable<C::Version>>,
 
-	target_bytes_per_seconds: usize,
-
 	params: Parameters,
 
 	// all path of a given size.
@@ -325,7 +323,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 	pub fn new(
 		local_id: MixnetId,
 		node_public_key: MixPublicKey,
-		config: &crate::Config,
 		params: Parameters,
 		routing_table_version: C::Version,
 	) -> Self {
@@ -349,8 +346,6 @@ impl<C: Configuration> TopologyHashTable<C> {
 			routing_table,
 			paths: Default::default(),
 			paths_depth: 0,
-			//disconnected_in_routing: Default::default(),
-			target_bytes_per_seconds: config.target_bytes_per_second as usize,
 			params,
 			should_connect_to: Default::default(),
 			should_connect_pending: Default::default(),

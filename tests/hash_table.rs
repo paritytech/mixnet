@@ -145,7 +145,6 @@ fn test_messages(conf: TestConfig) {
 		let mut topo = TopologyHashTable::new(
 			nodes[p].0,
 			nodes[p].1,
-			config,
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
@@ -322,7 +321,6 @@ fn test_change_routing_set(conf: TestConfig) {
 		let mut topo = TopologyHashTable::new(
 			nodes[p].0,
 			nodes[p].1,
-			config,
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
 			(),
 		);
