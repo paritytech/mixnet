@@ -240,21 +240,10 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn bandwidth_external(&self, id: &MixnetId, _peers: &PeerCount) -> Option<(usize, usize)> {
-		if self.external.as_ref() == Some(id) {
-			return Some((1, 1))
-		}
-		if self.external.is_some() {
-			return None
-		}
-		Some((1, 1))
-	}
-
 	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool {
 		if let Some(local_id) = self.local_id.as_ref() {
 			self.routing_to(local_id, peer_id) ||
-				self.routing_to(peer_id, local_id) ||
-				self.bandwidth_external(peer_id, peers).is_some()
+				self.routing_to(peer_id, local_id)
 		} else {
 			false
 		}

@@ -66,10 +66,6 @@ pub trait Topology: Sized {
 	/// Check if a peer is in topology, do not need to be connected.
 	fn is_first_node(&self, _id: &MixnetId) -> bool;
 
-	/// If external is allowed, it returns a ratio of
-	/// routing node bandwidth to use.
-	fn bandwidth_external(&self, _id: &MixnetId, peers: &PeerCount) -> Option<(usize, usize)>;
-
 	/// Check node links.
 	fn routing_to(&self, from: &MixnetId, to: &MixnetId) -> bool;
 
@@ -171,10 +167,6 @@ pub struct NoTopology {
 impl Topology for NoTopology {
 	fn can_route(&self, _id: &MixnetId) -> bool {
 		false
-	}
-
-	fn bandwidth_external(&self, _id: &MixnetId, _: &PeerCount) -> Option<(usize, usize)> {
-		Some((1, 1))
 	}
 
 	fn random_path(

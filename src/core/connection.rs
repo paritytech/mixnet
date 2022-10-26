@@ -391,7 +391,6 @@ impl<C: Connection> ManagedConnection<C> {
 
 			if !(self.kind.is_consumer() ||
 				self.kind.routing_forward() ||
-				topology.bandwidth_external(peer_id, peers).is_some() ||
 				self.gracefull_nb_packet_send > 0)
 			{
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
@@ -556,7 +555,7 @@ impl<C: Connection> ManagedConnection<C> {
 			let (current, external) = if self.kind.routing_receive() {
 				(window.current_packet_limit, false)
 			} else {
-				let (n, d) = topology.bandwidth_external(&peer_id, peers).unwrap_or((0, 1));
+				let (n, d) = (0, 1); // TODO remove
 				((window.current_packet_limit * n) / d, true)
 			};
 			let current = if self.gracefull_nb_packet_receive > 0 {

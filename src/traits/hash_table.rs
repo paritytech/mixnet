@@ -292,31 +292,6 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.distributed_try_connect();
 	}
 
-	fn bandwidth_external(&self, id: &MixnetId, peers: &PeerCount) -> Option<(usize, usize)> {
-		if !self.routing && self.can_route(id) {
-			// expect surbs: TODO make it optional??
-			return Some((1, 1))
-		}
-		// TODO can cache this result (Option<Option<(usize, usize))
-
-		let nb_external = peers.nb_connected_external + 1;
-
-		let forward_bandwidth = ((C::EXTERNAL_BANDWIDTH.0 + C::EXTERNAL_BANDWIDTH.1) *
-			peers.nb_connected_forward_routing *
-			self.target_bytes_per_seconds) /
-			C::EXTERNAL_BANDWIDTH.1;
-		let receive_bandwidth = peers.nb_connected_receive_routing * self.target_bytes_per_seconds;
-
-		let available_bandwidth = if forward_bandwidth > receive_bandwidth {
-			forward_bandwidth - receive_bandwidth
-		} else {
-			0
-		};
-		let available_per_external = available_bandwidth / nb_external;
-
-		Some((available_per_external, self.target_bytes_per_seconds))
-	}
-
 	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			// Allow any allowed routing peers as it can be any of the should_connect_to in case
@@ -327,11 +302,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		}
 		if self.routing {
 			self.routing_to(peer_id, &self.local_id) ||
-				self.routing_to(&self.local_id, peer_id) ||
-				(!self.can_route(peer_id) &&
-					peers.nb_connected_external <
-						self.params.max_external.unwrap_or(usize::MAX) &&
-					self.bandwidth_external(peer_id, peers).is_some())
+				self.routing_to(&self.local_id, peer_id)
 		} else {
 			// connect as many routing node as possible
 			self.can_route(peer_id) &&
