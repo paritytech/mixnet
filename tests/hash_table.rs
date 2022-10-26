@@ -161,13 +161,8 @@ fn test_messages(conf: TestConfig) {
 		NotDistributed { inner }
 	};
 
-	let (handles, _) = common::spawn_swarms(
-		num_peers,
-		&executor,
-		&mut rng,
-		&config_proto,
-		make_topo,
-	);
+	let (handles, _) =
+		common::spawn_swarms(num_peers, &executor, &mut rng, &config_proto, make_topo);
 
 	let (nodes, mut with_swarm_channels) = common::spawn_workers::<NotDistributed>(
 		num_peers,
@@ -337,13 +332,8 @@ fn test_change_routing_set(conf: TestConfig) {
 		NotDistributed { inner }
 	};
 
-	let (handles, initial_con) = common::spawn_swarms(
-		num_peers,
-		&executor,
-		&mut rng,
-		&config_proto,
-		make_topo,
-	);
+	let (handles, initial_con) =
+		common::spawn_swarms(num_peers, &executor, &mut rng, &config_proto, make_topo);
 
 	let nodes_ids: Vec<_> = handles
 		.iter()

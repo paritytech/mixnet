@@ -293,9 +293,9 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return true
 			}
 		}
-		self.routing  && (
-			self.routing_to(peer_id, &self.local_id) ||
-				self.routing_to(&self.local_id, peer_id) )
+		self.routing &&
+			(self.routing_to(peer_id, &self.local_id) ||
+				self.routing_to(&self.local_id, peer_id))
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {

@@ -152,7 +152,11 @@ impl Topology for TopologyGraph {
 		let start = if let Some(start_node) = start_node {
 			*start_node.0
 		} else {
-			let firsts = self.first_hop_nodes_external(self.local_id.as_ref().unwrap(), recipient_id, num_hops);
+			let firsts = self.first_hop_nodes_external(
+				self.local_id.as_ref().unwrap(),
+				recipient_id,
+				num_hops,
+			);
 			if firsts.is_empty() {
 				return Err(Error::NoPath(recipient_id.cloned()))
 			}
@@ -238,8 +242,7 @@ impl Topology for TopologyGraph {
 
 	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
 		if let Some(local_id) = self.local_id.as_ref() {
-			self.routing_to(local_id, peer_id) ||
-				self.routing_to(peer_id, local_id) 
+			self.routing_to(local_id, peer_id) || self.routing_to(peer_id, local_id)
 		} else {
 			false
 		}
@@ -337,13 +340,8 @@ fn test_messages(conf: TestConfig) {
 		ConfigGraph { inner: handshake }
 	};
 
-	let (handles, _) = common::spawn_swarms(
-		num_peers,
-		&executor,
-		&mut rng,
-		&config_proto,
-		make_topo,
-	);
+	let (handles, _) =
+		common::spawn_swarms(num_peers, &executor, &mut rng, &config_proto, make_topo);
 
 	let (nodes, mut with_swarm_channels) = common::spawn_workers::<ConfigGraph>(
 		num_peers,
@@ -356,8 +354,8 @@ fn test_messages(conf: TestConfig) {
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
 	let send: Vec<_> = (1..num_peers)
-			.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
-			.collect();
+		.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
+		.collect();
 	send_messages(&conf, send.clone().into_iter(), &nodes, &mut with_swarm_channels);
 	wait_on_messages(&conf, send.into_iter(), &mut with_swarm_channels, b"pong");
 }

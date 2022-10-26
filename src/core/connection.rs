@@ -362,14 +362,11 @@ impl<C: Connection> ManagedConnection<C> {
 		packet: QueuedPacket,
 		packet_per_window: usize,
 		_topology: &impl Topology, // TODO rem param
-		_peers: &PeerCount, // TODO rem param
+		_peers: &PeerCount,        // TODO rem param
 	) -> Result<(), crate::Error> {
 		if let Some(peer_id) = self.mixnet_id.as_ref() {
 			if packet.injected_packet() {
-				if !(
-					self.kind.routing_forward() ||
-					self.gracefull_nb_packet_send > 0)
-				{
+				if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
 					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
 					return Err(crate::Error::NoPath(Some(*peer_id)))
 				}
@@ -389,10 +386,7 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::QueueFull)
 			}
 
-			if !(
-				self.kind.routing_forward() ||
-				self.gracefull_nb_packet_send > 0)
-			{
+			if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
 				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
 				return Err(crate::Error::NoPath(Some(*peer_id)))
 			}
@@ -552,11 +546,7 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 
 			// Limit reception.
-			let current = if self.kind.routing_receive() {
-				window.current_packet_limit
-			} else {
-				0
-			};
+			let current = if self.kind.routing_receive() { window.current_packet_limit } else { 0 };
 			let current = if self.gracefull_nb_packet_receive > 0 {
 				window.current_packet_limit / 2
 			} else {
