@@ -1010,17 +1010,11 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			}
 		}
 
-		for (peer, (packet, external)) in recv_packets {
+		for (peer, packet) in recv_packets {
 			if !self.import_packet(peer, packet) {
-				// warning this only indicate a peer send wrong packet, but cannot presume
-				// who (can be external).
 				log::trace!(target: "mixnet", "Error importing packet, wrong format.");
 				if let Some(stats) = self.window.stats.as_mut() {
-					if external {
-						stats.number_from_external_received_valid += 1;
-					} else {
-						stats.number_received_valid += 1;
-					}
+					stats.number_received_valid += 1;
 				}
 			}
 		}

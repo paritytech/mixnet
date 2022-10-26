@@ -44,7 +44,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) enum ConnectionEvent {
 	Established(MixnetId, MixPublicKey),
-	Received((Packet, bool)),
+	Received(Packet),
 	Broken(Option<MixnetId>),
 	None,
 }
@@ -87,7 +87,7 @@ pub(crate) struct ManagedConnection<C> {
 	// Using an internal buffer we can just drop connection earlier
 	// by receiving all and dropping when this buffer grow out
 	// of the expected badwidth limits.
-	receive_buffer: Option<(VecDeque<(Packet, bool)>, usize, usize)>,
+	receive_buffer: Option<(VecDeque<Packet>, usize, usize)>,
 	stats: Option<(ConnectionStats, Option<PacketType>)>,
 }
 
@@ -552,11 +552,10 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 
 			// Limit reception.
-			let (current, external) = if self.kind.routing_receive() {
-				(window.current_packet_limit, false)
+			let current = if self.kind.routing_receive() {
+				window.current_packet_limit
 			} else {
-				let (n, d) = (0, 1); // TODO remove
-				((window.current_packet_limit * n) / d, true)
+				0
 			};
 			let current = if self.gracefull_nb_packet_receive > 0 {
 				window.current_packet_limit / 2
@@ -580,13 +579,13 @@ impl<C: Connection> ManagedConnection<C> {
 							}
 
 							if let Some((buf, underbuf, limit)) = self.receive_buffer.as_mut() {
-								buf.push_back((packet, external));
+								buf.push_back(packet);
 								if buf.len() > *limit + *underbuf {
 									log::warn!(target: "mixnet", "Disconnecting, received too many messages");
 									return self.broken_connection(topology, peers)
 								}
 							} else {
-								result = Poll::Ready(ConnectionEvent::Received((packet, external)));
+								result = Poll::Ready(ConnectionEvent::Received(packet));
 								break
 							}
 						},
@@ -608,7 +607,7 @@ impl<C: Connection> ManagedConnection<C> {
 				if self.current_window + Wrapping(1) != window.current {
 					let skipped = window.current - self.current_window;
 					log::error!(target: "mixnet", "Window skipped {:?} ignoring report.", skipped);
-				} else if !external {
+				} else {
 					let packet_per_window_less_margin =
 						window.packet_per_window * (100 - WINDOW_MARGIN_PERCENT) / 100;
 					if self.sent_in_window < packet_per_window_less_margin {
