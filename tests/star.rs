@@ -133,10 +133,6 @@ impl Topology for TopologyGraph {
 		vec![self.peers[0]]
 	}
 
-	fn is_first_node(&self, id: &MixnetId) -> bool {
-		self.peers.iter().any(|(p, _)| p == id)
-	}
-
 	fn random_path(
 		&mut self,
 		start_node: Option<(&MixnetId, Option<&MixPublicKey>)>,

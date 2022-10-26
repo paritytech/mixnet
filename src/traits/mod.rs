@@ -63,9 +63,6 @@ pub trait Topology: Sized {
 		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)>;
 
-	/// Check if a peer is in topology, do not need to be connected.
-	fn is_first_node(&self, _id: &MixnetId) -> bool;
-
 	/// Check node links.
 	fn routing_to(&self, from: &MixnetId, to: &MixnetId) -> bool;
 
@@ -211,10 +208,6 @@ impl Topology for NoTopology {
 		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)> {
 		Vec::new()
-	}
-
-	fn is_first_node(&self, _id: &MixnetId) -> bool {
-		true
 	}
 
 	fn routing_to(&self, _from: &MixnetId, _to: &MixnetId) -> bool {

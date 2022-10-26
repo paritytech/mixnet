@@ -196,11 +196,6 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			.collect()
 	}
 
-	fn is_first_node(&self, id: &MixnetId) -> bool {
-		// allow for all
-		self.can_route(id)
-	}
-
 	fn routing_to(&self, from: &MixnetId, to: &MixnetId) -> bool {
 		if &self.local_id == from {
 			if self.routing {
