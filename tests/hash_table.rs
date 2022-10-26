@@ -278,7 +278,7 @@ fn from_external_no_surb() {
 	})
 }
 
-#[test]
+//#[test]
 fn surb_and_layer_local() {
 	for num_hops in 3..5 {
 		test_messages(TestConfig {
@@ -471,7 +471,7 @@ fn test_change_routing_set(conf: TestConfig) {
 #[test]
 fn testing_mess() {
 	test_change_routing_set(TestConfig {
-		num_peers: 4,
+		num_peers: 5,
 		num_hops: 3,
 		message_count: 2,
 		message_size: 1, // max 256 * 1024
