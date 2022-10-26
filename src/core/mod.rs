@@ -1319,9 +1319,6 @@ pub struct WindowStats {
 	// Do not include external
 	pub number_received_valid: usize,
 	pub number_received_invalid: usize,
-
-	pub number_from_external_received_valid: usize,
-	pub number_from_external_received_invalid: usize,
 }
 
 /// Current number of connected peers for the mixnet.

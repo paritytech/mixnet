@@ -240,10 +240,10 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool {
+	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
 		if let Some(local_id) = self.local_id.as_ref() {
 			self.routing_to(local_id, peer_id) ||
-				self.routing_to(peer_id, local_id)
+				self.routing_to(peer_id, local_id) 
 		} else {
 			false
 		}

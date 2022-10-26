@@ -305,7 +305,7 @@ impl<C: Connection> ManagedConnection<C> {
 				if let Some((peer_id, pk)) =
 					topology.check_handshake(handshake.as_slice(), &self.network_id)
 				{
-					let accepted = topology.accept_peer(&peer_id, peers);
+					let accepted = topology.accept_peer(&peer_id);
 					self.mixnet_id = Some(peer_id);
 					self.public_key = Some(pk);
 					self.handshake_received = true;

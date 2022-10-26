@@ -115,7 +115,7 @@ pub trait Topology: Sized {
 	fn should_connect_to(&self) -> ShouldConnectTo;
 
 	/// Is peer allowed to connect to our node.
-	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool;
+	fn accept_peer(&self, peer_id: &MixnetId) -> bool;
 
 	/// A new static routing set was globally defined.
 	fn handle_new_routing_set(&mut self, set: NewRoutingSet);
@@ -229,7 +229,7 @@ impl Topology for NoTopology {
 		self.connected_peers.remove(id);
 	}
 
-	fn accept_peer(&self, _: &MixnetId, _: &PeerCount) -> bool {
+	fn accept_peer(&self, _: &MixnetId) -> bool {
 		true
 	}
 

@@ -292,7 +292,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.distributed_try_connect();
 	}
 
-	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool {
+	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			// Allow any allowed routing peers as it can be any of the should_connect_to in case
 			// there is many disconnected.
@@ -300,14 +300,9 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return true
 			}
 		}
-		if self.routing {
+		self.routing  && (
 			self.routing_to(peer_id, &self.local_id) ||
-				self.routing_to(&self.local_id, peer_id)
-		} else {
-			// connect as many routing node as possible
-			self.can_route(peer_id) &&
-				peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
-		}
+				self.routing_to(&self.local_id, peer_id) )
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {
