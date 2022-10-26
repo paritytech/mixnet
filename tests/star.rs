@@ -299,7 +299,7 @@ fn gen_paths(
 }
 
 fn test_messages(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, from_external, .. } = conf;
+	let TestConfig { num_peers, message_size, .. } = conf;
 
 	let seed: u64 = 0;
 	let single_thread = false;
@@ -354,7 +354,6 @@ fn test_messages(conf: TestConfig) {
 
 	let (handles, _) = common::spawn_swarms(
 		num_peers,
-		from_external,
 		&executor,
 		&mut rng,
 		&config_proto,
@@ -363,7 +362,6 @@ fn test_messages(conf: TestConfig) {
 
 	let (nodes, mut with_swarm_channels) = common::spawn_workers::<ConfigGraph>(
 		num_peers,
-		from_external,
 		expect_all_connected,
 		handles,
 		&executor,
@@ -372,14 +370,9 @@ fn test_messages(conf: TestConfig) {
 
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
-	let send = if from_external {
-		// ext 1 can route through peer 0 (only peer accepting ext)
-		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
-	} else {
-		(1..num_peers)
+	let send: Vec<_> = (1..num_peers)
 			.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
-			.collect()
-	};
+			.collect();
 	send_messages(&conf, send.clone().into_iter(), &nodes, &mut with_swarm_channels);
 	wait_on_messages(&conf, send.into_iter(), &mut with_swarm_channels, b"pong");
 }
@@ -392,7 +385,6 @@ fn message_exchange_no_surb() {
 		message_count: 10,
 		message_size: 1,
 		with_surb: false,
-		from_external: false,
 		random_dest: false,
 	})
 }
@@ -405,7 +397,6 @@ fn fragmented_messages_no_surb() {
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: false,
-		from_external: false,
 		random_dest: false,
 	})
 }
@@ -418,7 +409,6 @@ fn message_exchange_with_surb() {
 		message_count: 10,
 		message_size: 1,
 		with_surb: true,
-		from_external: false,
 		random_dest: false,
 	})
 }
@@ -431,7 +421,6 @@ fn fragmented_messages_with_surb() {
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: true,
-		from_external: false,
 		random_dest: false,
 	})
 }

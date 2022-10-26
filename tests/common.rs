@@ -116,14 +116,13 @@ pub type NewTransport = (
 
 fn mk_transports(
 	num_peers: usize,
-	extra_external: usize,
 ) -> (
 	Vec<NewTransport>,
 	Vec<(NetworkId, WorkerChannels, mpsc::Sender<WorkerCommand>, mpsc::Sender<SwarmMessage>)>,
 ) {
 	let mut transports = Vec::<NewTransport>::new();
 	let mut handles = Vec::<(_, WorkerChannels, _, _)>::new();
-	for _ in 0..num_peers + extra_external {
+	for _ in 0..num_peers {
 		let (to_worker_sink, to_worker_stream) = mpsc::channel(1000);
 		let (from_worker_sink, from_worker_stream) = mpsc::channel(1000);
 		let to_worker_from_test = to_worker_sink.clone();
@@ -223,7 +222,6 @@ pub fn mk_workers<T: Configuration>(
 /// Spawn a libp2p local swarm with all peers.
 pub fn spawn_swarms<T: Configuration>(
 	num_peers: usize,
-	from_external: bool,
 	executor: &ThreadPool,
 	rng: &mut SmallRng,
 	config_proto: &Config,
@@ -235,13 +233,7 @@ pub fn spawn_swarms<T: Configuration>(
 		&Config,
 	) -> T,
 ) -> (Vec<Worker<T>>, Arc<AtomicBool>) {
-	let extra_external = if from_external {
-		2 // 2 external node at ix num_peers and num_peers + 1
-	} else {
-		0
-	};
-
-	let (transports, handles) = mk_transports(num_peers, extra_external);
+	let (transports, handles) = mk_transports(num_peers);
 	let swarms = mk_swarms(transports);
 
 	let workers = mk_workers(handles, rng, config_proto, make_topo);
@@ -259,20 +251,14 @@ pub fn spawn_swarms<T: Configuration>(
 	// This should be remove or optional if mixnet got non connected use case.
 	// TODO just test dial (list of peers) and retry dial simple system (synch is complex for no
 	// reason). TODO same for dht this is not needed (online offline is routing table dependant).
-	let mut to_notify = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
-	let mut to_wait = (0..num_peers + extra_external).map(|_| Vec::new()).collect::<Vec<_>>();
+	let mut to_notify = (0..num_peers).map(|_| Vec::new()).collect::<Vec<_>>();
+	let mut to_wait = (0..num_peers).map(|_| Vec::new()).collect::<Vec<_>>();
 
 	for p1 in 0..num_peers {
 		for to_wait in &mut to_wait[p1 + 1..num_peers] {
 			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
 			to_notify[p1].push(tx);
 			to_wait.push(rx);
-		}
-		if from_external {
-			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
-			// 0 with ext 1
-			to_notify[num_peers].push(tx);
-			to_wait[0].push(rx);
 		}
 	}
 
@@ -378,7 +364,6 @@ pub fn spawn_swarms<T: Configuration>(
 /// Spawn the mixnet workers workers
 pub fn spawn_workers<T: Configuration>(
 	num_peers: usize, // TODO from workers.len()??
-	from_external: bool,
 	expect_all_connected: bool,
 	workers: Vec<Worker<T>>,
 	executor: &ThreadPool,
@@ -389,17 +374,7 @@ pub fn spawn_workers<T: Configuration>(
 	let mut workers_futures = Vec::with_capacity(workers.len());
 
 	for (p, (mut worker, to_worker, mut to_swarm)) in workers.into_iter().enumerate() {
-		let external_1 = from_external && p == num_peers;
-		let external_2 = from_external && p > num_peers;
-		let mut target_peers = if from_external && p == 0 {
-			Some(num_peers)
-		} else if external_1 {
-			Some(1) // one connection is enough for external one
-		} else if external_2 {
-			None // no connection
-		} else {
-			Some(num_peers - 1)
-		};
+		let mut target_peers = num_peers - 1;
 		let mut expect_all_connected = expect_all_connected;
 
 		let (mut from_swarm_sink, from_swarm_stream) = mpsc::channel(1000);
@@ -407,7 +382,7 @@ pub fn spawn_workers<T: Configuration>(
 
 		nodes.push(*worker.mixnet().local_id());
 
-		let mut count_connected = target_peers.is_some();
+		let mut count_connected = true;
 		let mut handshake_done = HashSet::new();
 		let worker = future::poll_fn(move |cx| loop {
 			match worker.poll(cx) {
@@ -417,12 +392,11 @@ pub fn spawn_workers<T: Configuration>(
 					if count_connected {
 						handshake_done.insert(peer);
 						log::trace!(target: "mixnet_test", "{} done {}", p, handshake_done.len());
-						if Some(handshake_done.len()) == target_peers || target_peers.is_none() {
+						if handshake_done.len() == target_peers {
 							expect_all_connected = false;
 							count_connected = false;
 							log_unwrap!(from_swarm_sink
 								.start_send_unpin(PeerTestReply::InitialConnectionsCompleted));
-							target_peers = None;
 						}
 					}
 				},
@@ -441,13 +415,11 @@ pub fn spawn_workers<T: Configuration>(
 							// as negotiated connection.
 							handshake_done.insert(network_id);
 
-							if Some(handshake_done.len()) == target_peers || target_peers.is_none()
-							{
+							if handshake_done.len() == target_peers {
 								expect_all_connected = false;
 								count_connected = false;
 								log_unwrap!(from_swarm_sink
 									.start_send_unpin(PeerTestReply::InitialConnectionsCompleted));
-								target_peers = None;
 							}
 						}
 					}
@@ -566,15 +538,13 @@ pub struct TestConfig {
 	pub message_count: usize,
 	pub message_size: usize,
 	pub with_surb: bool,
-	pub from_external: bool,
 	pub random_dest: bool,
 }
 
 pub fn wait_on_connections(conf: &TestConfig, with_swarm_channels: &mut [TestChannels]) {
-	let TestConfig { num_peers, from_external, .. } = *conf;
+	let TestConfig { num_peers, .. } = *conf;
 
-	let nb_conn = if from_external { num_peers + 1 } else { num_peers };
-	let mut connected_futures: Vec<_> = with_swarm_channels[..nb_conn]
+	let mut connected_futures: Vec<_> = with_swarm_channels[..num_peers]
 		.iter_mut()
 		.map(|(receiver, _)| {
 			future::poll_fn(move |cx| loop {
