@@ -82,10 +82,12 @@ pub trait Topology: Sized {
 	/// routing peers is used.
 	///	E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
+	/// Start node is only defined for routing nodes, external node can still
+	/// force the first node but don't have to.
 	/// Error when no recipient is reachable.
 	fn random_path(
 		&mut self,
-		start_node: (&MixnetId, Option<&MixPublicKey>),
+		start_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		num_hops: usize,
@@ -177,7 +179,7 @@ impl Topology for NoTopology {
 
 	fn random_path(
 		&mut self,
-		from: (&MixnetId, Option<&MixPublicKey>),
+		from: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		recipient: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		_num_hops: usize,
@@ -192,7 +194,7 @@ impl Topology for NoTopology {
 			// Select a random connected peer
 			self.connected_peers
 				.iter()
-				.filter(|(k, _v)| k != &from.0)
+				.filter(|(k, _v)| Some(k) != from.as_ref().map(|f| &f.0))
 				.choose(&mut rng)
 				.map(|(k, v)| (k, Some(v)))
 		});

@@ -139,7 +139,7 @@ impl Topology for TopologyGraph {
 
 	fn random_path(
 		&mut self,
-		start_node: (&MixnetId, Option<&MixPublicKey>),
+		start_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		num_hops: usize,
@@ -153,10 +153,10 @@ impl Topology for TopologyGraph {
 		let mut add_start = None;
 		let mut add_end = None;
 		let recipient_id = recipient_node.map(|r| r.0);
-		let start = if self.is_first_node(start_node.0) {
+		let start = if let Some(start_node) = start_node {
 			*start_node.0
 		} else {
-			let firsts = self.first_hop_nodes_external(start_node.0, recipient_id, num_hops);
+			let firsts = self.first_hop_nodes_external(self.local_id.as_ref().unwrap(), recipient_id, num_hops);
 			if firsts.is_empty() {
 				return Err(Error::NoPath(recipient_id.cloned()))
 			}
@@ -181,7 +181,7 @@ impl Topology for TopologyGraph {
 		} else {
 			self.peers
 				.iter()
-				.filter(|(k, _v)| k != start_node.0)
+				.filter(|(k, _v)| Some(k) != start_node.as_ref().map(|s| s.0))
 				.choose(&mut rand::thread_rng())
 				.map(|(k, _)| *k)
 				.ok_or(Error::NoPath(None))?
@@ -432,32 +432,6 @@ fn fragmented_messages_with_surb() {
 		message_size: 8 * 1024,
 		with_surb: true,
 		from_external: false,
-		random_dest: false,
-	})
-}
-
-#[test]
-fn from_external_with_surb() {
-	test_messages(TestConfig {
-		num_peers: 5,
-		num_hops: 3,
-		message_count: 1,
-		message_size: 100,
-		with_surb: true,
-		from_external: true,
-		random_dest: false,
-	})
-}
-
-#[test]
-fn from_external_no_surb() {
-	test_messages(TestConfig {
-		num_peers: 5,
-		num_hops: 3,
-		message_count: 1,
-		message_size: 4 * 1024,
-		with_surb: false,
-		from_external: true,
 		random_dest: false,
 	})
 }

@@ -253,34 +253,8 @@ fn fragmented_messages_with_surb() {
 }
 
 #[test]
-fn from_external_with_surb() {
-	test_messages(TestConfig {
-		num_peers: 6,
-		num_hops: 3,
-		message_count: 1,
-		message_size: 100,
-		with_surb: true,
-		from_external: true,
-		random_dest: false,
-	})
-}
-
-#[test]
-fn from_external_no_surb() {
-	test_messages(TestConfig {
-		num_peers: 6,
-		num_hops: 3,
-		message_count: 1,
-		message_size: 4 * 1024,
-		with_surb: false,
-		from_external: true,
-		random_dest: false,
-	})
-}
-
-//#[test]
 fn surb_and_layer_local() {
-	for num_hops in 3..5 {
+	for num_hops in 3..4 {
 		test_messages(TestConfig {
 			num_peers: 20,
 			num_hops,
@@ -291,19 +265,6 @@ fn surb_and_layer_local() {
 			random_dest: true,
 		})
 	}
-}
-
-#[test]
-fn surb_and_layer_external() {
-	test_messages(TestConfig {
-		num_peers: 20,
-		num_hops: 4,
-		message_count: 1,
-		message_size: 1,
-		with_surb: true,
-		from_external: true,
-		random_dest: true,
-	})
 }
 
 fn test_change_routing_set(conf: TestConfig) {
