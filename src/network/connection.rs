@@ -20,8 +20,8 @@
 
 //! Network connection.
 
-use crate::PACKET_SIZE;
-use futures::{channel::oneshot::Sender as OneShotSender, AsyncRead, AsyncWrite};
+use crate::{EXTERNAL_QUERY_SIZE, EXTERNAL_REPLY_SIZE, PACKET_SIZE};
+use futures::{channel::oneshot::Sender as OneShotSender, io::IoSlice, AsyncRead, AsyncWrite};
 use std::{
 	pin::Pin,
 	task::{Context, Poll},
@@ -34,12 +34,16 @@ use libp2p_swarm::NegotiatedSubstream;
 pub struct Connection {
 	inbound: Option<Pin<Box<NegotiatedSubstream>>>,
 	outbound: Pin<Box<NegotiatedSubstream>>,
-	outbound_buffer: Option<(Vec<u8>, usize)>,
+	outbound_buffer: Option<(Option<u8>, Vec<u8>, usize)>,
 	outbound_flushing: bool,
-	inbound_buffer: (Box<[u8; PACKET_SIZE]>, usize),
+	// size see consta assen
+	inbound_buffer: (Box<[u8; EXTERNAL_QUERY_SIZE]>, usize),
 	// Inform connection handler when connection is dropped.
 	close_handler: Option<OneShotSender<()>>,
 }
+
+static_assertions::const_assert!(EXTERNAL_QUERY_SIZE >= EXTERNAL_REPLY_SIZE);
+static_assertions::const_assert!(EXTERNAL_REPLY_SIZE >= PACKET_SIZE);
 
 impl Drop for Connection {
 	fn drop(&mut self) {
@@ -48,20 +52,31 @@ impl Drop for Connection {
 }
 
 impl ConnectionT for Connection {
-	fn try_queue_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>> {
-		if self.outbound_buffer.is_some() || self.outbound_flushing {
-			Some(message)
-		} else {
-			self.outbound_buffer = Some((message, 0));
-			None
-		}
+	fn can_queue_send(&self) -> bool {
+		!(self.outbound_buffer.is_some() || self.outbound_flushing)
+	}
+
+	fn queue_send(&mut self, header: Option<u8>, message: Vec<u8>) {
+		debug_assert!(self.outbound_buffer.is_none());
+		self.outbound_buffer = Some((header, message, 0));
 	}
 
 	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
 		loop {
-			if let Some((waiting, ix)) = self.outbound_buffer.as_mut() {
-				match self.outbound.as_mut().poll_write(cx, &waiting[*ix..]) {
-					Poll::Ready(Ok(nb)) => {
+			if let Some((header, waiting, ix)) = self.outbound_buffer.as_mut() {
+				match if let Some(header) = header {
+					self.outbound.as_mut().poll_write_vectored(
+						cx,
+						&[IoSlice::new(&[*header][..]), IoSlice::new(&waiting[*ix..])],
+					)
+				} else {
+					self.outbound.as_mut().poll_write(cx, &waiting[*ix..])
+				} {
+					Poll::Ready(Ok(mut nb)) => {
+						if nb > 0 && header.is_some() {
+							nb -= 1;
+							*header = None;
+						}
 						*ix += nb;
 						if *ix != waiting.len() {
 							continue

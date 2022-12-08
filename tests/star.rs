@@ -240,12 +240,8 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
-		if let Some(local_id) = self.local_id.as_ref() {
-			self.routing_to(local_id, peer_id) || self.routing_to(peer_id, local_id)
-		} else {
-			false
-		}
+	fn accept_peer(&self, _peer_id: &MixnetId, _peers: &PeerCount) -> bool {
+		self.local_id.is_some()
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {
@@ -385,7 +381,7 @@ fn fragmented_messages_no_surb() {
 }
 
 #[test]
-fn message_exchange_with_surb() {
+fn message_exchange_with_surb2() {
 	test_messages(TestConfig {
 		num_peers: 5,
 		num_hops: 3,

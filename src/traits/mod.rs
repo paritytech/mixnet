@@ -63,18 +63,26 @@ pub trait Topology: Sized {
 		_num_hop: usize,
 	) -> Vec<(MixnetId, MixPublicKey)>;
 
+	/// Allow prioritizing some external messages.
+	fn can_add_external_message(
+		&self,
+		_id: &MixnetId,
+		queue_size: usize,
+		queue_limit: usize,
+	) -> bool {
+		queue_size <= queue_limit
+	}
+
 	/// Check node links.
 	fn routing_to(&self, from: &MixnetId, to: &MixnetId) -> bool;
 
 	/// Random message path.
-	/// Warning number of hops is indicative and for some topology
-	/// could be higher (eg if `start` or `recipient` are not routing
-	/// a hop should be added).
-	///
 	/// When recipient is undefined, a random recipient among reachable
 	/// routing peers is used.
 	///	E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
+	/// First peer in path is usually start node, except when the node is not
+	/// routing then first peer should send message as an external node.
 	/// Start node is only defined for routing nodes, external node can still
 	/// force the first node but don't have to.
 	/// Error when no recipient is reachable.
@@ -112,7 +120,7 @@ pub trait Topology: Sized {
 	fn should_connect_to(&self) -> ShouldConnectTo;
 
 	/// Is peer allowed to connect to our node.
-	fn accept_peer(&self, peer_id: &MixnetId) -> bool;
+	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool;
 
 	/// A new static routing set was globally defined.
 	fn handle_new_routing_set(&mut self, set: NewRoutingSet);
@@ -222,7 +230,7 @@ impl Topology for NoTopology {
 		self.connected_peers.remove(id);
 	}
 
-	fn accept_peer(&self, _: &MixnetId) -> bool {
+	fn accept_peer(&self, _: &MixnetId, _: &PeerCount) -> bool {
 		true
 	}
 
@@ -275,13 +283,17 @@ impl Handshake for NoTopology {
 
 /// Primitives needed from a network connection.
 pub trait Connection {
-	/// Start sending a message. This trait expects to queue a single message
-	/// and return the message back if another message is currently being send.
-	fn try_queue_send(&mut self, message: Vec<u8>) -> Option<Vec<u8>>;
+	/// Is queue empty and connection ready for next message.
+	fn can_queue_send(&self) -> bool;
+
+	/// Queue a message, `can_queue_send` must be `true`.
+	fn queue_send(&mut self, header: Option<u8>, message: Vec<u8>);
+
 	/// Send and flush, return true when queued message is written and flushed.
 	/// Return false if ignored (no queued message).
 	/// Return Error if connection broke.
 	fn send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>>;
+
 	/// Try receive a packet of a given size.
 	/// Maximum supported size is `PACKET_SIZE`, return error otherwise.
 	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>>;

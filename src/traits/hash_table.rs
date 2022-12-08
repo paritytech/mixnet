@@ -285,7 +285,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.distributed_try_connect();
 	}
 
-	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
+	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			// Allow any allowed routing peers as it can be any of the should_connect_to in case
 			// there is many disconnected.
@@ -293,9 +293,16 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return true
 			}
 		}
-		self.routing &&
-			(self.routing_to(peer_id, &self.local_id) ||
-				self.routing_to(&self.local_id, peer_id))
+
+		if self.routing {
+			self.routing_to(peer_id, &self.local_id) ||
+				self.routing_to(&self.local_id, peer_id) ||
+				(peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX))
+		} else {
+			// Could use a higher limit when not routing, but would be more `when not suceptible
+			// to be in the routing set` which we don't know but can configure.
+			peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
+		}
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {
@@ -760,14 +767,14 @@ impl<C: Configuration> TopologyHashTable<C> {
 		query_path_for_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<(MixnetId, MixnetId), Error> {
 		debug_assert!(!(recipient_node.is_none() && query_path_for_surb.is_some()));
-		let (is_external, start) = if let Some(start) = start_node {
+		let start = if let Some(start) = start_node {
 			if self.can_route(start.0) {
-				(false, Some(*start.0))
+				Some(*start.0)
 			} else {
-				(true, None)
+				None
 			}
 		} else {
-			(true, None)
+			None
 		};
 		let recipient_id = recipient_node.as_ref().map(|r| r.0);
 		let start = if let Some(start) = start {

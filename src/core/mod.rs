@@ -75,18 +75,51 @@ pub struct TransmitInfo {
 	surb_id: Option<ReplayTag>,
 }
 
+/// Status of the connection with a given peer.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum ConnectedKind {
+	// Connection start by a configurable handshake.
+	// For external node it can be simply to check
+	// we allow external data (or to keep connection
+	// for a while until we believe our topology is correct).
+	// For node already identified as part of mixnet
+	// it can be a way to give info faster (eg key is
+	// known from topology but we did not know the connected
+	// peer own the key).
 	PendingHandshake,
+	// We and connected peer are part of mixnet topology,
+	// a constant bandwidth from us to the peer is needed.
 	RoutingForward,
+	// We and connected peer are part of mixnet topology,
+	// a constant bandwidth from the peer to us is needed.
 	RoutingReceive,
+	// We and connected peer are part of mixnet topology,
+	// a constant bandwidth from in both direction is needed.
 	RoutingReceiveForward,
+	// Connected node is external, we just proxy request
+	// if we are routing forward and allows it.
+	// If we are routing we may want to keep some connection
+	// to serve external request.
+	// If we are not routing the connection should really not
+	// be needed.
+	External,
+	// Both nodes are routing, but are not connected on topology.
+	// Act as External but can be worth maintaining/caching differently.
+	ExternalRouting,
+	// No connection, keeping information for a later connect.
 	Disconnected,
 }
 
 impl ConnectedKind {
-	fn is_mixnet_connected(self) -> bool {
-		!matches!(self, ConnectedKind::PendingHandshake | ConnectedKind::Disconnected)
+	// At this point do not accept mixnet protocol message, but only
+	// raw sphinx messages.
+	fn is_mixnet_routing(self) -> bool {
+		matches!(
+			self,
+			ConnectedKind::RoutingForward |
+				ConnectedKind::RoutingReceive |
+				ConnectedKind::RoutingReceiveForward
+		)
 	}
 
 	fn routing_forward(self) -> bool {
@@ -95,6 +128,14 @@ impl ConnectedKind {
 
 	fn routing_receive(self) -> bool {
 		matches!(self, ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward)
+	}
+
+	fn is_external(self) -> bool {
+		matches!(self, ConnectedKind::External | ConnectedKind::ExternalRouting)
+	}
+
+	fn is_pending_handshake(self) -> bool {
+		matches!(self, ConnectedKind::PendingHandshake)
 	}
 }
 
@@ -191,10 +232,15 @@ pub fn public_from_ed25519(ed25519_pk: [u8; 32]) -> MixPublicKey {
 // only needed for stats
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum PacketType {
+	// Forward a received packet
 	Forward,
+	// Forward a packet received from an external peer.
 	ForwardExternal,
+	// Forward a packet that we did emit
 	SendFromSelf,
+	// Forward a surb packet
 	Surbs,
+	// Forward a Cover we did create.
 	Cover,
 }
 
@@ -220,7 +266,13 @@ impl std::cmp::Ord for QueuedPacket {
 
 impl QueuedPacket {
 	pub fn injected_packet(&self) -> bool {
+		// Surbs are injected as we did the reply.
+		// (surbs received from external users are seen as standard ForwardExternal)
 		matches!(self.kind, PacketType::SendFromSelf | PacketType::Surbs)
+	}
+
+	pub fn external_packet(&self) -> bool {
+		matches!(self.kind, PacketType::ForwardExternal)
 	}
 }
 
@@ -1324,6 +1376,8 @@ pub struct PeerCount {
 	/// Number of mixnet peer we proxy and receive
 	/// from.
 	pub nb_connected_receive_routing: usize,
+	/// Number of external nodes connection kept on mixnet.
+	pub nb_connected_external: usize,
 }
 
 impl PeerCount {
@@ -1333,26 +1387,39 @@ impl PeerCount {
 		peer: &MixnetId,
 		topology: &T,
 	) -> ConnectedKind {
-		self.nb_connected += 1;
-		if topology.can_route(peer) {
-			if !topology.can_route(local_id) {
-				ConnectedKind::Disconnected
-			} else if topology.routing_to(local_id, peer) {
-				self.nb_connected_forward_routing += 1;
-				if topology.routing_to(peer, local_id) {
-					self.nb_connected_receive_routing += 1;
-					ConnectedKind::RoutingReceiveForward
-				} else {
-					ConnectedKind::RoutingForward
+		let is_routing_self = topology.can_route(peer);
+		let is_routing_peer = topology.can_route(peer);
+		match (is_routing_self, is_routing_peer) {
+			(true, true) => {
+				self.nb_connected += 1;
+				let forward = topology.routing_to(local_id, peer);
+				let receiv = topology.routing_to(local_id, peer);
+				match (forward, receiv) {
+					(true, true) => {
+						self.nb_connected_receive_routing += 1;
+						self.nb_connected_forward_routing += 1;
+						ConnectedKind::RoutingReceiveForward
+					},
+					(true, false) => {
+						self.nb_connected_forward_routing += 1;
+						ConnectedKind::RoutingForward
+					},
+					(false, true) => {
+						self.nb_connected_receive_routing += 1;
+						ConnectedKind::RoutingReceive
+					},
+					(false, false) => {
+						self.nb_connected_external += 1;
+						ConnectedKind::ExternalRouting
+					},
 				}
-			} else if topology.routing_to(peer, local_id) {
-				self.nb_connected_receive_routing += 1;
-				ConnectedKind::RoutingReceive
-			} else {
-				ConnectedKind::Disconnected
-			}
-		} else {
-			ConnectedKind::Disconnected
+			},
+			(false, true) | (true, false) => {
+				self.nb_connected += 1;
+				self.nb_connected_external += 1;
+				ConnectedKind::External
+			},
+			(false, false) => ConnectedKind::Disconnected,
 		}
 	}
 
@@ -1360,6 +1427,10 @@ impl PeerCount {
 		match kind {
 			ConnectedKind::PendingHandshake => {
 				self.nb_pending_handshake -= 1;
+			},
+			ConnectedKind::External | ConnectedKind::ExternalRouting => {
+				self.nb_connected -= 1;
+				self.nb_connected_external -= 1;
 			},
 			ConnectedKind::RoutingReceive => {
 				self.nb_connected -= 1;

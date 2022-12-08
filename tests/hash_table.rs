@@ -100,7 +100,7 @@ fn test_messages(conf: TestConfig) {
 	let TestConfig { num_peers, message_size, random_dest, .. } = conf;
 
 	let seed: u64 = 0;
-	let single_thread = true;
+	let single_thread = false;
 	let (public_key, secret_key) = mixnet::generate_new_keys();
 	let average_message_delay_ms = 50;
 	let target_bytes_per_second = 16 * 1024; // for release 64 * 1024
@@ -202,7 +202,7 @@ fn message_exchange_no_surb() {
 }
 
 #[test]
-fn fragmented_messages_no_surb() {
+fn fragmented_messages_no_surb2() {
 	test_messages(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
