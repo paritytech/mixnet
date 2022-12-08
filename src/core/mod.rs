@@ -1393,7 +1393,7 @@ impl PeerCount {
 			(true, true) => {
 				self.nb_connected += 1;
 				let forward = topology.routing_to(local_id, peer);
-				let receiv = topology.routing_to(local_id, peer);
+				let receiv = topology.routing_to(peer, local_id);
 				match (forward, receiv) {
 					(true, true) => {
 						self.nb_connected_receive_routing += 1;
