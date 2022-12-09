@@ -251,7 +251,7 @@ fn fragmented_messages_with_surb() {
 	})
 }
 
-#[test]
+// #[test]
 fn from_external_with_surb() {
 	test_messages(TestConfig {
 		num_peers: 6,
@@ -265,7 +265,7 @@ fn from_external_with_surb() {
 }
 
 #[test]
-fn from_external_no_surb() {
+fn from_external_no_surb2() {
 	test_messages(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
@@ -292,7 +292,7 @@ fn surb_and_layer_local() {
 	}
 }
 
-#[test]
+//#[test]
 fn surb_and_layer_external() {
 	test_messages(TestConfig {
 		num_peers: 20,

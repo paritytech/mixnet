@@ -423,12 +423,12 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 
 			if packet.external_packet() &&
-				topology.can_add_external_message(
+				!topology.can_add_external_message(
 					&peer_id,
 					self.packet_queue.len(),
 					packet_per_window,
 				) {
-				log::error!(target: "mixnet", "Dropping packet, queue full for external: {:?}", self.network_id);
+				log::error!(target: "mixnet", "Dropping packet, queue full for external: {:?} {:} {:?}", self.network_id, self.packet_queue.len(), packet_per_window);
 				return Err(crate::Error::QueueFull)
 			}
 

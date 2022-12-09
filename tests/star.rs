@@ -436,7 +436,7 @@ fn ext_fragmented_surbs() {
 	})
 }
 
-#[test]
+//#[test]
 fn from_external_with_surb() {
 	test_messages(TestConfig {
 		num_peers: 5,

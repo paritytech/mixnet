@@ -112,7 +112,7 @@ impl ConnectionT for Connection {
 	}
 
 	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>> {
-		if size > PACKET_SIZE {
+		if size > EXTERNAL_QUERY_SIZE {
 			return Poll::Ready(Err(()))
 		}
 		match self.inbound.as_mut().map(|inbound| {

@@ -259,6 +259,11 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return Err(Error::NotEnoughRoutingPeers)
 			}
 
+			if start_node.is_none() {
+				// TODO pass in results instead
+				let not_used = path[0].1.clone();
+				path.insert(0, (start, not_used))
+			}
 			result.push(path);
 		}
 		debug!(target: "mixnet", "Path: {:?}", result);
@@ -1107,6 +1112,8 @@ fn random_path(
 	// TODO consider Vec instead of hashset (small nb elt)
 	let mut touched = Vec::<HashSet<MixnetId>>::with_capacity(size_path - 2);
 	touched.push(HashSet::new());
+	// TODO this is making num hop equal to num peer eg 3 is only two transport.
+	// So should switch to `at > 1` or even 0.
 	while at > 2 {
 		if let Some(paths) = result.last().and_then(|from| {
 			paths.get(&at).and_then(|paths| paths.get(to)).and_then(|paths| paths.get(from))
