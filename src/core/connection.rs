@@ -297,11 +297,11 @@ impl<C: Connection> ManagedConnection<C> {
 								continue
 							},
 							k if k == (MetaMessage::ExternalQuery as u8) => {
-								is_content = Some((MetaMessage::Handshake, EXTERNAL_QUERY_SIZE));
+								is_content = Some((MetaMessage::ExternalQuery, EXTERNAL_QUERY_SIZE));
 								continue
 							},
 							k if k == (MetaMessage::ExternalReply as u8) => {
-								is_content = Some((MetaMessage::Handshake, EXTERNAL_REPLY_SIZE));
+								is_content = Some((MetaMessage::ExternalReply, EXTERNAL_REPLY_SIZE));
 								continue
 							},
 							k if k == (MetaMessage::Disconnect as u8) =>
@@ -498,11 +498,7 @@ impl<C: Connection> ManagedConnection<C> {
 
 		let mut result = Poll::Ready(ConnectionEvent::None);
 
-		if !self.kind.is_mixnet_routing()
-			// TODO this disconnected condition is needed for session change
-			// but should not be here.
-			&& !self.kind.is_disconnected()
-		{
+		if !self.kind.is_mixnet_routing() {
 			// poll protocol meta message (not sphinx).
 			if self.meta_queued.is_empty() {
 				if !self.handshake_sent {

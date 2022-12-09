@@ -1396,9 +1396,10 @@ impl PeerCount {
 	) -> ConnectedKind {
 		let is_routing_self = topology.can_route(peer);
 		let is_routing_peer = topology.can_route(peer);
+
+		self.nb_connected += 1;
 		match (is_routing_self, is_routing_peer) {
 			(true, true) => {
-				self.nb_connected += 1;
 				let forward = topology.routing_to(local_id, peer);
 				let receiv = topology.routing_to(peer, local_id);
 				match (forward, receiv) {
@@ -1422,12 +1423,13 @@ impl PeerCount {
 				}
 			},
 			(false, true) | (true, false) => {
-				self.nb_connected += 1;
 				self.nb_connected_external += 1;
 				ConnectedKind::External
 			},
-			//(false, false) => ConnectedKind::External,
-			(false, false) => ConnectedKind::Disconnected,
+			(false, false) => {
+				self.nb_connected_external += 1;
+				ConnectedKind::External
+			},
 		}
 	}
 
