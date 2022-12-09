@@ -130,6 +130,10 @@ impl ConnectedKind {
 		matches!(self, ConnectedKind::RoutingReceive | ConnectedKind::RoutingReceiveForward)
 	}
 
+	fn is_disconnected(self) -> bool {
+		matches!(self, ConnectedKind::Disconnected)
+	}
+
 	fn is_external(self) -> bool {
 		matches!(self, ConnectedKind::External | ConnectedKind::ExternalRouting)
 	}
@@ -445,7 +449,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 		// disconnect all (need a new handshake).
 		for (_mix_id, mut connection) in std::mem::take(&mut self.connected_peers).into_iter() {
-			self.peer_counts.remove_peer(connection.disconnected_kind());
+			self.peer_counts.remove_peer(connection.set_disconnected_kind());
 			if let Some(mix_id) = connection.mixnet_id() {
 				self.handshaken_peers.remove(mix_id);
 				self.topology.disconnected(mix_id);
@@ -733,7 +737,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	/// Should be called when a peer is disconnected.
 	pub fn remove_connected_peer(&mut self, id: &NetworkId, with_event: bool) -> Option<MixnetId> {
 		let mix_id = self.connected_peers.remove(id).and_then(|mut c| {
-			self.peer_counts.remove_peer(c.disconnected_kind());
+			self.peer_counts.remove_peer(c.set_disconnected_kind());
 			c.mixnet_id().cloned()
 		});
 

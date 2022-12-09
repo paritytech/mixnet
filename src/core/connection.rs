@@ -101,7 +101,7 @@ pub(crate) struct ManagedConnection<C> {
 	// hard limit when disconnecting, should
 	// disconnect when connection broken or gracefull_nb_packet
 	// both at 0.
-	gracefull_disconnecting: Option<Instant>,
+	gracefull_disconnecting: Option<Instant>, // TODO gracefull conf in a single struct for clarity
 	// Receive is only call to match the expected bandwidth.
 	// Yet with most transport it will just make the transport
 	// buffer grow.
@@ -171,6 +171,8 @@ impl<C: Connection> ManagedConnection<C> {
 			// gracefull handling
 			let disco = matches!(self.kind, ConnectedKind::Disconnected);
 			// TODO include consumer here?
+			// TODO what if switching one but not the other: should have gracefull
+			// forward and gracefull backward ??
 			let forward = old_kind.routing_forward() != self.kind.routing_forward();
 			let receive = old_kind.routing_receive() != self.kind.routing_receive();
 			if receive || forward {
@@ -443,7 +445,7 @@ impl<C: Connection> ManagedConnection<C> {
 		topology: &mut impl Configuration,
 		peers: &mut PeerCount,
 	) -> Poll<ConnectionEvent> {
-		peers.remove_peer(self.disconnected_kind());
+		peers.remove_peer(self.set_disconnected_kind());
 		topology.peer_stats(peers);
 		Poll::Ready(ConnectionEvent::Broken(self.handshake_done_id))
 	}
@@ -461,8 +463,14 @@ impl<C: Connection> ManagedConnection<C> {
 				return self.broken_connection(topology, peers)
 			}
 		}
+
 		let mut result = Poll::Ready(ConnectionEvent::None);
-		if !self.kind.is_mixnet_routing() {
+
+		if self.kind.is_pending_handshake()
+			// TODO this disconnected condition is needed for session change
+			// but should not be here.
+			&& !self.kind.is_disconnected()
+		{
 			// poll protocol meta message (not sphinx).
 			if self.meta_queued.is_none() {
 				if !self.handshake_sent {
@@ -479,30 +487,35 @@ impl<C: Connection> ManagedConnection<C> {
 					if self.connection.can_queue_send() {
 						self.connection.queue_send(Some(MetaMessage::Handshake as u8), handshake);
 					} else {
-						self.meta_queued = Some((MetaMessage::Handshake, handshake));
+						return self.broken_connection(topology, peers)
 					}
 					self.handshake_sent = true;
 				}
+			}
 
+			if !self.handshake_received {
 				if self.meta_queued.is_none() {
 					match self.try_recv_meta(cx, topology) {
 						Poll::Ready(Ok((MetaMessage::Handshake, data))) => {
 							if let Err(()) = self.received_handshake(data, topology, peers) {
 								return self.broken_connection(topology, peers)
 							}
+
+							if matches!(result, Poll::Pending) {
+								result = Poll::Ready(ConnectionEvent::None);
+							}
 						},
 						Poll::Ready(Ok((MetaMessage::ExternalQuery, data))) => {
-							unimplemented!()
+							return self.broken_connection(topology, peers)
+							//unimplemented!()
 						},
 						Poll::Ready(Ok((MetaMessage::ExternalReply, data))) => {
-							unimplemented!()
-						},
-						Poll::Ready(Ok((MetaMessage::Disconnect, _))) => {
 							return self.broken_connection(topology, peers)
+							//unimplemented!()
 						},
-						Poll::Ready(Err(())) => {
-							return self.broken_connection(topology, peers)
-						},
+						Poll::Ready(Ok((MetaMessage::Disconnect, _))) =>
+							return self.broken_connection(topology, peers),
+						Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
 						Poll::Pending =>
 							if matches!(result, Poll::Ready(ConnectionEvent::None)) {
 								result = Poll::Pending
@@ -514,19 +527,23 @@ impl<C: Connection> ManagedConnection<C> {
 			loop {
 				match self.try_send_flushed(cx, false) {
 					Poll::Ready(Ok(true)) => {
+						if matches!(result, Poll::Pending) {
+							result = Poll::Ready(ConnectionEvent::None);
+						}
+
 						assert!(self.connection.can_queue_send());
+
 						if let Some((kind, data)) = self.meta_queued.take() {
 							self.connection.queue_send(Some(kind as u8), data);
 							continue
 						}
+						break
 					},
 					Poll::Ready(Ok(false)) => {
 						// nothing
 						break
 					},
-					Poll::Ready(Err(())) => {
-						return self.broken_connection(topology, peers)
-					},
+					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
 					Poll::Pending => {
 						if matches!(result, Poll::Ready(ConnectionEvent::None)) {
 							result = Poll::Pending
@@ -577,6 +594,10 @@ impl<C: Connection> ManagedConnection<C> {
 								return self.broken_connection(topology, peers)
 							}
 						}
+						if matches!(result, Poll::Pending) {
+							result = Poll::Ready(ConnectionEvent::None);
+						}
+
 						break
 					},
 					Poll::Ready(Ok(false)) => {
@@ -592,7 +613,7 @@ impl<C: Connection> ManagedConnection<C> {
 								if let Some((stats, _)) = self.stats.as_mut() {
 									stats.failure_packet(Some(packet.1));
 								}
-								self.next_packet = Some((packet.0, packet.1));
+								self.next_packet = Some(packet);
 							}
 							continue
 						}
@@ -630,10 +651,12 @@ impl<C: Connection> ManagedConnection<C> {
 						}
 					},
 					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-					Poll::Pending =>
+					Poll::Pending => {
 						if matches!(result, Poll::Ready(ConnectionEvent::None)) {
 							result = Poll::Pending
-						},
+						}
+						break
+					},
 				}
 			}
 
@@ -726,7 +749,10 @@ impl<C: Connection> ManagedConnection<C> {
 				log::trace!(target: "mixnet", "Peer, nothing received for too long, dropping.");
 				return self.broken_connection(topology, peers)
 			},
-			Poll::Pending => (),
+			Poll::Pending =>
+				if matches!(result, Poll::Ready(ConnectionEvent::None)) {
+					result = Poll::Pending
+				},
 		}
 		result
 	}
@@ -744,7 +770,7 @@ impl<C: Connection> ManagedConnection<C> {
 		})
 	}
 
-	pub(super) fn disconnected_kind(&mut self) -> ConnectedKind {
+	pub(super) fn set_disconnected_kind(&mut self) -> ConnectedKind {
 		let kind = self.kind;
 		self.handshake_sent = false;
 		self.handshake_received = false;
