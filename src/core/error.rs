@@ -55,6 +55,9 @@ pub enum Error {
 	NoSphinxId,
 	/// Mixnet not ready.
 	NotReady,
+	/// Mixnet not connected externally (cannot send meta message
+	/// while routing).
+	NotExternal,
 	/// Other.
 	Other(String),
 }
@@ -77,6 +80,7 @@ impl fmt::Display for Error {
 			Error::Unreachable => write!(f, "Destination peer not connected."),
 			Error::NoSphinxId => write!(f, "Sphinx Id not obtain from handshake."),
 			Error::NotReady => write!(f, "Mixnet not ready."),
+			Error::NotExternal => write!(f, "Mixnet not externally connected."),
 			Error::Other(e) => write!(f, "Other: {}", e),
 		}
 	}

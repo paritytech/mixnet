@@ -41,6 +41,9 @@ use std::{
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+// TODO this is only limiting our queries per peer
+// and is just a way to bound the buffer, not really configurable.
+const MAX_METAPAQUET: usize = 1_000;
 pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
 pub(crate) const EXTERNAL_REPLY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
 
@@ -77,7 +80,7 @@ pub(crate) struct ManagedConnection<C> {
 
 	// TODO all handshake here in an enum (still a bit redundant with `kind`).
 	handshake_done_id: Option<MixnetId>,
-	meta_queued: Option<(MetaMessage, Vec<u8>)>,
+	meta_queued: VecDeque<(MetaMessage, Vec<u8>)>,
 	handshake_sent: bool,
 	handshake_received: bool,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
@@ -90,6 +93,7 @@ pub(crate) struct ManagedConnection<C> {
 	// TODO have a safe mode that error on too big (but then
 	// need a mechanism to rollback other message chunk in other connections).
 	packet_queue_inject: BinaryHeap<QueuedPacket>,
+	// TODO most buff use Vec<u8>, but could use Packet
 	next_packet: Option<(Vec<u8>, PacketType)>,
 	// If we did not receive for a while, close connection.
 	read_timeout: Delay,
@@ -135,7 +139,7 @@ impl<C: Connection> ManagedConnection<C> {
 			next_packet: None,
 			current_window,
 			public_key: None,
-			meta_queued: None,
+			meta_queued: Default::default(),
 			handshake_sent: false,
 			handshake_received: false,
 			sent_in_window: 0,
@@ -440,6 +444,34 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
+	pub(crate) fn queue_external_packet(
+		&mut self,
+		packet: QueuedPacket,
+	) -> Result<(), crate::Error> {
+		// TODO we should be able to report the error : return a channel on success (channel in
+		// queued item): same for queue packet actually (failing first hop and not knowing is a bit
+		// dumb) -> might extend to surb reply, even if current system ok (or use surb reply
+		// system).
+		if !self.kind.is_external() {
+			return Err(crate::Error::NotExternal)
+		}
+		if packet.injected_packet() {
+			if self.meta_queued.len() >= MAX_METAPAQUET {
+				return Err(crate::Error::QueueFull)
+			}
+			if self.connection.can_queue_send() {
+				self.connection
+					.queue_send(Some(MetaMessage::ExternalQuery as u8), packet.data.0.to_vec());
+			} else {
+				self.meta_queued.push_back((MetaMessage::ExternalQuery, packet.data.0.to_vec()));
+			}
+		} else {
+			// surb
+			unimplemented!()
+		}
+		Ok(())
+	}
+
 	fn broken_connection(
 		&mut self,
 		topology: &mut impl Configuration,
@@ -466,13 +498,13 @@ impl<C: Connection> ManagedConnection<C> {
 
 		let mut result = Poll::Ready(ConnectionEvent::None);
 
-		if self.kind.is_pending_handshake()
+		if !self.kind.is_mixnet_routing()
 			// TODO this disconnected condition is needed for session change
 			// but should not be here.
 			&& !self.kind.is_disconnected()
 		{
 			// poll protocol meta message (not sphinx).
-			if self.meta_queued.is_none() {
+			if self.meta_queued.is_empty() {
 				if !self.handshake_sent {
 					let handshake = if let Some(mut handshake) =
 						topology.handshake(&self.network_id, &self.local_public_key)
@@ -487,14 +519,14 @@ impl<C: Connection> ManagedConnection<C> {
 					if self.connection.can_queue_send() {
 						self.connection.queue_send(Some(MetaMessage::Handshake as u8), handshake);
 					} else {
-						return self.broken_connection(topology, peers)
+						self.meta_queued.push_back((MetaMessage::Handshake, handshake));
 					}
 					self.handshake_sent = true;
 				}
 			}
 
-			if !self.handshake_received {
-				if self.meta_queued.is_none() {
+			if !self.handshake_received || self.kind.is_external() {
+				if self.meta_queued.is_empty() {
 					match self.try_recv_meta(cx, topology) {
 						Poll::Ready(Ok((MetaMessage::Handshake, data))) => {
 							if let Err(()) = self.received_handshake(data, topology, peers) {
@@ -533,7 +565,7 @@ impl<C: Connection> ManagedConnection<C> {
 
 						assert!(self.connection.can_queue_send());
 
-						if let Some((kind, data)) = self.meta_queued.take() {
+						if let Some((kind, data)) = self.meta_queued.pop_front() {
 							self.connection.queue_send(Some(kind as u8), data);
 							continue
 						}

@@ -538,12 +538,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
 			let deadline = self.window.last_now;
-			connection.queue_packet(
-				QueuedPacket { deadline, data, kind },
-				self.window.packet_per_window,
-				&self.topology,
-				&self.peer_counts,
-			)?;
+			// TODO change this just pass data?
+			connection.queue_external_packet(QueuedPacket { deadline, data, kind })?;
 		} else {
 			return Err(Error::Unreachable)
 		}
@@ -563,6 +559,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		self.try_apply_topology_change();
 		let mut rng = rand::thread_rng();
 
+		let is_external = !self.topology.can_route(&self.local_id);
 		let mut surb_query =
 			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 
@@ -573,6 +570,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			&send_options.num_hop,
 			chunks.len(),
 			None,
+			is_external,
 		)?;
 
 		let mut surb = if send_options.with_surb {
@@ -589,6 +587,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					&send_options.num_hop,
 					1,
 					paths.last(),
+					is_external,
 				)?
 				.remove(0);
 			let first_node = paths[0].0;
@@ -623,7 +622,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			packets.push((first_id, packet));
 		}
 
-		if self.topology.can_route(&self.local_id) {
+		if !is_external {
 			for (peer_id, packet) in packets {
 				// TODO delay may not be useful here (since secondary
 				// queue used).
@@ -774,16 +773,20 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		num_hops: &Option<usize>,
 		count: usize,
 		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
+		is_external: bool,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
 		let (start, recipient) = if last_query_if_surb.is_some() {
 			if let Some(recipient) = recipient {
-				((recipient, recipient_key), Some((&self.local_id, Some(&self.public))))
+				(Some((recipient, recipient_key)), Some((&self.local_id, Some(&self.public))))
 			} else {
 				// no recipient for a surb could be unreachable too.
 				return Err(Error::NoPath(None))
 			}
 		} else {
-			((&self.local_id, Some(&self.public)), recipient.map(|r| (r, recipient_key)))
+			(
+				(!is_external).then(|| (&self.local_id, Some(&self.public))),
+				recipient.map(|r| (r, recipient_key)),
+			)
 		};
 
 		let num_hops = num_hops.unwrap_or(self.num_hops);
@@ -793,7 +796,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
 		self.topology.random_path(
-			Some(start),
+			start,
 			recipient,
 			count,
 			num_hops,
@@ -1423,6 +1426,7 @@ impl PeerCount {
 				self.nb_connected_external += 1;
 				ConnectedKind::External
 			},
+			//(false, false) => ConnectedKind::External,
 			(false, false) => ConnectedKind::Disconnected,
 		}
 	}
