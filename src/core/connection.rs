@@ -44,7 +44,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 // TODO this is only limiting our queries per peer
 // and is just a way to bound the buffer, not really configurable.
 const MAX_METAPAQUET: usize = 1_000;
-pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
+pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE + 32; // TODO other stuff needed
 pub(crate) const EXTERNAL_REPLY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
 
 /// Events sent from a polled connection to the main mixnet loop.
@@ -55,6 +55,8 @@ pub(crate) enum ConnectionEvent {
 	Established(MixnetId, MixPublicKey),
 	/// Received packet.
 	Received(Packet),
+	/// External message to forward.
+	ExternalQuery(MixnetId, Packet),
 	/// Closed connection.
 	Broken(Option<MixnetId>),
 	/// Noops.
@@ -297,11 +299,13 @@ impl<C: Connection> ManagedConnection<C> {
 								continue
 							},
 							k if k == (MetaMessage::ExternalQuery as u8) => {
-								is_content = Some((MetaMessage::ExternalQuery, EXTERNAL_QUERY_SIZE));
+								is_content =
+									Some((MetaMessage::ExternalQuery, EXTERNAL_QUERY_SIZE));
 								continue
 							},
 							k if k == (MetaMessage::ExternalReply as u8) => {
-								is_content = Some((MetaMessage::ExternalReply, EXTERNAL_REPLY_SIZE));
+								is_content =
+									Some((MetaMessage::ExternalReply, EXTERNAL_REPLY_SIZE));
 								continue
 							},
 							k if k == (MetaMessage::Disconnect as u8) =>
@@ -446,7 +450,8 @@ impl<C: Connection> ManagedConnection<C> {
 
 	pub(crate) fn queue_external_packet(
 		&mut self,
-		packet: QueuedPacket,
+		first_hop: MixnetId,
+		mut packet: QueuedPacket,
 	) -> Result<(), crate::Error> {
 		// TODO we should be able to report the error : return a channel on success (channel in
 		// queued item): same for queue packet actually (failing first hop and not knowing is a bit
@@ -459,11 +464,13 @@ impl<C: Connection> ManagedConnection<C> {
 			if self.meta_queued.len() >= MAX_METAPAQUET {
 				return Err(crate::Error::QueueFull)
 			}
+			let mut data = first_hop.to_vec();
+			data.append(&mut packet.data.0);
 			if self.connection.can_queue_send() {
 				self.connection
-					.queue_send(Some(MetaMessage::ExternalQuery as u8), packet.data.0.to_vec());
+					.queue_send(Some(MetaMessage::ExternalQuery as u8), data);
 			} else {
-				self.meta_queued.push_back((MetaMessage::ExternalQuery, packet.data.0.to_vec()));
+				self.meta_queued.push_back((MetaMessage::ExternalQuery, data));
 			}
 		} else {
 			// surb
@@ -502,7 +509,7 @@ impl<C: Connection> ManagedConnection<C> {
 			// poll protocol meta message (not sphinx).
 			if self.meta_queued.is_empty() {
 				if !self.handshake_sent {
-					let handshake = if let Some(mut handshake) =
+					let handshake = if let Some(handshake) =
 						topology.handshake(&self.network_id, &self.local_public_key)
 					{
 						handshake
@@ -533,9 +540,22 @@ impl<C: Connection> ManagedConnection<C> {
 								result = Poll::Ready(ConnectionEvent::None);
 							}
 						},
-						Poll::Ready(Ok((MetaMessage::ExternalQuery, data))) => {
-							return self.broken_connection(topology, peers)
-							//unimplemented!()
+						Poll::Ready(Ok((MetaMessage::ExternalQuery, mut data))) => {
+							if data.len() < EXTERNAL_QUERY_SIZE {
+								log::trace!(target: "mixnet", "Invalid external query from {}", self.network_id);
+								if matches!(result, Poll::Pending) {
+									result = Poll::Ready(ConnectionEvent::None);
+								}
+							} else {
+								let mut recipient = MixnetId::default();
+								let mixnet_id_len = recipient.len();
+								recipient.copy_from_slice(&data[..mixnet_id_len]);
+								let mut data = data.split_off(mixnet_id_len);
+								data.truncate(PACKET_SIZE);
+
+								let data = Packet::from_vec(data).expect("checked size");
+								return Poll::Ready(ConnectionEvent::ExternalQuery(recipient, data))
+							}
 						},
 						Poll::Ready(Ok((MetaMessage::ExternalReply, data))) => {
 							return self.broken_connection(topology, peers)
@@ -581,7 +601,6 @@ impl<C: Connection> ManagedConnection<C> {
 						return result
 					},
 				}
-				break
 			}
 
 			if self.handshake_sent && self.handshake_received && self.kind.is_pending_handshake() {

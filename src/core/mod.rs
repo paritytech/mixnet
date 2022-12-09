@@ -529,6 +529,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	fn queue_external_packet(
 		&mut self,
 		recipient: MixnetId,
+		first_hop: MixnetId,
 		data: Packet,
 		kind: PacketType,
 	) -> Result<(), Error> {
@@ -539,7 +540,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		{
 			let deadline = self.window.last_now;
 			// TODO change this just pass data?
-			connection.queue_external_packet(QueuedPacket { deadline, data, kind })?;
+			connection.queue_external_packet(first_hop, QueuedPacket { deadline, data, kind })?;
 		} else {
 			return Err(Error::Unreachable)
 		}
@@ -564,7 +565,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 
 		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surb)?;
-		let paths = self.random_paths(
+		let mut paths = self.random_paths(
 			peer_id.as_ref(),
 			peer_pub_key.as_ref(),
 			&send_options.num_hop,
@@ -602,6 +603,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let nb_chunks = chunks.len();
 		let mut packets = Vec::with_capacity(nb_chunks);
 		for (n, chunk) in chunks.into_iter().enumerate() {
+			let first_external = if is_external {
+				let new = paths[n].split_off(1);
+				let first = paths[n][0].0;
+				paths[n] = new;
+				Some(first)
+			} else {
+				None
+			};
 			let (first_id, _) = *paths[n].first().unwrap();
 			let hops: Vec<_> = paths[n]
 				.iter()
@@ -619,19 +628,21 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				};
 				self.surb.insert(surb_id, persistance, self.window.last_now);
 			}
-			packets.push((first_id, packet));
+			if let Some(target) = first_external {
+				packets.push((target, packet, Some(first_id)));
+			} else {
+				packets.push((first_id, packet, None));
+			}
 		}
 
-		if !is_external {
-			for (peer_id, packet) in packets {
+		for (peer_id, packet, is_external) in packets {
+			if let Some(first_hop) = is_external {
+				self.queue_external_packet(peer_id, first_hop, packet, PacketType::SendFromSelf)?;
+			} else {
 				// TODO delay may not be useful here (since secondary
 				// queue used).
 				let delay = exp_delay(&mut rng, self.average_hop_delay);
 				self.queue_packet(peer_id, packet, delay, PacketType::SendFromSelf)?;
-			}
-		} else {
-			for (peer_id, packet) in packets {
-				self.queue_external_packet(peer_id, packet, PacketType::SendFromSelf)?;
 			}
 		}
 		Ok(())
@@ -661,7 +672,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
 			self.queue_packet(dest, packet, delay, PacketType::Surbs)?;
 		} else {
-			self.queue_external_packet(dest, packet, PacketType::Surbs)?;
+			unimplemented!()
+			//self.queue_external_packet(dest, packet, PacketType::Surbs)?;
 		}
 		Ok(())
 	}
@@ -1005,6 +1017,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let mut all_pending = true;
 		let mut disconnected = Vec::new();
 		let mut recv_packets = Vec::new();
+		let mut queue_packet = None;
 
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
 			match connection.poll(
@@ -1053,8 +1066,23 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						recv_packets.push((*sphinx_id, packet));
 					}
 				},
+				Poll::Ready(ConnectionEvent::ExternalQuery(recipient, data)) => {
+					all_pending = false;
+					queue_packet = Some((recipient, data));
+				},
 				Poll::Pending => (),
 			}
+		}
+
+		if let Some((recipient, data)) = queue_packet {
+					let mut rng = rand::thread_rng();
+					let delay = exp_delay(&mut rng, self.average_hop_delay);
+					if let Err(error) =
+						self.queue_packet(recipient, data, delay, PacketType::ForwardExternal)
+					{
+						log::trace!(target: "mixnet", "Error adding external packet {:}.", error);
+						// TODO reply with meta protocol to external with a failure.
+					}
 		}
 
 		for (peer, packet) in recv_packets {

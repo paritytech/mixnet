@@ -200,6 +200,8 @@ impl Topology for TopologyGraph {
 			let n: usize = rng.gen_range(0..paths.len());
 			let mut path = paths[n].clone();
 			if let Some((peer, key)) = add_start {
+				// TODO just return as separate result
+				// (we extract it when using).
 				path.insert(0, (peer, key));
 			}
 			if let Some((peer, key)) = add_end {

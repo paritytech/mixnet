@@ -160,7 +160,7 @@ impl Connection {
 			inbound: inbound.map(Box::pin),
 			outbound: Box::pin(outbound),
 			outbound_buffer: None,
-			inbound_buffer: (Box::new([0u8; PACKET_SIZE]), 0),
+			inbound_buffer: (Box::new([0u8; EXTERNAL_QUERY_SIZE]), 0),
 			outbound_flushing: false,
 			close_handler: Some(close_handler),
 		}
