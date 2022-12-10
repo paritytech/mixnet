@@ -132,7 +132,7 @@ impl Packet {
 }
 
 pub enum MixnetEvent {
-	/// A new peer has connected and handshake.
+	/// A new peer has connected.
 	Connected(NetworkId, MixPublicKey),
 	Disconnected(Vec<(NetworkId, Option<MixnetId>, bool)>),
 	TryConnect(Vec<(MixnetId, Option<NetworkId>)>),
@@ -240,7 +240,7 @@ pub struct Mixnet<T, C> {
 	connected_peers: HashMap<NetworkId, ManagedConnection<C>>,
 	peer_counts: PeerCount,
 
-	handshaken_peers: HashMap<MixnetId, NetworkId>,
+	peers_to_network_id: HashMap<MixnetId, NetworkId>,
 	// TODO ttl map this and clean connected somehow
 	// TODO consider removal
 	disconnected_peers: HashMap<MixnetId, DisconnectedPeer>,
@@ -354,7 +354,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			fragments: MessageCollection::new(),
 			connected_peers: Default::default(),
 			peer_counts: Default::default(),
-			handshaken_peers: Default::default(),
+			peers_to_network_id: Default::default(),
 			disconnected_peers: Default::default(),
 			pending_events: Default::default(),
 			forward_unconnected_message_queue,
@@ -395,7 +395,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		for (_mix_id, mut connection) in std::mem::take(&mut self.connected_peers).into_iter() {
 			self.peer_counts.remove_peer(connection.disconnected_kind());
 			if let Some(mix_id) = connection.mixnet_id() {
-				self.handshaken_peers.remove(mix_id);
+				self.peers_to_network_id.remove(mix_id);
 				self.topology.disconnected(mix_id);
 			}
 		}
@@ -440,7 +440,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		kind: PacketType,
 	) -> Result<(), Error> {
 		if let Some(connection) = self
-			.handshaken_peers
+			.peers_to_network_id
 			.get(&recipient)
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
@@ -477,7 +477,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		kind: PacketType,
 	) -> Result<(), Error> {
 		if let Some(connection) = self
-			.handshaken_peers
+			.peers_to_network_id
 			.get(&recipient)
 			.and_then(|r| self.connected_peers.get_mut(r))
 		{
@@ -694,7 +694,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		if let Some(mix_id) = mix_id {
-			self.handshaken_peers.remove(&mix_id);
+			self.peers_to_network_id.remove(&mix_id);
 			self.topology.disconnected(&mix_id);
 			if self.keep_handshaken_disconnected_address {
 				self.disconnected_peers.insert(
@@ -758,7 +758,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 	fn try_apply_topology_change(&mut self) {
 		if let Some(changed) = self.topology.changed_route() {
 			for peer_id in changed {
-				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
+				if let Some(net_id) = self.peers_to_network_id.get(&peer_id) {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						connection.set_kind_changed(
 							&mut self.peer_counts,
@@ -800,7 +800,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						}
 					}
 				}
-				if let Some(net_id) = self.handshaken_peers.get(&peer_id) {
+				if let Some(net_id) = self.peers_to_network_id.get(&peer_id) {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						if maybe_net_id.is_some() && maybe_net_id.as_ref() != Some(net_id) {
 							// existing connection with change of network id.
@@ -845,7 +845,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				if try_connect.len() == number - already_connected {
 					break
 				}
-				if !self.handshaken_peers.contains_key(peer) {
+				if !self.peers_to_network_id.contains_key(peer) {
 					let disco_peer = self.disconnected_peers.get(peer);
 					try_connect.push((*peer, disco_peer.and_then(|peer| peer.handshaken.clone())));
 				}
@@ -861,7 +861,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						break
 					}
 				}
-				if !self.handshaken_peers.contains_key(peer) {
+				if !self.peers_to_network_id.contains_key(peer) {
 					let disco_peer = self.disconnected_peers.entry(*peer).or_default();
 					if disco_peer.next_reconnect_attempt == 0 {
 						try_connect.push((*peer, disco_peer.handshaken.clone()));
@@ -961,7 +961,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						self.topology.connected(*sphinx_id, key);
 						self.topology.peer_stats(&self.peer_counts);
 						self.disconnected_peers.remove(sphinx_id);
-						self.handshaken_peers.insert(*sphinx_id, connection.network_id());
+						self.peers_to_network_id.insert(*sphinx_id, connection.network_id());
 					}
 
 					self.pending_events
