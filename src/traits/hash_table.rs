@@ -259,6 +259,11 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return Err(Error::NotEnoughRoutingPeers)
 			}
 
+			if start_node.is_none() {
+				// TODO pass in results instead
+				let not_used = path[0].1.clone();
+				path.insert(0, (start, not_used))
+			}
 			result.push(path);
 		}
 		debug!(target: "mixnet", "Path: {:?}", result);
@@ -285,7 +290,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		self.distributed_try_connect();
 	}
 
-	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
+	fn accept_peer(&self, peer_id: &MixnetId, peers: &PeerCount) -> bool {
 		if C::DISTRIBUTE_ROUTES {
 			// Allow any allowed routing peers as it can be any of the should_connect_to in case
 			// there is many disconnected.
@@ -293,9 +298,16 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 				return true
 			}
 		}
-		self.routing &&
-			(self.routing_to(peer_id, &self.local_id) ||
-				self.routing_to(&self.local_id, peer_id))
+
+		if self.routing {
+			self.routing_to(peer_id, &self.local_id) ||
+				self.routing_to(&self.local_id, peer_id) ||
+				(peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX))
+		} else {
+			// Could use a higher limit when not routing, but would be more `when not suceptible
+			// to be in the routing set` which we don't know but can configure.
+			peers.nb_connected_external < self.params.max_external.unwrap_or(usize::MAX)
+		}
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {
@@ -760,14 +772,14 @@ impl<C: Configuration> TopologyHashTable<C> {
 		query_path_for_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<(MixnetId, MixnetId), Error> {
 		debug_assert!(!(recipient_node.is_none() && query_path_for_surb.is_some()));
-		let (is_external, start) = if let Some(start) = start_node {
+		let start = if let Some(start) = start_node {
 			if self.can_route(start.0) {
-				(false, Some(*start.0))
+				Some(*start.0)
 			} else {
-				(true, None)
+				None
 			}
 		} else {
-			(true, None)
+			None
 		};
 		let recipient_id = recipient_node.as_ref().map(|r| r.0);
 		let start = if let Some(start) = start {
@@ -1100,6 +1112,8 @@ fn random_path(
 	// TODO consider Vec instead of hashset (small nb elt)
 	let mut touched = Vec::<HashSet<MixnetId>>::with_capacity(size_path - 2);
 	touched.push(HashSet::new());
+	// TODO this is making num hop equal to num peer eg 3 is only two transport.
+	// So should switch to `at > 1` or even 0.
 	while at > 2 {
 		if let Some(paths) = result.last().and_then(|from| {
 			paths.get(&at).and_then(|paths| paths.get(to)).and_then(|paths| paths.get(from))

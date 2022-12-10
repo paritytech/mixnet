@@ -200,6 +200,8 @@ impl Topology for TopologyGraph {
 			let n: usize = rng.gen_range(0..paths.len());
 			let mut path = paths[n].clone();
 			if let Some((peer, key)) = add_start {
+				// TODO just return as separate result
+				// (we extract it when using).
 				path.insert(0, (peer, key));
 			}
 			if let Some((peer, key)) = add_end {
@@ -240,12 +242,8 @@ impl Topology for TopologyGraph {
 		}
 	}
 
-	fn accept_peer(&self, peer_id: &MixnetId) -> bool {
-		if let Some(local_id) = self.local_id.as_ref() {
-			self.routing_to(local_id, peer_id) || self.routing_to(peer_id, local_id)
-		} else {
-			false
-		}
+	fn accept_peer(&self, _peer_id: &MixnetId, _peers: &PeerCount) -> bool {
+		self.local_id.is_some()
 	}
 
 	fn should_connect_to(&self) -> ShouldConnectTo {
@@ -287,7 +285,7 @@ fn gen_paths(
 }
 
 fn test_messages(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, .. } = conf;
 
 	let seed: u64 = 0;
 	let single_thread = false;
@@ -340,11 +338,18 @@ fn test_messages(conf: TestConfig) {
 		ConfigGraph { inner: handshake }
 	};
 
-	let (handles, _) =
-		common::spawn_swarms(num_peers, &executor, &mut rng, &config_proto, make_topo);
+	let (handles, _) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		&mut rng,
+		&config_proto,
+		make_topo,
+	);
 
 	let (nodes, mut with_swarm_channels) = common::spawn_workers::<ConfigGraph>(
 		num_peers,
+		from_external,
 		expect_all_connected,
 		handles,
 		&executor,
@@ -353,9 +358,14 @@ fn test_messages(conf: TestConfig) {
 
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
-	let send: Vec<_> = (1..num_peers)
-		.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
-		.collect();
+	let send = if from_external {
+		// ext 1 can route through peer 0 (only peer accepting ext)
+		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
+	} else {
+		(1..num_peers)
+			.map(|to| SendConf { from: 0, to: Some(to), message: source_message.clone() })
+			.collect()
+	};
 	send_messages(&conf, send.clone().into_iter(), &nodes, &mut with_swarm_channels);
 	wait_on_messages(&conf, send.into_iter(), &mut with_swarm_channels, b"pong");
 }
@@ -368,6 +378,7 @@ fn message_exchange_no_surb() {
 		message_count: 10,
 		message_size: 1,
 		with_surb: false,
+		from_external: false,
 		random_dest: false,
 	})
 }
@@ -380,6 +391,7 @@ fn fragmented_messages_no_surb() {
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: false,
+		from_external: false,
 		random_dest: false,
 	})
 }
@@ -392,6 +404,7 @@ fn message_exchange_with_surb() {
 		message_count: 10,
 		message_size: 1,
 		with_surb: true,
+		from_external: false,
 		random_dest: false,
 	})
 }
@@ -404,6 +417,47 @@ fn fragmented_messages_with_surb() {
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: true,
+		from_external: false,
+		random_dest: false,
+	})
+}
+
+#[test]
+fn ext_fragmented_surbs() {
+	test_messages(TestConfig {
+		num_peers: 2,
+		num_hops: 3,
+		message_count: 1,
+		message_size: 8 * 1024,
+		with_surb: false,
+		//with_surb: false, TODO -> true
+		from_external: true,
+		random_dest: false,
+	})
+}
+
+//#[test]
+fn from_external_with_surb() {
+	test_messages(TestConfig {
+		num_peers: 5,
+		num_hops: 3,
+		message_count: 1,
+		message_size: 100,
+		with_surb: true,
+		from_external: true,
+		random_dest: false,
+	})
+}
+
+#[test]
+fn from_external_no_surb() {
+	test_messages(TestConfig {
+		num_peers: 5,
+		num_hops: 3,
+		message_count: 1,
+		message_size: 4 * 1024,
+		with_surb: false,
+		from_external: true,
 		random_dest: false,
 	})
 }

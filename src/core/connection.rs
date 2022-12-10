@@ -41,22 +41,48 @@ use std::{
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+// TODO this is only limiting our queries per peer
+// and is just a way to bound the buffer, not really configurable.
+const MAX_METAPAQUET: usize = 1_000;
+pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE + 32; // TODO other stuff needed
+pub(crate) const EXTERNAL_REPLY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
 
+/// Events sent from a polled connection to the main mixnet loop.
+/// TODO rename Event by Result, and make it clear it is local
+/// to the main mixnet thread.
 pub(crate) enum ConnectionEvent {
+	/// Post handshake infos.
 	Established(MixnetId, MixPublicKey),
+	/// Received packet.
 	Received(Packet),
+	/// External message to forward.
+	ExternalQuery(MixnetId, Packet),
+	/// Closed connection.
 	Broken(Option<MixnetId>),
+	/// Noops.
 	None,
+}
+
+/// All message that are not part of a sphinx session.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum MetaMessage {
+	Handshake = 1,
+	ExternalQuery = 2,
+	ExternalReply = 3,
+	Disconnect = 4,
 }
 
 pub(crate) struct ManagedConnection<C> {
 	local_id: MixnetId,
 	local_public_key: MixPublicKey,
 	connection: C,
-	mixnet_id: Option<MixnetId>,
 	network_id: NetworkId,
 	kind: ConnectedKind,
-	handshake_queue: bool,
+
+	// TODO all handshake here in an enum (still a bit redundant with `kind`).
+	handshake_done_id: Option<MixnetId>,
+	meta_queued: VecDeque<(MetaMessage, Vec<u8>)>,
 	handshake_sent: bool,
 	handshake_received: bool,
 	public_key: Option<MixPublicKey>, // public key is only needed for creating cover messages.
@@ -69,6 +95,7 @@ pub(crate) struct ManagedConnection<C> {
 	// TODO have a safe mode that error on too big (but then
 	// need a mechanism to rollback other message chunk in other connections).
 	packet_queue_inject: BinaryHeap<QueuedPacket>,
+	// TODO most buff use Vec<u8>, but could use Packet
 	next_packet: Option<(Vec<u8>, PacketType)>,
 	// If we did not receive for a while, close connection.
 	read_timeout: Delay,
@@ -80,8 +107,8 @@ pub(crate) struct ManagedConnection<C> {
 	// hard limit when disconnecting, should
 	// disconnect when connection broken or gracefull_nb_packet
 	// both at 0.
-	gracefull_disconnecting: Option<Instant>,
-	// Receive is only call to match the expecteed bandwidth.
+	gracefull_disconnecting: Option<Instant>, // TODO gracefull conf in a single struct for clarity
+	// Receive is only call to match the expected bandwidth.
 	// Yet with most transport it will just make the transport
 	// buffer grow.
 	// Using an internal buffer we can just drop connection earlier
@@ -107,14 +134,14 @@ impl<C: Connection> ManagedConnection<C> {
 			local_id,
 			local_public_key,
 			connection,
-			mixnet_id: None,
+			handshake_done_id: None,
 			network_id,
 			kind: ConnectedKind::PendingHandshake,
 			read_timeout: Delay::new(READ_TIMEOUT),
 			next_packet: None,
 			current_window,
 			public_key: None,
-			handshake_queue: false,
+			meta_queued: Default::default(),
 			handshake_sent: false,
 			handshake_received: false,
 			sent_in_window: 0,
@@ -150,6 +177,8 @@ impl<C: Connection> ManagedConnection<C> {
 			// gracefull handling
 			let disco = matches!(self.kind, ConnectedKind::Disconnected);
 			// TODO include consumer here?
+			// TODO what if switching one but not the other: should have gracefull
+			// forward and gracefull backward ??
 			let forward = old_kind.routing_forward() != self.kind.routing_forward();
 			let receive = old_kind.routing_receive() != self.kind.routing_receive();
 			if receive || forward {
@@ -181,13 +210,15 @@ impl<C: Connection> ManagedConnection<C> {
 	}
 
 	pub fn mixnet_id(&self) -> Option<&MixnetId> {
-		self.mixnet_id.as_ref()
+		self.handshake_done_id.as_ref()
 	}
 
 	pub fn network_id(&self) -> NetworkId {
 		self.network_id
 	}
 
+	// TODO rename as it can be existing peer that change kind
+	// actually in a single place: remove function
 	fn add_peer(
 		&mut self,
 		topology: &mut impl Configuration,
@@ -195,7 +226,7 @@ impl<C: Connection> ManagedConnection<C> {
 		peer_counts: &mut PeerCount,
 		window: &WindowInfo,
 	) {
-		if let Some(peer) = self.mixnet_id.as_ref() {
+		if let Some(peer) = self.handshake_done_id.as_ref() {
 			self.kind = peer_counts.add_peer(&self.local_id, peer, topology);
 			if self.kind.routing_forward() {
 				if let Some(queue_packets) = forward_queue.and_then(|q| q.remove(peer)) {
@@ -220,112 +251,110 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
-	fn try_send_handshake(
-		&mut self,
-		cx: &mut Context,
-		topology: &mut impl Handshake,
-	) -> Poll<Result<(), ()>> {
-		if !self.handshake_queue {
-			let handshake = if let Some(handshake) =
-				topology.handshake(&self.network_id, &self.local_public_key)
-			{
-				handshake
-			} else {
-				log::trace!(target: "mixnet", "Cannot create handshake with {}", self.network_id);
-				return Poll::Ready(Err(()))
-			};
-			if self.connection.try_queue_send(handshake).is_none() {
-				self.handshake_queue = true;
-			} else {
-				// should not happen as handshake is first ever paquet.
-				log::error!(target: "mixnet", "Hanshake is first paquet");
-				return Poll::Ready(Err(()))
-			}
-		}
-		match self.connection.send_flushed(cx) {
-			Poll::Ready(Ok(true)) => {
-				self.handshake_sent = true;
-				Poll::Ready(Ok(()))
-			},
-			Poll::Ready(Ok(false)) => {
-				// No message queued, handshake as been sent, just wait on reply
-				// or timeout.
-				Poll::Pending
-			},
-			Poll::Ready(Err(_)) => {
-				log::trace!(target: "mixnet", "Error sending handshake to peer {:?}", self.network_id);
-				Poll::Ready(Err(()))
-			},
-			Poll::Pending => Poll::Pending,
-		}
-	}
-
-	fn try_send_flushed(&mut self, cx: &mut Context) -> Poll<Result<bool, ()>> {
+	fn try_send_flushed(&mut self, cx: &mut Context, is_packet: bool) -> Poll<Result<bool, ()>> {
 		match self.connection.send_flushed(cx) {
 			Poll::Ready(Ok(sent)) => {
-				if let Some((stats, kind)) = self.stats.as_mut() {
-					stats.success_packet(kind.take());
+				if is_packet {
+					if let Some((stats, kind)) = self.stats.as_mut() {
+						stats.success_packet(kind.take());
+					}
 				}
 				Poll::Ready(Ok(sent))
 			},
 			Poll::Ready(Err(())) => {
-				log::trace!(target: "mixnet", "Error sending to peer {:?}", self.network_id);
-				if let Some((stats, kind)) = self.stats.as_mut() {
-					stats.failure_packet(kind.take());
-				};
+				if is_packet {
+					log::trace!(target: "mixnet", "Error sending to peer {:?}", self.network_id);
+					if let Some((stats, kind)) = self.stats.as_mut() {
+						stats.failure_packet(kind.take());
+					};
+				} else {
+					log::trace!(target: "mixnet", "Error sending meta to peer {:?}", self.network_id);
+				}
 				Poll::Ready(Err(()))
 			},
 			Poll::Pending => Poll::Pending,
 		}
 	}
 
-	// return packet if already sending one.
-	pub fn try_queue_send_packet(&mut self, packet: Vec<u8>) -> Option<Vec<u8>> {
-		if !self.kind.is_mixnet_connected() {
-			log::error!(target: "mixnet", "Peer {:?} not ready, dropping a packet", self.network_id);
-			return None
-		}
-		self.connection.try_queue_send(packet)
-	}
-
-	fn try_recv_handshake(
+	fn try_recv_meta(
 		&mut self,
 		cx: &mut Context,
 		topology: &mut impl Configuration,
-		peers: &PeerCount,
-	) -> Poll<Result<(MixnetId, MixPublicKey), ()>> {
-		if self.handshake_received {
-			// ignore
-			return Poll::Pending
-		}
-		match self.connection.try_recv(cx, topology.handshake_size()) {
-			Poll::Ready(Ok(Some(handshake))) => {
-				self.read_timeout.reset(READ_TIMEOUT);
-				log::trace!(target: "mixnet", "Handshake message from {:?}", self.network_id);
-				if let Some((peer_id, pk)) =
-					topology.check_handshake(handshake.as_slice(), &self.network_id)
-				{
-					let accepted = topology.accept_peer(&peer_id);
-					self.mixnet_id = Some(peer_id);
-					self.public_key = Some(pk);
-					self.handshake_received = true;
-					if !accepted {
-						log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?} from {:?}", peer_id, self.local_id);
-						Poll::Ready(Err(()))
+	) -> Poll<Result<(MetaMessage, Vec<u8>), ()>> {
+		let mut is_content: Option<(MetaMessage, usize)> = None;
+		loop {
+			return match self
+				.connection
+				.try_recv(cx, is_content.as_ref().map(|content| content.1).unwrap_or(1))
+			{
+				Poll::Ready(Ok(Some(data))) => {
+					self.read_timeout.reset(READ_TIMEOUT);
+					if let Some((kind, _)) = is_content.as_ref() {
+						Poll::Ready(Ok((*kind, data)))
 					} else {
-						Poll::Ready(Ok((peer_id, pk)))
+						match data[0] {
+							k if k == (MetaMessage::Handshake as u8) => {
+								is_content =
+									Some((MetaMessage::Handshake, topology.handshake_size()));
+								continue
+							},
+							k if k == (MetaMessage::ExternalQuery as u8) => {
+								is_content =
+									Some((MetaMessage::ExternalQuery, EXTERNAL_QUERY_SIZE));
+								continue
+							},
+							k if k == (MetaMessage::ExternalReply as u8) => {
+								is_content =
+									Some((MetaMessage::ExternalReply, EXTERNAL_REPLY_SIZE));
+								continue
+							},
+							k if k == (MetaMessage::Disconnect as u8) =>
+								Poll::Ready(Ok((MetaMessage::Disconnect, Vec::new()))),
+							_ => {
+								log::trace!(target: "mixnet", "Unexpected message kind, closing: {:?}", self.network_id);
+								Poll::Ready(Err(()))
+							},
+						}
 					}
-				} else {
-					log::trace!(target: "mixnet", "Invalid handshake from peer, closing: {:?}", self.network_id);
+				},
+				Poll::Ready(Ok(None)) => {
+					self.read_timeout.reset(READ_TIMEOUT);
+					continue
+				},
+				Poll::Ready(Err(())) => {
+					// TODO could need a delay to try to handshake again rather than full disconnect
+					// reconnect.
+					log::trace!(target: "mixnet", "Error receiving message type from peer, closing: {:?}", self.network_id);
 					Poll::Ready(Err(()))
-				}
-			},
-			Poll::Ready(Ok(None)) => self.try_recv_handshake(cx, topology, peers),
-			Poll::Ready(Err(())) => {
-				log::trace!(target: "mixnet", "Error receiving handshake from peer, closing: {:?}", self.network_id);
-				Poll::Ready(Err(()))
-			},
-			Poll::Pending => Poll::Pending,
+				},
+				Poll::Pending => Poll::Pending,
+			}
+		}
+	}
+
+	fn received_handshake(
+		&mut self,
+		handshake: Vec<u8>,
+		topology: &mut impl Configuration,
+		peers: &PeerCount,
+	) -> Result<(), ()> {
+		log::trace!(target: "mixnet", "Handshake message from {:?}", self.network_id);
+		if let Some((peer_id, pk)) =
+			topology.check_handshake(handshake.as_slice(), &self.network_id)
+		{
+			let accepted = topology.accept_peer(&peer_id, peers);
+			self.handshake_done_id = Some(peer_id);
+			self.public_key = Some(pk);
+			self.handshake_received = true;
+			if !accepted {
+				log::trace!(target: "mixnet", "Valid handshake, rejected peer, closing: {:?} from {:?}", peer_id, self.local_id);
+				Err(())
+			} else {
+				Ok(())
+			}
+		} else {
+			log::trace!(target: "mixnet", "Invalid handshake from peer, closing: {:?}", self.network_id);
+			Err(())
 		}
 	}
 
@@ -334,26 +363,31 @@ impl<C: Connection> ManagedConnection<C> {
 		cx: &mut Context,
 		current_window: Wrapping<usize>,
 	) -> Poll<Result<Packet, ()>> {
-		if !self.kind.is_mixnet_connected() {
+		if !self.kind.is_mixnet_routing() {
 			// this is actually unreachable but ignore it.
 			return Poll::Pending
 		}
-		match self.connection.try_recv(cx, PACKET_SIZE) {
-			Poll::Ready(Ok(Some(packet))) => {
-				self.read_timeout.reset(READ_TIMEOUT);
-				log::trace!(target: "mixnet", "Packet received from {:?}", self.network_id);
-				let packet = Packet::from_vec(packet).unwrap();
-				if self.current_window != current_window {
-					self.current_window = current_window;
-				}
-				Poll::Ready(Ok(packet))
-			},
-			Poll::Ready(Ok(None)) => self.try_recv_packet(cx, current_window),
-			Poll::Ready(Err(())) => {
-				log::trace!(target: "mixnet", "Error receiving from peer, closing: {:?}", self.network_id);
-				Poll::Ready(Err(()))
-			},
-			Poll::Pending => Poll::Pending,
+		loop {
+			return match self.connection.try_recv(cx, PACKET_SIZE) {
+				Poll::Ready(Ok(Some(packet))) => {
+					self.read_timeout.reset(READ_TIMEOUT);
+					log::trace!(target: "mixnet", "Packet received from {:?}", self.network_id);
+					let packet = Packet::from_vec(packet).unwrap();
+					if self.current_window != current_window {
+						self.current_window = current_window;
+					}
+					Poll::Ready(Ok(packet))
+				},
+				Poll::Ready(Ok(None)) => {
+					self.read_timeout.reset(READ_TIMEOUT);
+					continue
+				},
+				Poll::Ready(Err(())) => {
+					log::trace!(target: "mixnet", "Error receiving from peer, closing: {:?}", self.network_id);
+					Poll::Ready(Err(()))
+				},
+				Poll::Pending => Poll::Pending,
+			}
 		}
 	}
 
@@ -361,15 +395,17 @@ impl<C: Connection> ManagedConnection<C> {
 		&mut self,
 		packet: QueuedPacket,
 		packet_per_window: usize,
-		_topology: &impl Topology, // TODO rem param
-		_peers: &PeerCount,        // TODO rem param
+		topology: &impl Topology, // TODO rem param
+		_peers: &PeerCount,       // TODO rem param
 	) -> Result<(), crate::Error> {
-		if let Some(peer_id) = self.mixnet_id.as_ref() {
+		if let Some(peer_id) = self.handshake_done_id.as_ref() {
+			if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
+				log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
+				return Err(crate::Error::NoPath(Some(*peer_id)))
+			}
+
 			if packet.injected_packet() {
-				if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
-					log::error!(target: "mixnet", "Dropping an injected queued packet, not routing to first hop {:?}.", self.kind);
-					return Err(crate::Error::NoPath(Some(*peer_id)))
-				}
+				// more priority
 				self.packet_queue_inject.push(packet);
 				if let Some((stats, _)) = self.stats.as_mut() {
 					let len = self.packet_queue_inject.len();
@@ -386,10 +422,16 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::QueueFull)
 			}
 
-			if !(self.kind.routing_forward() || self.gracefull_nb_packet_send > 0) {
-				log::trace!(target: "mixnet", "Dropping a queued packet, not in topology or allowed external.");
-				return Err(crate::Error::NoPath(Some(*peer_id)))
+			if packet.external_packet() &&
+				!topology.can_add_external_message(
+					&peer_id,
+					self.packet_queue.len(),
+					packet_per_window,
+				) {
+				log::error!(target: "mixnet", "Dropping packet, queue full for external: {:?} {:} {:?}", self.network_id, self.packet_queue.len(), packet_per_window);
+				return Err(crate::Error::QueueFull)
 			}
+
 			self.packet_queue.push(packet);
 			if let Some((stats, _)) = self.stats.as_mut() {
 				let mut len = self.packet_queue.len();
@@ -406,14 +448,45 @@ impl<C: Connection> ManagedConnection<C> {
 		}
 	}
 
+	pub(crate) fn queue_external_packet(
+		&mut self,
+		first_hop: MixnetId,
+		mut packet: QueuedPacket,
+	) -> Result<(), crate::Error> {
+		// TODO we should be able to report the error : return a channel on success (channel in
+		// queued item): same for queue packet actually (failing first hop and not knowing is a bit
+		// dumb) -> might extend to surb reply, even if current system ok (or use surb reply
+		// system).
+		if !self.kind.is_external() {
+			return Err(crate::Error::NotExternal)
+		}
+		if packet.injected_packet() {
+			if self.meta_queued.len() >= MAX_METAPAQUET {
+				return Err(crate::Error::QueueFull)
+			}
+			let mut data = first_hop.to_vec();
+			data.append(&mut packet.data.0);
+			if self.connection.can_queue_send() {
+				self.connection
+					.queue_send(Some(MetaMessage::ExternalQuery as u8), data);
+			} else {
+				self.meta_queued.push_back((MetaMessage::ExternalQuery, data));
+			}
+		} else {
+			// surb
+			unimplemented!()
+		}
+		Ok(())
+	}
+
 	fn broken_connection(
 		&mut self,
 		topology: &mut impl Configuration,
 		peers: &mut PeerCount,
 	) -> Poll<ConnectionEvent> {
-		peers.remove_peer(self.disconnected_kind());
+		peers.remove_peer(self.set_disconnected_kind());
 		topology.peer_stats(peers);
-		Poll::Ready(ConnectionEvent::Broken(self.mixnet_id))
+		Poll::Ready(ConnectionEvent::Broken(self.handshake_done_id))
 	}
 
 	pub(super) fn poll(
@@ -429,35 +502,112 @@ impl<C: Connection> ManagedConnection<C> {
 				return self.broken_connection(topology, peers)
 			}
 		}
-		let mut result = Poll::Pending;
-		if !(self.handshake_sent && self.handshake_received) {
-			let mut result = Poll::Pending;
-			if !self.handshake_received {
-				match self.try_recv_handshake(cx, topology, peers) {
-					Poll::Ready(Ok(key)) => {
-						self.mixnet_id = Some(key.0);
-						self.public_key = Some(key.1);
+
+		let mut result = Poll::Ready(ConnectionEvent::None);
+
+		if !self.kind.is_mixnet_routing() {
+			// poll protocol meta message (not sphinx).
+			if self.meta_queued.is_empty() {
+				if !self.handshake_sent {
+					let handshake = if let Some(handshake) =
+						topology.handshake(&self.network_id, &self.local_public_key)
+					{
+						handshake
+					} else {
+						// TODO allow no handshake from topo and only switch to sphinx only if
+						// needed
+						log::trace!(target: "mixnet", "Cannot create handshake with {}", self.network_id);
+						return self.broken_connection(topology, peers)
+					};
+					if self.connection.can_queue_send() {
+						self.connection.queue_send(Some(MetaMessage::Handshake as u8), handshake);
+					} else {
+						self.meta_queued.push_back((MetaMessage::Handshake, handshake));
+					}
+					self.handshake_sent = true;
+				}
+			}
+
+			if !self.handshake_received || self.kind.is_external() {
+				if self.meta_queued.is_empty() {
+					match self.try_recv_meta(cx, topology) {
+						Poll::Ready(Ok((MetaMessage::Handshake, data))) => {
+							if let Err(()) = self.received_handshake(data, topology, peers) {
+								return self.broken_connection(topology, peers)
+							}
+
+							if matches!(result, Poll::Pending) {
+								result = Poll::Ready(ConnectionEvent::None);
+							}
+						},
+						Poll::Ready(Ok((MetaMessage::ExternalQuery, mut data))) => {
+							if data.len() < EXTERNAL_QUERY_SIZE {
+								log::trace!(target: "mixnet", "Invalid external query from {}", self.network_id);
+								if matches!(result, Poll::Pending) {
+									result = Poll::Ready(ConnectionEvent::None);
+								}
+							} else {
+								let mut recipient = MixnetId::default();
+								let mixnet_id_len = recipient.len();
+								recipient.copy_from_slice(&data[..mixnet_id_len]);
+								let mut data = data.split_off(mixnet_id_len);
+								data.truncate(PACKET_SIZE);
+
+								let data = Packet::from_vec(data).expect("checked size");
+								return Poll::Ready(ConnectionEvent::ExternalQuery(recipient, data))
+							}
+						},
+						Poll::Ready(Ok((MetaMessage::ExternalReply, data))) => {
+							return self.broken_connection(topology, peers)
+							//unimplemented!()
+						},
+						Poll::Ready(Ok((MetaMessage::Disconnect, _))) =>
+							return self.broken_connection(topology, peers),
+						Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
+						Poll::Pending =>
+							if matches!(result, Poll::Ready(ConnectionEvent::None)) {
+								result = Poll::Pending
+							},
+					}
+				}
+			}
+
+			loop {
+				match self.try_send_flushed(cx, false) {
+					Poll::Ready(Ok(true)) => {
 						if matches!(result, Poll::Pending) {
 							result = Poll::Ready(ConnectionEvent::None);
 						}
+
+						assert!(self.connection.can_queue_send());
+
+						if let Some((kind, data)) = self.meta_queued.pop_front() {
+							self.connection.queue_send(Some(kind as u8), data);
+							continue
+						}
+						break
+					},
+					Poll::Ready(Ok(false)) => {
+						// nothing
+						break
 					},
 					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-					Poll::Pending => (),
+					Poll::Pending => {
+						if matches!(result, Poll::Ready(ConnectionEvent::None)) {
+							result = Poll::Pending
+						}
+
+						// do not swich kind unless all is really flushed
+						return result
+					},
 				}
 			}
-			if !self.handshake_sent {
-				match self.try_send_handshake(cx, topology) {
-					Poll::Ready(Ok(())) =>
-						if matches!(result, Poll::Pending) {
-							result = Poll::Ready(ConnectionEvent::None);
-						},
-					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-					Poll::Pending => (),
-				}
-			}
-			if self.handshake_sent && self.handshake_received {
-				log::debug!(target: "mixnet", "Handshake success from {:?} to {:?}", self.local_id, self.mixnet_id);
-				if let (Some(mixnet_id), Some(public_key)) = (self.mixnet_id, self.public_key) {
+
+			if self.handshake_sent && self.handshake_received && self.kind.is_pending_handshake() {
+				log::debug!(target: "mixnet", "Handshake success from {:?} to {:?}", self.local_id, self.handshake_done_id);
+				if let (Some(mixnet_id), Some(public_key)) =
+					(self.handshake_done_id, self.public_key)
+				{
 					self.current_window = window.current;
 					self.sent_in_window = window.current_packet_limit;
 					self.recv_in_window = window.current_packet_limit;
@@ -467,10 +617,10 @@ impl<C: Connection> ManagedConnection<C> {
 					// is actually unreachable
 					return self.broken_connection(topology, peers)
 				}
-			} else {
-				return result
 			}
-		} else if let Some(peer_id) = self.mixnet_id {
+		} else if let Some(peer_id) = self.handshake_done_id {
+			// routing
+
 			let send_limit = if self.gracefull_nb_packet_send > 0 {
 				window.current_packet_limit / 2
 			} else {
@@ -478,7 +628,7 @@ impl<C: Connection> ManagedConnection<C> {
 			};
 			// Forward first.
 			while self.sent_in_window < send_limit {
-				match self.try_send_flushed(cx) {
+				match self.try_send_flushed(cx, true) {
 					Poll::Ready(Ok(true)) => {
 						// Did send message
 						self.sent_in_window += 1;
@@ -491,19 +641,26 @@ impl<C: Connection> ManagedConnection<C> {
 								return self.broken_connection(topology, peers)
 							}
 						}
+						if matches!(result, Poll::Pending) {
+							result = Poll::Ready(ConnectionEvent::None);
+						}
+
 						break
 					},
 					Poll::Ready(Ok(false)) => {
 						// nothing in queue, get next.
 						if let Some(packet) = self.next_packet.take() {
-							if let Some(unsend) = self.try_queue_send_packet(packet.0) {
-								log::error!(target: "mixnet", "try send should not fail on flushed queue.");
+							if self.connection.can_queue_send() {
+								self.connection.queue_send(None, packet.0);
+								if let Some(stats) = self.stats.as_mut() {
+									stats.1 = Some(packet.1);
+								}
+							} else {
+								log::error!(target: "mixnet", "Queue should be flushed.");
 								if let Some((stats, _)) = self.stats.as_mut() {
 									stats.failure_packet(Some(packet.1));
 								}
-								self.next_packet = Some((unsend, packet.1));
-							} else if let Some(stats) = self.stats.as_mut() {
-								stats.1 = Some(packet.1);
+								self.next_packet = Some(packet);
 							}
 							continue
 						}
@@ -541,7 +698,12 @@ impl<C: Connection> ManagedConnection<C> {
 						}
 					},
 					Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-					Poll::Pending => break,
+					Poll::Pending => {
+						if matches!(result, Poll::Ready(ConnectionEvent::None)) {
+							result = Poll::Pending
+						}
+						break
+					},
 				}
 			}
 
@@ -580,7 +742,12 @@ impl<C: Connection> ManagedConnection<C> {
 							}
 						},
 						Poll::Ready(Err(())) => return self.broken_connection(topology, peers),
-						Poll::Pending => break,
+						Poll::Pending => {
+							if matches!(result, Poll::Ready(ConnectionEvent::None)) {
+								result = Poll::Pending
+							}
+							break
+						},
 					}
 				}
 
@@ -621,7 +788,7 @@ impl<C: Connection> ManagedConnection<C> {
 			}
 		} else {
 			log::trace!(target: "mixnet", "No sphinx id, dropping.");
-			return Poll::Ready(ConnectionEvent::None)
+			return self.broken_connection(topology, peers)
 		}
 
 		match self.read_timeout.poll_unpin(cx) {
@@ -629,7 +796,10 @@ impl<C: Connection> ManagedConnection<C> {
 				log::trace!(target: "mixnet", "Peer, nothing received for too long, dropping.");
 				return self.broken_connection(topology, peers)
 			},
-			Poll::Pending => (),
+			Poll::Pending =>
+				if matches!(result, Poll::Ready(ConnectionEvent::None)) {
+					result = Poll::Pending
+				},
 		}
 		result
 	}
@@ -647,7 +817,7 @@ impl<C: Connection> ManagedConnection<C> {
 		})
 	}
 
-	pub(super) fn disconnected_kind(&mut self) -> ConnectedKind {
+	pub(super) fn set_disconnected_kind(&mut self) -> ConnectedKind {
 		let kind = self.kind;
 		self.handshake_sent = false;
 		self.handshake_received = false;

@@ -47,7 +47,7 @@ impl TopologyConfig for NotDistributed {
 
 	const DISTRIBUTE_ROUTES: bool = false;
 
-	const LOW_MIXNET_THRESHOLD: usize = 5;
+	const LOW_MIXNET_THRESHOLD: usize = 4;
 
 	const LOW_MIXNET_PATHS: usize = 2;
 
@@ -97,7 +97,7 @@ impl mixnet::traits::Handshake for NotDistributed {
 }
 
 fn test_messages(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, random_dest, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, random_dest, .. } = conf;
 
 	let seed: u64 = 0;
 	let single_thread = true;
@@ -161,11 +161,18 @@ fn test_messages(conf: TestConfig) {
 		NotDistributed { inner }
 	};
 
-	let (handles, _) =
-		common::spawn_swarms(num_peers, &executor, &mut rng, &config_proto, make_topo);
+	let (handles, _) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		&mut rng,
+		&config_proto,
+		make_topo,
+	);
 
 	let (nodes, mut with_swarm_channels) = common::spawn_workers::<NotDistributed>(
 		num_peers,
+		from_external,
 		expect_all_connected,
 		handles,
 		&executor,
@@ -176,7 +183,10 @@ fn test_messages(conf: TestConfig) {
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
 	log::trace!(target: "mixnet_test", "after waiting connections");
-	let send = if random_dest {
+	let send = if from_external {
+		// ext 1 can route through peer 0 (only peer accepting ext)
+		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
+	} else if random_dest {
 		vec![SendConf { from: 0, to: None, message: source_message.clone() }]
 	} else {
 		(1..num_peers)
@@ -197,6 +207,7 @@ fn message_exchange_no_surb() {
 		message_count: 10,
 		message_size: 1,
 		with_surb: false,
+		from_external: false,
 		random_dest: false,
 	})
 }
@@ -209,6 +220,7 @@ fn fragmented_messages_no_surb() {
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: false,
+		from_external: false,
 		random_dest: false,
 	})
 }
@@ -221,6 +233,7 @@ fn message_exchange_with_surb() {
 		message_count: 10,
 		message_size: 1,
 		with_surb: true,
+		from_external: false,
 		random_dest: false,
 	})
 }
@@ -233,6 +246,33 @@ fn fragmented_messages_with_surb() {
 		message_count: 1,
 		message_size: 8 * 1024,
 		with_surb: true,
+		from_external: false,
+		random_dest: false,
+	})
+}
+
+// #[test]
+fn from_external_with_surb() {
+	test_messages(TestConfig {
+		num_peers: 6,
+		num_hops: 3,
+		message_count: 1,
+		message_size: 100,
+		with_surb: true,
+		from_external: true,
+		random_dest: false,
+	})
+}
+
+#[test]
+fn from_external_no_surb2() {
+	test_messages(TestConfig {
+		num_peers: 6,
+		num_hops: 3,
+		message_count: 1,
+		message_size: 4 * 1024,
+		with_surb: false,
+		from_external: true,
 		random_dest: false,
 	})
 }
@@ -246,13 +286,27 @@ fn surb_and_layer_local() {
 			message_count: 1,
 			message_size: 1,
 			with_surb: true,
+			from_external: false,
 			random_dest: true,
 		})
 	}
 }
 
+//#[test]
+fn surb_and_layer_external() {
+	test_messages(TestConfig {
+		num_peers: 20,
+		num_hops: 4,
+		message_count: 1,
+		message_size: 1,
+		with_surb: true,
+		from_external: true,
+		random_dest: true,
+	})
+}
+
 fn test_change_routing_set(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, random_dest, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, random_dest, .. } = conf;
 
 	let set_1 = 0..num_peers;
 	let half_set = num_peers / 2;
@@ -332,8 +386,14 @@ fn test_change_routing_set(conf: TestConfig) {
 		NotDistributed { inner }
 	};
 
-	let (handles, initial_con) =
-		common::spawn_swarms(num_peers, &executor, &mut rng, &config_proto, make_topo);
+	let (handles, initial_con) = common::spawn_swarms(
+		num_peers,
+		from_external,
+		&executor,
+		&mut rng,
+		&config_proto,
+		make_topo,
+	);
 
 	let nodes_ids: Vec<_> = handles
 		.iter()
@@ -342,6 +402,7 @@ fn test_change_routing_set(conf: TestConfig) {
 
 	let (nodes, mut with_swarm_channels) = common::spawn_workers::<NotDistributed>(
 		num_peers,
+		from_external,
 		expect_all_connected,
 		handles,
 		&executor,
@@ -355,7 +416,10 @@ fn test_change_routing_set(conf: TestConfig) {
 	initial_con.store(true, std::sync::atomic::Ordering::Relaxed);
 
 	log::trace!(target: "mixnet_test", "after waiting connections");
-	let send = if random_dest {
+	let send = if from_external {
+		// ext 1 can route through peer 0 (only peer accepting ext)
+		vec![SendConf { from: num_peers, to: Some(1), message: source_message.clone() }]
+	} else if random_dest {
 		vec![SendConf { from: set_1.start, to: None, message: source_message.clone() }]
 	} else {
 		let start = set_1.start;
@@ -378,7 +442,12 @@ fn test_change_routing_set(conf: TestConfig) {
 
 	log::trace!(target: "mixnet_test", "set switched");
 
-	let send: Vec<_> = if random_dest {
+	let send: Vec<_> = if from_external {
+		// ext 1 can route through peer 0 (only peer accepting ext)
+		// TODO implement connect for external on demand
+		// vec![SendConf { from: num_peers, to: 1, message: source_message.clone() }]
+		return
+	} else if random_dest {
 		vec![SendConf { from: set_2.start, to: None, message: source_message.clone() }]
 	} else {
 		let start = set_2.start;
@@ -400,11 +469,12 @@ fn test_change_routing_set(conf: TestConfig) {
 #[test]
 fn testing_mess() {
 	test_change_routing_set(TestConfig {
-		num_peers: 5,
+		num_peers: 4,
 		num_hops: 3,
 		message_count: 2,
 		message_size: 1, // max 256 * 1024
 		with_surb: false,
+		from_external: false,
 		random_dest: false,
 	})
 }
