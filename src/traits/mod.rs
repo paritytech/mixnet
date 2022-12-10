@@ -81,20 +81,55 @@ pub trait Topology: Sized {
 	/// routing peers is used.
 	///	E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
-	/// First peer in path is usually start node, except when the node is not
-	/// routing then first peer should send message as an external node.
-	/// Start node is only defined for routing nodes, external node can still
-	/// force the first node but don't have to.
+	/// `recipient_node` is part of the returned path, not `start_node`.
 	/// Error when no recipient is reachable.
 	fn random_path(
 		&mut self,
-		start_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
+		start_node: (&MixnetId, Option<&MixPublicKey>),
 		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		num_hops: usize,
-		max_hops: usize,
-		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error>;
+
+	/// Variant of random path where first external
+	/// node or recipient can be calculated in relation
+	/// with random_path logic.
+	///
+	/// If `from` is undefined, we select a first node (external).
+	/// If `recipient` is undefined a random destination is selected.
+	/// If path is for surb, `last_query_if_surb` defines the query path.
+	///
+	/// recipient is part of the returned path, not the origin.
+	/// If new origin is calculated, return attached to the result.
+	/// If new recipient is calculated, it is the last peer in the path.
+	fn random_path_ext(
+		&mut self,
+		local_id: &MixnetId,
+		from: Option<(&MixnetId, Option<&MixPublicKey>)>,
+		recipient: Option<(&MixnetId, Option<&MixPublicKey>)>,
+		count: usize,
+		num_hops: usize,
+	) -> Result<(Option<MixnetId>, Vec<Vec<(MixnetId, MixPublicKey)>>), Error> {
+		// TODO consider retry with different first hop or destination on no path found
+		let mut first_external = None;
+		let start = if let Some(start) = from {
+			start
+		} else {
+			let firsts = self.first_hop_nodes_external(local_id, recipient.as_ref().map(|r| r.0), num_hops);
+			if firsts.is_empty() {
+				return Err(Error::NoPath(recipient.map(|r| r.0.clone())))
+			}
+			let mut rng = rand::thread_rng();
+			use rand::Rng;
+			let n: usize = rng.gen_range(0..firsts.len());
+			first_external = Some(firsts[n]);
+			let first_ref = first_external.as_ref().expect("Init above");
+			(&first_ref.0, Some(&first_ref.1))
+		};
+
+		self.random_path(start, recipient, count, num_hops).map(|r| (first_external.map(|e| e.0), r))
+	}
+
 
 	/// On connection successful handshake.
 	/// TODO could pass connectionkind to simplify code
@@ -176,12 +211,10 @@ impl Topology for NoTopology {
 
 	fn random_path(
 		&mut self,
-		from: Option<(&MixnetId, Option<&MixPublicKey>)>,
+		from: (&MixnetId, Option<&MixPublicKey>),
 		recipient: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		_num_hops: usize,
-		_max_hops: usize,
-		_last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
 		log::warn!(target: "mixnet", "No topology, direct transmission");
 
@@ -191,7 +224,7 @@ impl Topology for NoTopology {
 			// Select a random connected peer
 			self.connected_peers
 				.iter()
-				.filter(|(k, _v)| Some(k) != from.as_ref().map(|f| &f.0))
+				.filter(|(k, _v)| k != &from.0)
 				.choose(&mut rng)
 				.map(|(k, v)| (k, Some(v)))
 		});

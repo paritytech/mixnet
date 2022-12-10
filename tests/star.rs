@@ -135,53 +135,23 @@ impl Topology for TopologyGraph {
 
 	fn random_path(
 		&mut self,
-		start_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
+		start_node: (&MixnetId, Option<&MixPublicKey>),
 		recipient_node: Option<(&MixnetId, Option<&MixPublicKey>)>,
 		count: usize,
 		num_hops: usize,
-		max_hops: usize,
-		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
-		if num_hops > max_hops {
-			return Err(Error::TooManyHops)
-		}
 		let mut rng = rand::thread_rng();
-		let mut add_start = None;
-		let mut add_end = None;
-		let recipient_id = recipient_node.map(|r| r.0);
-		let start = if let Some(start_node) = start_node {
-			*start_node.0
-		} else {
-			let firsts = self.first_hop_nodes_external(
-				self.local_id.as_ref().unwrap(),
-				recipient_id,
-				num_hops,
-			);
-			if firsts.is_empty() {
-				return Err(Error::NoPath(recipient_id.cloned()))
-			}
-			let n: usize = rng.gen_range(0..firsts.len());
-			add_start = Some(firsts[n]);
-			firsts[n].0
-		};
+		let start = &start_node.0;
 		let recipient = if let Some(recipient_node) = recipient_node {
 			if self.can_route(recipient_node.0) {
 				*recipient_node.0
-			} else if let Some(query) = last_query_if_surb {
-				// reuse a node that was recently connected.
-				if let Some(rec) = query.get(0) {
-					add_end = Some(recipient_node);
-					rec.0
-				} else {
-					return Err(Error::NoPath(Some(*recipient_node.0)))
-				}
 			} else {
 				return Err(Error::NoPath(Some(*recipient_node.0)))
 			}
 		} else {
 			self.peers
 				.iter()
-				.filter(|(k, _v)| Some(k) != start_node.as_ref().map(|s| s.0))
+				.filter(|(k, _v)| k != start_node.0)
 				.choose(&mut rand::thread_rng())
 				.map(|(k, _)| *k)
 				.ok_or(Error::NoPath(None))?
@@ -195,22 +165,10 @@ impl Topology for TopologyGraph {
 			return Err(Error::NoPath(Some(recipient)))
 		}
 
-		let mut result = Vec::new();
+		let mut result = Vec::with_capacity(count);
 		while result.len() < count {
 			let n: usize = rng.gen_range(0..paths.len());
 			let mut path = paths[n].clone();
-			if let Some((peer, key)) = add_start {
-				// TODO just return as separate result
-				// (we extract it when using).
-				path.insert(0, (peer, key));
-			}
-			if let Some((peer, key)) = add_end {
-				if let Some(key) = key {
-					path.push((*peer, *key));
-				} else {
-					return Err(Error::NoPath(recipient_id.cloned()))
-				}
-			}
 			result.push(path);
 		}
 		log::trace!(target: "mixnet", "Random path {:?}", result);

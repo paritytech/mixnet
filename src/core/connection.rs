@@ -28,7 +28,7 @@ use crate::{
 		ConnectedKind, PacketType, QueuedPacket, QueuedUnconnectedPackets, WindowInfo,
 		WINDOW_MARGIN_PERCENT,
 	},
-	traits::{Configuration, Connection, Handshake, Topology},
+	traits::{Configuration, Connection, Topology},
 	MixPublicKey, MixnetId, NetworkId, Packet, PeerCount, PACKET_SIZE,
 };
 use futures::FutureExt;
@@ -557,7 +557,7 @@ impl<C: Connection> ManagedConnection<C> {
 								return Poll::Ready(ConnectionEvent::ExternalQuery(recipient, data))
 							}
 						},
-						Poll::Ready(Ok((MetaMessage::ExternalReply, data))) => {
+						Poll::Ready(Ok((MetaMessage::ExternalReply, _data))) => {
 							return self.broken_connection(topology, peers)
 							//unimplemented!()
 						},

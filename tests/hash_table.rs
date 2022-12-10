@@ -281,7 +281,7 @@ fn from_external_no_surb2() {
 fn surb_and_layer_local() {
 	for num_hops in 3..4 {
 		test_messages(TestConfig {
-			num_peers: 20,
+			num_peers: 15,
 			num_hops,
 			message_count: 1,
 			message_size: 1,

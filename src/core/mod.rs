@@ -565,7 +565,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 
 		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surb)?;
-		let mut paths = self.random_paths(
+		let (first_external, paths) = self.random_paths(
 			peer_id.as_ref(),
 			peer_pub_key.as_ref(),
 			&send_options.num_hop,
@@ -590,7 +590,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					paths.last(),
 					is_external,
 				)?
-				.remove(0);
+				.1.remove(0);
 			let first_node = paths[0].0;
 			let paths: Vec<_> = paths
 				.into_iter()
@@ -603,14 +603,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let nb_chunks = chunks.len();
 		let mut packets = Vec::with_capacity(nb_chunks);
 		for (n, chunk) in chunks.into_iter().enumerate() {
-			let first_external = if is_external {
-				let new = paths[n].split_off(1);
-				let first = paths[n][0].0;
-				paths[n] = new;
-				Some(first)
-			} else {
-				None
-			};
 			let (first_id, _) = *paths[n].first().unwrap();
 			let hops: Vec<_> = paths[n]
 				.iter()
@@ -786,10 +778,17 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		count: usize,
 		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
 		is_external: bool,
-	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
-		let (start, recipient) = if last_query_if_surb.is_some() {
+	) -> Result<(Option<MixnetId>, Vec<Vec<(MixnetId, MixPublicKey)>>), Error> {
+		let (start, recipient) = if let Some(last_query) = last_query_if_surb {
 			if let Some(recipient) = recipient {
-				(Some((recipient, recipient_key)), Some((&self.local_id, Some(&self.public))))
+				if is_external {
+					// send to the first external peer that will reply to use
+					let dest = &last_query[0];
+					(Some((recipient, recipient_key)), Some((&dest.0, Some(&dest.1))))
+
+				} else {
+					(Some((recipient, recipient_key)), Some((&self.local_id, Some(&self.public))))
+				}
 			} else {
 				// no recipient for a surb could be unreachable too.
 				return Err(Error::NoPath(None))
@@ -807,13 +806,12 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
-		self.topology.random_path(
+		self.topology.random_path_ext(
+			&self.local_id,
 			start,
 			recipient,
 			count,
 			num_hops,
-			sphinx::MAX_HOPS,
-			last_query_if_surb,
 		)
 	}
 
