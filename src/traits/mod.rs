@@ -115,7 +115,8 @@ pub trait Topology: Sized {
 		let start = if let Some(start) = from {
 			start
 		} else {
-			let firsts = self.first_hop_nodes_external(local_id, recipient.as_ref().map(|r| r.0), num_hops);
+			let firsts =
+				self.first_hop_nodes_external(local_id, recipient.as_ref().map(|r| r.0), num_hops);
 			if firsts.is_empty() {
 				return Err(Error::NoPath(recipient.map(|r| r.0.clone())))
 			}
@@ -127,9 +128,9 @@ pub trait Topology: Sized {
 			(&first_ref.0, Some(&first_ref.1))
 		};
 
-		self.random_path(start, recipient, count, num_hops).map(|r| (first_external.map(|e| e.0), r))
+		self.random_path(start, recipient, count, num_hops)
+			.map(|r| (first_external.map(|e| e.0), r))
 	}
-
 
 	/// On connection successful handshake.
 	/// TODO could pass connectionkind to simplify code

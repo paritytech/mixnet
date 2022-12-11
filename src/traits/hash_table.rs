@@ -222,25 +222,21 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		}
 
 		let start = start_node.0;
-		let recipient = self.reachable(
-			start,
-			recipient_node,
-			&mut num_hops,
-		)?;
+		let recipient = self.reachable(start, recipient_node, &mut num_hops)?;
 		let recipient = match (recipient_node, recipient.as_ref()) {
 			(_, Some(node)) => &node,
 			(Some(node), _) => node.0,
-			 _ => return Err(Error::NoPath(None)),
+			_ => return Err(Error::NoPath(None)),
 		};
 		let mut result = Vec::with_capacity(nb_chunk);
 		while result.len() < nb_chunk {
-			let path_ids =
-				if let Some(path) = random_path(&self.paths, start, &recipient, num_hops) {
-					trace!(target: "mixnet", "Got path: {:?}", &path);
-					path
-				} else {
-					return Err(Error::NoPath(Some(*recipient)))
-				};
+			let path_ids = if let Some(path) = random_path(&self.paths, start, &recipient, num_hops)
+			{
+				trace!(target: "mixnet", "Got path: {:?}", &path);
+				path
+			} else {
+				return Err(Error::NoPath(Some(*recipient)))
+			};
 			let mut path = Vec::with_capacity(num_hops + 1);
 
 			for peer_id in path_ids.into_iter() {

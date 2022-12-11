@@ -458,11 +458,17 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		self.topology.peer_stats(&self.peer_counts);
 	}
 
-	pub fn insert_connection(&mut self, peer: NetworkId, connection: C) {
+	pub fn insert_connection(
+		&mut self,
+		waker: futures::task::Waker,
+		peer: NetworkId,
+		connection: C,
+	) {
 		if let Some(peer_id) = self.remove_connected_peer(&peer, false) {
 			log::warn!(target: "mixnet", "Removing old connection with {:?}, on handshake restart", peer_id);
 		}
 		let connection = ManagedConnection::new(
+			waker,
 			self.local_id,
 			self.public,
 			peer,
@@ -590,7 +596,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					paths.last(),
 					is_external,
 				)?
-				.1.remove(0);
+				.1
+				.remove(0);
 			let first_node = paths[0].0;
 			let paths: Vec<_> = paths
 				.into_iter()
@@ -785,7 +792,6 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					// send to the first external peer that will reply to use
 					let dest = &last_query[0];
 					(Some((recipient, recipient_key)), Some((&dest.0, Some(&dest.1))))
-
 				} else {
 					(Some((recipient, recipient_key)), Some((&self.local_id, Some(&self.public))))
 				}
@@ -806,13 +812,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		log::trace!(target: "mixnet", "Random path, length {:?}", num_hops);
-		self.topology.random_path_ext(
-			&self.local_id,
-			start,
-			recipient,
-			count,
-			num_hops,
-		)
+		self.topology.random_path_ext(&self.local_id, start, recipient, count, num_hops)
 	}
 
 	fn cleanup(&mut self, now: Instant) {
@@ -1073,14 +1073,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 
 		if let Some((recipient, data)) = queue_packet {
-					let mut rng = rand::thread_rng();
-					let delay = exp_delay(&mut rng, self.average_hop_delay);
-					if let Err(error) =
-						self.queue_packet(recipient, data, delay, PacketType::ForwardExternal)
-					{
-						log::trace!(target: "mixnet", "Error adding external packet {:}.", error);
-						// TODO reply with meta protocol to external with a failure.
-					}
+			let mut rng = rand::thread_rng();
+			let delay = exp_delay(&mut rng, self.average_hop_delay);
+			if let Err(error) =
+				self.queue_packet(recipient, data, delay, PacketType::ForwardExternal)
+			{
+				log::trace!(target: "mixnet", "Error adding external packet {:}.", error);
+				// TODO reply with meta protocol to external with a failure.
+			}
 		}
 
 		for (peer, packet) in recv_packets {
