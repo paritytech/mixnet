@@ -13,23 +13,23 @@ categories = ["network-programming", "asynchronous"]
 futures = "0.3.21"
 futures-timer = "3.0.2"
 instant = "0.1.12"
-libp2p-core = { version = "0.34", default-features = false }
-libp2p-swarm = "0.37"
+libp2p-core = { version = "0.37.0", default-features = false }
+libp2p-swarm = "0.40.1"
 log = "0.4.17"
-rand = "0.8.4"
+rand = "0.8.5"
 rand_distr = "0.4.3"
 void = "1.0"
 blake2 = { version = "0.10.4", default-features = false }
 curve25519-dalek = "3.2.0"
 dyn-clone = "1.0.5"
 static_assertions = "1.1.0"
-bytemuck = "1.12.1"
-ambassador = "0.3.2"
+bytemuck = "1.12.3"
+ambassador = "0.3.5"
 
 #sphinx deps
-x25519-dalek = "1.1.0"
-aes = "0.8.1"
-ctr = "0.9.1"
+x25519-dalek = "1.1.1"
+aes = "0.8.2"
+ctr = "0.9.2"
 sha2 = "0.10.2"
 hkdf = "0.12.3"
 hmac = "0.12.1"
@@ -37,12 +37,12 @@ lioness = "0.1.2"
 subtle = "2.4.1"
 
 [dev-dependencies]
-async-std = "1.11"
-libp2p-tcp = "0.34.0"
-libp2p-noise = "0.37.0"
-libp2p-yamux = "0.38.0"
-libp2p-mplex = "0.34.0"
+async-std = "1.12"
+libp2p-tcp = {version = "0.37.0", features = ["async-io"]}
+libp2p-noise = "0.40.0"
+libp2p-yamux = "0.41.0"
+libp2p-mplex = "0.37.0"
 env_logger = "0.9.0"
-ed25519-zebra = "3.0.0"
-rand = { version = "0.8.4", features = ["small_rng"] }
+ed25519-zebra = "3.1.0"
+rand = { version = "0.8.5", features = ["small_rng"] }
 parking_lot = { version = "0.12" }

@@ -199,7 +199,6 @@ pub fn to_sphinx_id(id: &NetworkId) -> Result<MixnetId, Error> {
 				.map_err(|_e| Error::InvalidId(*id))?;
 			let public = match decoded {
 				libp2p_core::identity::PublicKey::Ed25519(key) => key.encode(),
-				_ => return Err(Error::InvalidId(*id)),
 			};
 			Ok(public)
 		},
