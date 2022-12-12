@@ -26,7 +26,7 @@
 use crate::{
 	core::{
 		ConnectedKind, PacketType, QueuedPacket, QueuedUnconnectedPackets, ReplayTag, WindowInfo,
-		WINDOW_MARGIN_PERCENT,
+		FRAGMENT_PACKET_SIZE, PAYLOAD_TAG_SIZE, WINDOW_MARGIN_PERCENT,
 	},
 	traits::{Configuration, Connection, Topology},
 	MixPublicKey, MixnetId, NetworkId, Packet, PeerCount, PACKET_SIZE,
@@ -42,10 +42,11 @@ use std::{
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_METAPAQUET_QUEUE: usize = 1_000;
-pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE + 32; // TODO 32 from mixnetid
-pub(crate) const EXTERNAL_QUERY_SIZE_WITH_SURB: usize = EXTERNAL_QUERY_SIZE + 32; // TODO 32 from
-																				  // replay tag
-pub(crate) const EXTERNAL_REPLY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
+pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE + std::mem::size_of::<MixnetId>();
+pub(crate) const EXTERNAL_QUERY_SIZE_WITH_SURB: usize =
+	std::mem::size_of::<ReplayTag>() + EXTERNAL_QUERY_SIZE;
+pub(crate) const EXTERNAL_REPLY_SIZE: usize =
+	std::mem::size_of::<ReplayTag>() + PAYLOAD_TAG_SIZE + FRAGMENT_PACKET_SIZE;
 
 macro_rules! try_poll {
 	( $call: expr ) => {
@@ -69,6 +70,9 @@ pub(crate) enum ConnectionResult {
 	/// External message to forward.
 	/// Destination, packet and do if we expect a surb, its tag.
 	ExternalQuery(MixnetId, Packet, Option<ReplayTag>),
+	/// Surb reply from an external request, contains replay
+	/// tag and fragment payload.
+	ExternalReply(ReplayTag, Vec<u8>),
 	/// Closed connection.
 	Broken(Option<MixnetId>),
 }
@@ -482,28 +486,51 @@ impl<C: Connection> ManagedConnection<C> {
 		if !self.kind.is_external() {
 			return Err(crate::Error::NotExternal)
 		}
-		if packet.injected_packet() {
-			if self.meta_queued.len() >= MAX_METAPAQUET_QUEUE {
-				return Err(crate::Error::QueueFull)
-			}
-			let mut data = first_hop.to_vec();
-			if let Some(tag) = with_surb.as_ref() {
-				data.extend_from_slice(&tag.0[..]);
-			}
-			data.append(&mut packet.data.0);
-			let kind = if with_surb.is_some() {
-				MetaMessage::ExternalQueryWithSurb
-			} else {
-				MetaMessage::ExternalQuery
-			};
-			if self.connection.can_queue_send() {
-				self.connection.queue_send(Some(kind as u8), data);
-			} else {
-				self.meta_queued.push_back((kind, data));
-			}
+		if self.meta_queued.len() >= MAX_METAPAQUET_QUEUE {
+			return Err(crate::Error::QueueFull)
+		}
+		let mut data = first_hop.to_vec();
+		if let Some(tag) = with_surb.as_ref() {
+			data.extend_from_slice(&tag.0[..]);
+		}
+		data.append(&mut packet.data.0);
+		let kind = if with_surb.is_some() {
+			MetaMessage::ExternalQueryWithSurb
 		} else {
-			// surb
-			unimplemented!()
+			MetaMessage::ExternalQuery
+		};
+		if self.connection.can_queue_send() {
+			self.connection.queue_send(Some(kind as u8), data);
+		} else {
+			self.meta_queued.push_back((kind, data));
+		}
+		// needed on paper, in practice not that much.
+		// maybe switch queue to an asynch thread local one?
+		self.waker.wake_by_ref();
+		Ok(())
+	}
+
+	pub(super) fn queue_external_reply(
+		&mut self,
+		tag: ReplayTag,
+		mut payload: Vec<u8>,
+	) -> Result<(), crate::Error> {
+		if self.meta_queued.len() >= MAX_METAPAQUET_QUEUE {
+			// TODO we reply from a stored surb so this is expected,
+			// maybe skip checking this limit.
+			return Err(crate::Error::QueueFull)
+		}
+		if payload.len() != PAYLOAD_TAG_SIZE + FRAGMENT_PACKET_SIZE {
+			return Err(crate::Error::Other("Invalid packet reply size, this is a bug".to_string()))
+		}
+		let mut data = Vec::with_capacity(EXTERNAL_REPLY_SIZE);
+		data.extend_from_slice(&tag.0[..]);
+		data.append(&mut payload);
+		let kind = MetaMessage::ExternalReply;
+		if self.connection.can_queue_send() {
+			self.connection.queue_send(Some(kind as u8), data);
+		} else {
+			self.meta_queued.push_back((kind, data));
 		}
 		// needed on paper, in practice not that much.
 		// maybe switch queue to an asynch thread local one?
@@ -640,10 +667,17 @@ impl<C: Connection> ManagedConnection<C> {
 						)))
 					}
 				},
-				Some((MetaMessage::ExternalReply, _data)) => {
-					return Poll::Ready(Err(()))
-					//unimplemented!()
-				},
+				Some((MetaMessage::ExternalReply, mut data)) =>
+					if data.len() < EXTERNAL_REPLY_SIZE {
+						log::trace!(target: "mixnet", "Invalid external reply from {}", self.network_id);
+						return Poll::Ready(Err(()))
+					} else {
+						let mut tag = ReplayTag(Default::default());
+						let tag_len = tag.0.len();
+						tag.0.copy_from_slice(&data[..tag_len]);
+						let data = data.split_off(tag_len);
+						return Poll::Ready(Ok(ConnectionResult::ExternalReply(tag, data)))
+					},
 				Some((MetaMessage::Disconnect, _)) => return Poll::Ready(Err(())),
 				None => break,
 			}

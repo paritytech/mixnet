@@ -81,7 +81,7 @@ const AD_SIZE: usize = 2;
 const V0_AD: [u8; AD_SIZE] = [0u8; 2];
 
 /// The size in bytes of the payload tag.
-const PAYLOAD_TAG_SIZE: usize = 16;
+pub const PAYLOAD_TAG_SIZE: usize = 16;
 
 /// Tag for payload authentication purpose.
 const PAYLOAD_TAG: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
@@ -468,7 +468,7 @@ pub fn unwrap_packet(
 	let maybe_next_hop = hop.next_hop();
 
 	// Decrypt the Sphinx Packet Payload.
-	let mut p = vec![0u8; payload.len()];
+	let mut p = vec![0u8; payload.len()]; // TODO looks useless
 	p.copy_from_slice(payload);
 	// Transform the packet for forwarding to the next mix
 	match maybe_next_hop {
@@ -511,35 +511,41 @@ pub fn unwrap_packet(
 		},
 		DoNextHop::SurbsReply =>
 		// Previous reading of header was only for hmac.
-			match surb.pending.remove(&replay_tag) {
-				Some(SurbsPersistances::Local(surb)) => {
-					//
-					let mut decrypted_payload = payload.to_vec();
-					let nb_key = surb.keys.len();
-					for key in surb.keys[..nb_key - 1].iter().rev() {
-						decrypted_payload = crypto::sprp_encrypt(&key.key, decrypted_payload)
-							.map_err(|_| Error::PayloadDecrypt)?;
-					}
-					let first_key = &surb.keys[nb_key - 1].key;
-					decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
-						.map_err(|_| Error::PayloadDecrypt)?;
-					if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
-						return Err(Error::Payload)
-					}
-					let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-					Ok(Unwrapped::SurbsReply(
-						decrypted_payload,
-						surb.query,
-						Box::new(surb.recipient),
-					))
-				},
-				Some(SurbsPersistances::FromExternal(external_peer, tag)) =>
-					Ok(Unwrapped::SurbsReplyExternal(external_peer, tag, payload.to_vec())),
-				None => {
-					log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
-					Err(Error::MissingSurbs)
-				},
-			},
+			read_surb_payload(&replay_tag, payload.to_vec(), surb),
+	}
+}
+
+pub fn read_surb_payload(
+	replay_tag: &ReplayTag,
+	payload: Vec<u8>,
+	surb: &mut SurbsCollection,
+) -> Result<Unwrapped, Error> {
+	// Split into mutable references and validate the AD
+	match surb.pending.remove(replay_tag) {
+		Some(SurbsPersistances::Local(surb)) => {
+			//
+			let mut decrypted_payload = payload;
+			let nb_key = surb.keys.len();
+			for key in surb.keys[..nb_key - 1].iter().rev() {
+				decrypted_payload = crypto::sprp_encrypt(&key.key, decrypted_payload)
+					.map_err(|_| Error::PayloadDecrypt)?;
+			}
+			let first_key = &surb.keys[nb_key - 1].key;
+			decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
+				.map_err(|_| Error::PayloadDecrypt)?;
+			if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
+				return Err(Error::Payload)
+			}
+			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
+			Ok(Unwrapped::SurbsReply(decrypted_payload, surb.query, Box::new(surb.recipient)))
+		},
+
+		Some(SurbsPersistances::FromExternal(external_peer, tag)) =>
+			Ok(Unwrapped::SurbsReplyExternal(external_peer, tag, payload.to_vec())),
+		None => {
+			log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
+			Err(Error::MissingSurbs)
+		},
 	}
 }
 

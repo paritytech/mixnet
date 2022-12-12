@@ -27,7 +27,10 @@ mod fragment;
 mod sphinx;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
-pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance, SurbsPersistances};
+pub use crate::core::{
+	fragment::FRAGMENT_PACKET_SIZE,
+	sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance, SurbsPersistances, PAYLOAD_TAG_SIZE},
+};
 use crate::{
 	core::connection::{ConnectionResult, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection, NewRoutingSet, ShouldConnectTo},
@@ -558,6 +561,24 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		Ok(())
 	}
 
+	fn queue_external_reply(
+		&mut self,
+		recipient: MixnetId,
+		tag: ReplayTag,
+		data: Vec<u8>,
+	) -> Result<(), Error> {
+		if let Some(connection) = self
+			.peers_to_network_id
+			.get(&recipient)
+			.and_then(|r| self.connected_peers.get_mut(r))
+		{
+			connection.queue_external_reply(tag, data)?;
+		} else {
+			return Err(Error::Unreachable)
+		}
+		Ok(())
+	}
+
 	/// Send a new message to the network. Message is split into multiple fragments and each
 	/// fragment is sent over an individual path to the recipient. If no recipient is specified, a
 	/// random recipient is selected.
@@ -734,7 +755,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				}
 			},
 			Ok(Unwrapped::SurbsReplyExternal(external_peer, tag, payload)) => {
-				unimplemented!("proxy to external peer");
+				self.queue_external_reply(external_peer, tag, payload)?;
 			},
 			Ok(Unwrapped::SurbsQuery(encoded_surb, payload)) => {
 				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
@@ -1034,6 +1055,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		let mut recv_packets = Vec::new();
 		let mut queue_packet = None;
 
+		// TODO consider returning a list of event to try put this in all pending more frequently.
 		for (peer_id, connection) in self.connected_peers.iter_mut() {
 			match connection.poll(
 				cx,
@@ -1092,6 +1114,34 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					}
 					queue_packet = Some((recipient, data));
 				},
+				Poll::Ready(ConnectionResult::ExternalReply(tag, payload)) => {
+					all_pending = false;
+					match sphinx::read_surb_payload(&tag, payload, &mut self.surb) {
+						Ok(Unwrapped::SurbsReply(payload, query, recipient)) => {
+							if let Ok(Some((message, kind))) = self
+								.fragments
+								.insert_fragment(payload, MessageType::FromSurbs(query, recipient))
+							{
+								log::debug!(target: "mixnet", "Imported surb from {:?} ({} bytes)", peer_id, message.len());
+								return Poll::Ready(MixnetEvent::Message(DecodedMessage {
+									peer: connection.mixnet_id().cloned().unwrap_or_default(),
+									message,
+									kind,
+								}))
+							} else {
+								log::error!(target: "mixnet", "Surbs fragment from {:?}", peer_id);
+							}
+						},
+						Ok(_) => {
+							// is actually unreachable
+							log::trace!(target: "mixnet", "Unexpected surbs exteraln reply content.");
+						},
+						Err(error) => {
+							log::trace!(target: "mixnet", "Error reading external surb reply {:?}.", error);
+						},
+					}
+				},
+
 				Poll::Pending => (),
 			}
 		}

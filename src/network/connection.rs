@@ -20,7 +20,7 @@
 
 //! Network connection.
 
-use crate::{EXTERNAL_QUERY_SIZE, EXTERNAL_QUERY_SIZE_WITH_SURB, EXTERNAL_REPLY_SIZE, PACKET_SIZE};
+use crate::{EXTERNAL_QUERY_SIZE_WITH_SURB, EXTERNAL_REPLY_SIZE, PACKET_SIZE};
 use futures::{channel::oneshot::Sender as OneShotSender, io::IoSlice, AsyncRead, AsyncWrite};
 use std::{
 	pin::Pin,
