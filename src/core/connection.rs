@@ -25,7 +25,7 @@
 
 use crate::{
 	core::{
-		ConnectedKind, PacketType, QueuedPacket, QueuedUnconnectedPackets, WindowInfo,
+		ConnectedKind, PacketType, QueuedPacket, QueuedUnconnectedPackets, ReplayTag, WindowInfo,
 		WINDOW_MARGIN_PERCENT,
 	},
 	traits::{Configuration, Connection, Topology},
@@ -42,7 +42,9 @@ use std::{
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_METAPAQUET_QUEUE: usize = 1_000;
-pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE + 32; // TODO other stuff needed
+pub(crate) const EXTERNAL_QUERY_SIZE: usize = PACKET_SIZE + 32; // TODO 32 from mixnetid
+pub(crate) const EXTERNAL_QUERY_SIZE_WITH_SURB: usize = EXTERNAL_QUERY_SIZE + 32; // TODO 32 from
+																				  // replay tag
 pub(crate) const EXTERNAL_REPLY_SIZE: usize = PACKET_SIZE; // TODO other stuff needed
 
 macro_rules! try_poll {
@@ -65,7 +67,8 @@ pub(crate) enum ConnectionResult {
 	/// Received packet.
 	Received(Packet),
 	/// External message to forward.
-	ExternalQuery(MixnetId, Packet),
+	/// Destination, packet and do if we expect a surb, its tag.
+	ExternalQuery(MixnetId, Packet, Option<ReplayTag>),
 	/// Closed connection.
 	Broken(Option<MixnetId>),
 }
@@ -76,8 +79,9 @@ pub(crate) enum ConnectionResult {
 enum MetaMessage {
 	Handshake = 1,
 	ExternalQuery = 2,
-	ExternalReply = 3,
-	Disconnect = 4,
+	ExternalQueryWithSurb = 3,
+	ExternalReply = 4,
+	Disconnect = 5,
 }
 
 pub(crate) struct ManagedConnection<C> {
@@ -313,6 +317,13 @@ impl<C: Connection> ManagedConnection<C> {
 									Some((MetaMessage::ExternalQuery, EXTERNAL_QUERY_SIZE));
 								continue
 							},
+							k if k == (MetaMessage::ExternalQueryWithSurb as u8) => {
+								is_content = Some((
+									MetaMessage::ExternalQueryWithSurb,
+									EXTERNAL_QUERY_SIZE_WITH_SURB,
+								));
+								continue
+							},
 							k if k == (MetaMessage::ExternalReply as u8) => {
 								is_content =
 									Some((MetaMessage::ExternalReply, EXTERNAL_REPLY_SIZE));
@@ -461,6 +472,7 @@ impl<C: Connection> ManagedConnection<C> {
 	pub(crate) fn queue_external_packet(
 		&mut self,
 		first_hop: MixnetId,
+		with_surb: Option<ReplayTag>,
 		mut packet: QueuedPacket,
 	) -> Result<(), crate::Error> {
 		// TODO we should be able to report the error : return a channel on success (channel in
@@ -475,11 +487,19 @@ impl<C: Connection> ManagedConnection<C> {
 				return Err(crate::Error::QueueFull)
 			}
 			let mut data = first_hop.to_vec();
+			if let Some(tag) = with_surb.as_ref() {
+				data.extend_from_slice(&tag.0[..]);
+			}
 			data.append(&mut packet.data.0);
-			if self.connection.can_queue_send() {
-				self.connection.queue_send(Some(MetaMessage::ExternalQuery as u8), data);
+			let kind = if with_surb.is_some() {
+				MetaMessage::ExternalQueryWithSurb
 			} else {
-				self.meta_queued.push_back((MetaMessage::ExternalQuery, data));
+				MetaMessage::ExternalQuery
+			};
+			if self.connection.can_queue_send() {
+				self.connection.queue_send(Some(kind as u8), data);
+			} else {
+				self.meta_queued.push_back((kind, data));
 			}
 		} else {
 			// surb
@@ -593,7 +613,31 @@ impl<C: Connection> ManagedConnection<C> {
 						data.truncate(PACKET_SIZE);
 
 						let data = Packet::from_vec(data).expect("checked size");
-						return Poll::Ready(Ok(ConnectionResult::ExternalQuery(recipient, data)))
+						return Poll::Ready(Ok(ConnectionResult::ExternalQuery(
+							recipient, data, None,
+						)))
+					}
+				},
+				Some((MetaMessage::ExternalQueryWithSurb, mut data)) => {
+					if data.len() < EXTERNAL_QUERY_SIZE_WITH_SURB {
+						log::trace!(target: "mixnet", "Invalid external query from {}", self.network_id);
+						return Poll::Ready(Err(()))
+					} else {
+						let mut recipient = MixnetId::default();
+						let mixnet_id_len = recipient.len();
+						recipient.copy_from_slice(&data[..mixnet_id_len]);
+						let mut data = data.split_off(mixnet_id_len);
+						let mut tag = ReplayTag(Default::default());
+						let tag_len = tag.0.len();
+						tag.0.copy_from_slice(&data[..tag_len]);
+						let mut data = data.split_off(tag_len);
+						data.truncate(PACKET_SIZE);
+						let data = Packet::from_vec(data).expect("checked size");
+						return Poll::Ready(Ok(ConnectionResult::ExternalQuery(
+							recipient,
+							data,
+							Some(tag),
+						)))
 					}
 				},
 				Some((MetaMessage::ExternalReply, _data)) => {

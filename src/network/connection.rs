@@ -20,7 +20,7 @@
 
 //! Network connection.
 
-use crate::{EXTERNAL_QUERY_SIZE, EXTERNAL_REPLY_SIZE, PACKET_SIZE};
+use crate::{EXTERNAL_QUERY_SIZE, EXTERNAL_QUERY_SIZE_WITH_SURB, EXTERNAL_REPLY_SIZE, PACKET_SIZE};
 use futures::{channel::oneshot::Sender as OneShotSender, io::IoSlice, AsyncRead, AsyncWrite};
 use std::{
 	pin::Pin,
@@ -37,13 +37,14 @@ pub struct Connection {
 	outbound_buffer: Option<(Option<u8>, Vec<u8>, usize)>,
 	outbound_flushing: bool,
 	// size see consta assen
-	inbound_buffer: (Box<[u8; EXTERNAL_QUERY_SIZE]>, usize),
+	inbound_buffer: (Box<[u8; EXTERNAL_QUERY_SIZE_WITH_SURB]>, usize),
 	// Inform connection handler when connection is dropped.
 	close_handler: Option<OneShotSender<()>>,
 }
 
-static_assertions::const_assert!(EXTERNAL_QUERY_SIZE >= EXTERNAL_REPLY_SIZE);
-static_assertions::const_assert!(EXTERNAL_REPLY_SIZE >= PACKET_SIZE);
+static_assertions::const_assert!(EXTERNAL_QUERY_SIZE_WITH_SURB >= EXTERNAL_REPLY_SIZE);
+static_assertions::const_assert!(EXTERNAL_QUERY_SIZE_WITH_SURB >= EXTERNAL_REPLY_SIZE);
+static_assertions::const_assert!(EXTERNAL_QUERY_SIZE_WITH_SURB >= PACKET_SIZE);
 
 impl Drop for Connection {
 	fn drop(&mut self) {
@@ -112,7 +113,7 @@ impl ConnectionT for Connection {
 	}
 
 	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>> {
-		if size > EXTERNAL_QUERY_SIZE {
+		if size > EXTERNAL_QUERY_SIZE_WITH_SURB {
 			return Poll::Ready(Err(()))
 		}
 		match self.inbound.as_mut().map(|inbound| {
@@ -160,7 +161,7 @@ impl Connection {
 			inbound: inbound.map(Box::pin),
 			outbound: Box::pin(outbound),
 			outbound_buffer: None,
-			inbound_buffer: (Box::new([0u8; EXTERNAL_QUERY_SIZE]), 0),
+			inbound_buffer: (Box::new([0u8; EXTERNAL_QUERY_SIZE_WITH_SURB]), 0),
 			outbound_flushing: false,
 			close_handler: Some(close_handler),
 		}

@@ -154,6 +154,7 @@ pub enum Unwrapped {
 	Payload(Vec<u8>),
 	SurbsQuery(Vec<u8>, Vec<u8>),
 	SurbsReply(Vec<u8>, Option<Vec<u8>>, Box<(crate::MixnetId, crate::MixPublicKey)>),
+	SurbsReplyExternal(crate::MixnetId, ReplayTag, Vec<u8>),
 }
 
 enum DoNextHop {
@@ -167,6 +168,17 @@ pub struct SurbsPersistance {
 	pub keys: Vec<SprpKey>,
 	pub query: Option<Vec<u8>>,
 	pub recipient: (crate::MixnetId, crate::MixPublicKey),
+}
+
+pub enum SurbsPersistances {
+	Local(SurbsPersistance),
+	FromExternal(crate::MixnetId, ReplayTag),
+}
+
+impl From<SurbsPersistance> for SurbsPersistances {
+	fn from(surb: SurbsPersistance) -> Self {
+		SurbsPersistances::Local(surb)
+	}
 }
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
@@ -497,29 +509,37 @@ pub fn unwrap_packet(
 			filter.insert(replay_tag, Instant::now());
 			Ok(Unwrapped::SurbsQuery(decrypted_payload, payload))
 		},
-		DoNextHop::SurbsReply => {
-			// Previous reading of header was only for hmac.
-			if let Some(surb) = surb.pending.remove(&replay_tag) {
-				//
-				let mut decrypted_payload = payload.to_vec();
-				let nb_key = surb.keys.len();
-				for key in surb.keys[..nb_key - 1].iter().rev() {
-					decrypted_payload = crypto::sprp_encrypt(&key.key, decrypted_payload)
+		DoNextHop::SurbsReply =>
+		// Previous reading of header was only for hmac.
+			match surb.pending.remove(&replay_tag) {
+				Some(SurbsPersistances::Local(surb)) => {
+					//
+					let mut decrypted_payload = payload.to_vec();
+					let nb_key = surb.keys.len();
+					for key in surb.keys[..nb_key - 1].iter().rev() {
+						decrypted_payload = crypto::sprp_encrypt(&key.key, decrypted_payload)
+							.map_err(|_| Error::PayloadDecrypt)?;
+					}
+					let first_key = &surb.keys[nb_key - 1].key;
+					decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
 						.map_err(|_| Error::PayloadDecrypt)?;
-				}
-				let first_key = &surb.keys[nb_key - 1].key;
-				decrypted_payload = crypto::sprp_decrypt(first_key, decrypted_payload)
-					.map_err(|_| Error::PayloadDecrypt)?;
-				if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
-					return Err(Error::Payload)
-				}
-				let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-				Ok(Unwrapped::SurbsReply(decrypted_payload, surb.query, Box::new(surb.recipient)))
-			} else {
-				log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
-				Err(Error::MissingSurbs)
-			}
-		},
+					if decrypted_payload[..PAYLOAD_TAG_SIZE] != PAYLOAD_TAG {
+						return Err(Error::Payload)
+					}
+					let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
+					Ok(Unwrapped::SurbsReply(
+						decrypted_payload,
+						surb.query,
+						Box::new(surb.recipient),
+					))
+				},
+				Some(SurbsPersistances::FromExternal(external_peer, tag)) =>
+					Ok(Unwrapped::SurbsReplyExternal(external_peer, tag, payload.to_vec())),
+				None => {
+					log::trace!(target: "mixnet", "Surbs reply received after timeout {:?}", &replay_tag);
+					Err(Error::MissingSurbs)
+				},
+			},
 	}
 }
 
@@ -604,7 +624,7 @@ mod test {
 			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
 				let persistance =
 					crate::core::sphinx::SurbsPersistance { keys, query: None, recipient };
-				surb_collection.insert(surb_id, persistance, std::time::Instant::now());
+				surb_collection.insert(surb_id, persistance.into(), std::time::Instant::now());
 			}
 
 			// Unwrap the packet, validating the output.

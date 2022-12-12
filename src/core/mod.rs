@@ -27,7 +27,7 @@ mod fragment;
 mod sphinx;
 
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
-pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
+pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance, SurbsPersistances};
 use crate::{
 	core::connection::{ConnectionResult, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection, NewRoutingSet, ShouldConnectTo},
@@ -538,6 +538,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		first_hop: MixnetId,
 		data: Packet,
 		kind: PacketType,
+		with_surb: Option<ReplayTag>,
 	) -> Result<(), Error> {
 		if let Some(connection) = self
 			.peers_to_network_id
@@ -546,7 +547,11 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		{
 			let deadline = self.window.last_now;
 			// TODO change this just pass data?
-			connection.queue_external_packet(first_hop, QueuedPacket { deadline, data, kind })?;
+			connection.queue_external_packet(
+				first_hop,
+				with_surb,
+				QueuedPacket { deadline, data, kind },
+			)?;
 		} else {
 			return Err(Error::Unreachable)
 		}
@@ -593,7 +598,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					peer_pub_key.as_ref(),
 					&send_options.num_hop,
 					1,
-					paths.last(),
+					Some(first_external.as_ref()),
 					is_external,
 				)?
 				.1
@@ -619,24 +624,34 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			let (packet, surb_keys) =
 				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(Error::SphinxError)?;
+			let mut surb_tag = None;
 			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
 				let persistance = SurbsPersistance {
 					keys,
 					query: surb_query.take(),
 					recipient: *paths[n].last().unwrap(),
 				};
-				self.surb.insert(surb_id, persistance, self.window.last_now);
+				if first_external.is_some() {
+					surb_tag = Some(surb_id.clone());
+				}
+				self.surb.insert(surb_id, persistance.into(), self.window.last_now);
 			}
 			if let Some(target) = first_external {
-				packets.push((target, packet, Some(first_id)));
+				packets.push((target, packet, Some((first_id, surb_tag))));
 			} else {
 				packets.push((first_id, packet, None));
 			}
 		}
 
 		for (peer_id, packet, is_external) in packets {
-			if let Some(first_hop) = is_external {
-				self.queue_external_packet(peer_id, first_hop, packet, PacketType::SendFromSelf)?;
+			if let Some((first_hop, with_surb)) = is_external {
+				self.queue_external_packet(
+					peer_id,
+					first_hop,
+					packet,
+					PacketType::SendFromSelf,
+					with_surb,
+				)?;
 			} else {
 				// TODO delay may not be useful here (since secondary
 				// queue used).
@@ -718,6 +733,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					log::error!(target: "mixnet", "Surbs fragment from {:?}", peer_id);
 				}
 			},
+			Ok(Unwrapped::SurbsReplyExternal(external_peer, tag, payload)) => {
+				unimplemented!("proxy to external peer");
+			},
 			Ok(Unwrapped::SurbsQuery(encoded_surb, payload)) => {
 				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
 				if let Some(m) = self.fragments.insert_fragment(
@@ -783,15 +801,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		recipient_key: Option<&MixPublicKey>,
 		num_hops: &Option<usize>,
 		count: usize,
-		last_query_if_surb: Option<&Vec<(MixnetId, MixPublicKey)>>,
+		is_surb: Option<Option<&MixnetId>>,
 		is_external: bool,
 	) -> Result<(Option<MixnetId>, Vec<Vec<(MixnetId, MixPublicKey)>>), Error> {
-		let (start, recipient) = if let Some(last_query) = last_query_if_surb {
+		let (start, recipient) = if let Some(external) = is_surb {
 			if let Some(recipient) = recipient {
-				if is_external {
+				if let Some(first) = external {
 					// send to the first external peer that will reply to use
-					let dest = &last_query[0];
-					(Some((recipient, recipient_key)), Some((&dest.0, Some(&dest.1))))
+					(Some((recipient, recipient_key)), Some((first, None)))
 				} else {
 					(Some((recipient, recipient_key)), Some((&self.local_id, Some(&self.public))))
 				}
@@ -1061,8 +1078,18 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						recv_packets.push((*sphinx_id, packet));
 					}
 				},
-				Poll::Ready(ConnectionResult::ExternalQuery(recipient, data)) => {
+				Poll::Ready(ConnectionResult::ExternalQuery(recipient, data, surbs)) => {
 					all_pending = false;
+					if let Some(tag) = surbs {
+						if let Some(id) = connection.mixnet_id() {
+							// TODO protect from deleting an existing one
+							self.surb.insert(
+								tag.clone(),
+								SurbsPersistances::FromExternal(*id, tag),
+								self.window.last_now,
+							);
+						}
+					}
 					queue_packet = Some((recipient, data));
 				},
 				Poll::Pending => (),
@@ -1130,10 +1157,10 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 /// Message id, use as surb key and replay protection.
 /// This is the result of hashing the secret.
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub struct ReplayTag([u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
+pub struct ReplayTag(pub [u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
 
 pub struct SurbsCollection {
-	pending: MixnetCollection<ReplayTag, SurbsPersistance>,
+	pending: MixnetCollection<ReplayTag, SurbsPersistances>,
 }
 
 impl SurbsCollection {
@@ -1141,7 +1168,7 @@ impl SurbsCollection {
 		SurbsCollection { pending: MixnetCollection::new(config.surb_ttl_ms) }
 	}
 
-	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance, now: Instant) {
+	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistances, now: Instant) {
 		self.pending.insert(surb_id, surb, now);
 	}
 
