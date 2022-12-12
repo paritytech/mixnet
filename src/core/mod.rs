@@ -29,7 +29,7 @@ mod sphinx;
 use self::{fragment::MessageCollection, sphinx::Unwrapped};
 pub use crate::core::sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance};
 use crate::{
-	core::connection::{ConnectionEvent, ConnectionStats, ManagedConnection},
+	core::connection::{ConnectionResult, ConnectionStats, ManagedConnection},
 	traits::{Configuration, Connection, NewRoutingSet, ShouldConnectTo},
 	DecodedMessage, MessageType, MixnetId, NetworkId, SendOptions,
 };
@@ -829,7 +829,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			for peer_id in changed {
 				if let Some(net_id) = self.peers_to_network_id.get(&peer_id) {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
-						connection.set_kind_changed(
+						connection.update_kind(
 							&mut self.peer_counts,
 							&mut self.topology,
 							self.forward_unconnected_message_queue.as_mut(),
@@ -847,7 +847,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					if let Some(connection) = self.connected_peers.get_mut(net_id) {
 						if connection.mixnet_id() == Some(&peer_id) {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
-							connection.set_kind_changed(
+							connection.update_kind(
 								&mut self.peer_counts,
 								&mut self.topology,
 								self.forward_unconnected_message_queue.as_mut(),
@@ -877,7 +877,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 							// TODO log error
 						} else {
 							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
-							connection.set_kind_changed(
+							connection.update_kind(
 								&mut self.peer_counts,
 								&mut self.topology,
 								self.forward_unconnected_message_queue.as_mut(),
@@ -1025,7 +1025,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 				&mut self.peer_counts,
 				self.forward_unconnected_message_queue.as_mut(),
 			) {
-				Poll::Ready(ConnectionEvent::Established(_peer_id, key)) => {
+				Poll::Ready(ConnectionResult::Established(_peer_id, key)) => {
 					all_pending = false;
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						self.topology.connected(*sphinx_id, key);
@@ -1037,7 +1037,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					self.pending_events
 						.push_back(MixnetEvent::Connected(connection.network_id(), key));
 				},
-				Poll::Ready(ConnectionEvent::Broken(mixnet_id)) => {
+				Poll::Ready(ConnectionResult::Broken(mixnet_id)) => {
 					let ShouldConnectTo { peers: _, number: _, is_static } =
 						self.topology.should_connect_to();
 					let mut retry = false;
@@ -1055,16 +1055,13 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 					// same as pending
 					disconnected.push((*peer_id, mixnet_id, retry));
 				},
-				Poll::Ready(ConnectionEvent::None) => {
-					all_pending = false;
-				},
-				Poll::Ready(ConnectionEvent::Received(packet)) => {
+				Poll::Ready(ConnectionResult::Received(packet)) => {
 					all_pending = false;
 					if let Some(sphinx_id) = connection.mixnet_id() {
 						recv_packets.push((*sphinx_id, packet));
 					}
 				},
-				Poll::Ready(ConnectionEvent::ExternalQuery(recipient, data)) => {
+				Poll::Ready(ConnectionResult::ExternalQuery(recipient, data)) => {
 					all_pending = false;
 					queue_packet = Some((recipient, data));
 				},
