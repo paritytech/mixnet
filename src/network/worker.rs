@@ -29,7 +29,7 @@ use crate::{
 };
 use futures::{
 	channel::{mpsc::SendError, oneshot::Sender as OneShotSender},
-	Sink, SinkExt, Stream, StreamExt,
+	FutureExt, Sink, SinkExt, Stream, StreamExt,
 };
 use libp2p_swarm::NegotiatedSubstream;
 use std::task::{Context, Poll};
@@ -100,7 +100,7 @@ impl<T: Configuration> MixnetWorker<T> {
 					return Poll::Ready(MixnetEvent::Shutdown)
 				}
 			}
-			match self.mixnet.poll(cx) {
+			match self.mixnet.poll_unpin(cx) {
 				Poll::Pending => return Poll::Pending,
 				Poll::Ready(MixnetEvent::None) => (),
 				Poll::Ready(event) => return Poll::Ready(event),

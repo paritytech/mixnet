@@ -27,7 +27,7 @@ use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
 use std::{
-	collections::{BTreeMap, BTreeSet},
+	collections::{BTreeMap, BTreeSet}, marker::Unpin,
 	task::{Context, Poll},
 };
 
@@ -38,7 +38,7 @@ pub trait ClonableSink: Sink<WorkerCommand, Error = SendError> + DynClone + Unpi
 impl<T> ClonableSink for T where T: Sink<WorkerCommand, Error = SendError> + DynClone + Unpin + Send {}
 
 /// Provide Configuration of mixnet.
-pub trait Configuration: Topology + Handshake + Sized + Send + 'static {
+pub trait Configuration: Topology + Handshake + Unpin + Sized + Send + 'static {
 	/// Do we need stats for each windows.
 	fn collect_windows_stats(&self) -> bool;
 
@@ -316,7 +316,7 @@ impl Handshake for NoTopology {
 }
 
 /// Primitives needed from a network connection.
-pub trait Connection {
+pub trait Connection: Unpin {
 	/// Is queue empty and connection ready for next message.
 	fn can_queue_send(&self) -> bool;
 

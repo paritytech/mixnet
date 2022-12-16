@@ -38,7 +38,7 @@ use crate::{
 };
 pub use config::Config;
 pub use error::Error;
-use futures::FutureExt;
+use futures::{Future, FutureExt};
 use futures_timer::Delay;
 use rand::{CryptoRng, Rng};
 use rand_distr::Distribution;
@@ -47,6 +47,7 @@ use std::{
 	cmp::Ordering,
 	collections::{HashMap, VecDeque},
 	num::Wrapping,
+	pin::Pin,
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
@@ -984,8 +985,7 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 	}
 
-	// Poll for new messages to send over the wire.
-	pub(crate) fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixnetEvent> {
+	fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<MixnetEvent> {
 		if let Some(event) = self.pending_events.pop_front() {
 			return Poll::Ready(event)
 		}
@@ -1200,6 +1200,14 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			},
 		}
 		true
+	}
+}
+
+impl<T: Configuration, C: Connection> Future for Mixnet<T, C> {
+	type Output = MixnetEvent;
+
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+		self.get_mut().poll_inner(cx)
 	}
 }
 
