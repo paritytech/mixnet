@@ -28,10 +28,10 @@ use crate::{
 		ConnectedKind, PacketType, QueuedPacket, QueuedUnconnectedPackets, ReplayTag, WindowInfo,
 		FRAGMENT_PACKET_SIZE, PAYLOAD_TAG_SIZE, WINDOW_MARGIN_PERCENT,
 	},
-	traits::{Configuration, Connection, Topology},
+	traits::{send_flushed_fut, try_recv_fut, Configuration, Connection, Topology},
 	MixPublicKey, MixnetId, NetworkId, Packet, PeerCount, PACKET_SIZE,
 };
-use futures::FutureExt;
+use futures::{FutureExt, TryFuture, TryFutureExt};
 use futures_timer::Delay;
 use std::{
 	collections::{BinaryHeap, VecDeque},
@@ -267,6 +267,29 @@ impl<C: Connection> ManagedConnection<C> {
 		} else {
 			self.kind = ConnectedKind::PendingHandshake;
 		}
+	}
+
+	fn try_send_flushed_fut<'a>(
+		&'a mut self,
+		is_packet: bool,
+	) -> impl TryFuture<Ok = bool, Error = ()> + 'a {
+		let stats = self.stats.as_mut();
+		let network_id = self.network_id;
+		send_flushed_fut(&mut self.connection).into_future().map(move |res| {
+			if is_packet {
+				if let Some((stats, kind)) = stats {
+					if res.is_ok() {
+						stats.success_packet(kind.take());
+					} else {
+						log::trace!(target: "mixnet", "Error sending to peer {:?}", network_id);
+						stats.failure_packet(kind.take());
+					}
+				}
+			} else if res.is_err() {
+				log::trace!(target: "mixnet", "Error sending meta to peer {:?}", network_id);
+			}
+			res
+		})
 	}
 
 	fn try_send_flushed(&mut self, cx: &mut Context, is_packet: bool) -> Poll<Result<bool, ()>> {
@@ -736,6 +759,12 @@ impl<C: Connection> ManagedConnection<C> {
 			};
 			// Forward first.
 			while self.sent_in_window < send_limit {
+				 self.try_send_flushed_fut(true)
+					 .map_err(|e| {
+							log::debug!(target: "mixnet", "Error in poll {:?}", e)
+							()
+					 }
+				return Poll::Ready(Err(()));
 				match try_poll!(self.try_send_flushed(cx, true)) {
 					Some(true) => {
 						// Did send message
