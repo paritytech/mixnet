@@ -27,7 +27,8 @@ use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
 use std::{
-	collections::{BTreeMap, BTreeSet}, marker::Unpin,
+	collections::{BTreeMap, BTreeSet},
+	marker::Unpin,
 	task::{Context, Poll},
 };
 
