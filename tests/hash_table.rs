@@ -24,14 +24,16 @@ mod common;
 
 use ambassador::Delegate;
 use common::{
-	new_routing_set, send_messages, wait_on_connections, wait_on_messages, SendConf,
+	new_routing_set, send_messages, wait_on_connections, wait_on_messages, PublishConf, SendConf,
 	SimpleHandshake, TestConfig,
 };
 use libp2p_core::PeerId;
 use mixnet::{
 	ambassador_impl_Topology,
 	traits::{
-		hash_table::{Configuration as TopologyConfig, Parameters, TopologyHashTable},
+		hash_table::{
+			Configuration as TopologyConfig, Parameters, RoutingTable, TopologyHashTable,
+		},
 		NewRoutingSet, ShouldConnectTo, Topology,
 	},
 	Error, MixPublicKey, MixSecretKey, MixnetId, NetworkId, PeerCount, SendOptions,
@@ -40,10 +42,11 @@ use rand::RngCore;
 use std::{
 	collections::{BTreeMap, BTreeSet},
 	sync::Arc,
+	time::Duration,
 };
 
 impl TopologyConfig for NotDistributed {
-	type Version = ();
+	type Version = common::Version;
 
 	const DISTRIBUTE_ROUTES: bool = false;
 
@@ -64,12 +67,51 @@ impl TopologyConfig for NotDistributed {
 	// TODO debug for number_consumer_connection only 1
 	const DEFAULT_PARAMETERS: Parameters =
 		Parameters { max_external: Some(1), number_consumer_connection: Some(3) };
+
+	fn decode_infos(_: &[u8]) -> Option<RoutingTable<Self::Version>> {
+		None
+	}
+}
+
+impl TopologyConfig for Distributed {
+	type Version = common::Version;
+
+	const DISTRIBUTE_ROUTES: bool = true;
+
+	const LOW_MIXNET_THRESHOLD: usize = 4;
+
+	const LOW_MIXNET_PATHS: usize = 2;
+
+	const NUMBER_CONNECTED_FORWARD: usize = 4;
+
+	const NUMBER_LAYER: u8 = 3;
+
+	const MIN_LAYER_SIZE: usize = 6;
+
+	const NUMBER_CONNECTED_BACKWARD: usize = Self::NUMBER_CONNECTED_FORWARD - 2;
+
+	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
+
+	// TODO debug for number_consumer_connection only 1
+	const DEFAULT_PARAMETERS: Parameters =
+		Parameters { max_external: Some(1), number_consumer_connection: Some(3) };
+
+	fn decode_infos(mut encoded: &[u8]) -> Option<RoutingTable<Self::Version>> {
+		use codec::Decode;
+		common::DecodableAuthorityTable::decode(&mut encoded).ok().map(|t| t.0)
+	}
 }
 
 #[derive(Delegate)]
 #[delegate(Topology)]
 struct NotDistributed {
 	inner: SimpleHandshake<TopologyHashTable<Self>>,
+}
+
+impl From<SimpleHandshake<TopologyHashTable<NotDistributed>>> for NotDistributed {
+	fn from(inner: SimpleHandshake<TopologyHashTable<NotDistributed>>) -> Self {
+		NotDistributed { inner }
+	}
 }
 
 impl mixnet::traits::Configuration for NotDistributed {
@@ -96,8 +138,48 @@ impl mixnet::traits::Handshake for NotDistributed {
 	}
 }
 
-fn test_messages(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, from_external, random_dest, .. } = conf;
+#[derive(Delegate)]
+#[delegate(Topology)]
+struct Distributed {
+	inner: SimpleHandshake<TopologyHashTable<Self>>,
+}
+
+impl From<SimpleHandshake<TopologyHashTable<Distributed>>> for Distributed {
+	fn from(inner: SimpleHandshake<TopologyHashTable<Distributed>>) -> Self {
+		Distributed { inner }
+	}
+}
+
+impl mixnet::traits::Configuration for Distributed {
+	fn collect_windows_stats(&self) -> bool {
+		true
+	}
+
+	fn window_stats(&self, _stats: &mixnet::WindowStats, _: &PeerCount) {}
+
+	fn peer_stats(&self, _: &PeerCount) {}
+}
+
+impl mixnet::traits::Handshake for Distributed {
+	fn handshake_size(&self) -> usize {
+		self.inner.handshake_size()
+	}
+
+	fn check_handshake(&self, payload: &[u8], from: &PeerId) -> Option<(MixnetId, MixPublicKey)> {
+		self.inner.check_handshake(payload, from)
+	}
+
+	fn handshake(&self, with: &PeerId, public_key: &MixPublicKey) -> Option<Vec<u8>> {
+		self.inner.handshake(with, public_key)
+	}
+}
+
+fn test_messages<
+	C: TopologyConfig + mixnet::traits::Configuration + From<SimpleHandshake<TopologyHashTable<C>>>,
+>(
+	conf: TestConfig,
+) {
+	let TestConfig { num_peers, message_size, from_external, random_dest, publish, .. } = conf;
 
 	let seed: u64 = 0;
 	let single_thread = true;
@@ -145,8 +227,8 @@ fn test_messages(conf: TestConfig) {
 		let mut topo = TopologyHashTable::new(
 			nodes[p].0,
 			nodes[p].1,
-			NotDistributed::DEFAULT_PARAMETERS.clone(),
-			(),
+			C::DEFAULT_PARAMETERS.clone(),
+			Default::default(),
 		);
 		topo.handle_new_routing_set(NewRoutingSet { peers: &nodes[..num_peers] });
 		let mix_secret_key = secrets[p].1;
@@ -158,7 +240,7 @@ fn test_messages(conf: TestConfig) {
 			topo,
 			mix_secret_key: Some(Arc::new((mix_secret_key, mix_public_key))),
 		};
-		NotDistributed { inner }
+		inner.into()
 	};
 
 	let (handles, _) = common::spawn_swarms(
@@ -167,10 +249,11 @@ fn test_messages(conf: TestConfig) {
 		&executor,
 		&mut rng,
 		&config_proto,
+		publish,
 		make_topo,
 	);
 
-	let (nodes, mut with_swarm_channels) = common::spawn_workers::<NotDistributed>(
+	let (nodes, mut with_swarm_channels) = common::spawn_workers::<C>(
 		num_peers,
 		from_external,
 		expect_all_connected,
@@ -180,7 +263,9 @@ fn test_messages(conf: TestConfig) {
 	);
 
 	log::trace!(target: "mixnet_test", "before waiting connections");
-	wait_on_connections(&conf, with_swarm_channels.as_mut());
+	if publish.is_none() {
+		wait_on_connections(&conf, with_swarm_channels.as_mut());
+	}
 
 	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {
@@ -201,7 +286,7 @@ fn test_messages(conf: TestConfig) {
 
 #[test]
 fn message_exchange_no_surb() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
 		message_count: 10,
@@ -209,12 +294,13 @@ fn message_exchange_no_surb() {
 		with_surb: false,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
 #[test]
 fn fragmented_messages_no_surb() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
 		message_count: 1,
@@ -222,12 +308,13 @@ fn fragmented_messages_no_surb() {
 		with_surb: false,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
 #[test]
 fn message_exchange_with_surb() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
 		message_count: 10,
@@ -235,12 +322,31 @@ fn message_exchange_with_surb() {
 		with_surb: true,
 		from_external: false,
 		random_dest: false,
+		publish: None,
+	})
+}
+
+#[test]
+fn message_publish_with_surb() {
+	test_messages::<Distributed>(TestConfig {
+		num_peers: 6,
+		num_hops: 3,
+		message_count: 10,
+		message_size: 1,
+		with_surb: true,
+		from_external: false,
+		random_dest: false,
+		publish: Some(PublishConf {
+			publish: Duration::from_millis(1000),
+			publish_if_change: Duration::from_millis(100),
+			query: Duration::from_millis(50),
+		}),
 	})
 }
 
 #[test]
 fn fragmented_messages_with_surb() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
 		message_count: 1,
@@ -248,12 +354,13 @@ fn fragmented_messages_with_surb() {
 		with_surb: true,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
 // #[test]
 fn from_external_with_surb() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
 		message_count: 1,
@@ -261,12 +368,13 @@ fn from_external_with_surb() {
 		with_surb: true,
 		from_external: true,
 		random_dest: false,
+		publish: None,
 	})
 }
 
 #[test]
 fn from_external_no_surb2() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 6,
 		num_hops: 3,
 		message_count: 1,
@@ -274,13 +382,14 @@ fn from_external_no_surb2() {
 		with_surb: false,
 		from_external: true,
 		random_dest: false,
+		publish: None,
 	})
 }
 
 #[test]
 fn surb_and_layer_local() {
 	for num_hops in 3..4 {
-		test_messages(TestConfig {
+		test_messages::<NotDistributed>(TestConfig {
 			num_peers: 15,
 			num_hops,
 			message_count: 1,
@@ -288,13 +397,14 @@ fn surb_and_layer_local() {
 			with_surb: true,
 			from_external: false,
 			random_dest: true,
+			publish: None,
 		})
 	}
 }
 
 //#[test]
 fn surb_and_layer_external() {
-	test_messages(TestConfig {
+	test_messages::<NotDistributed>(TestConfig {
 		num_peers: 20,
 		num_hops: 4,
 		message_count: 1,
@@ -302,11 +412,12 @@ fn surb_and_layer_external() {
 		with_surb: true,
 		from_external: true,
 		random_dest: true,
+		publish: None,
 	})
 }
 
 fn test_change_routing_set(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, from_external, random_dest, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, random_dest, publish, .. } = conf;
 
 	let set_1 = 0..num_peers;
 	let half_set = num_peers / 2;
@@ -371,7 +482,7 @@ fn test_change_routing_set(conf: TestConfig) {
 			nodes[p].0,
 			nodes[p].1,
 			NotDistributed::DEFAULT_PARAMETERS.clone(),
-			(),
+			Default::default(),
 		);
 		topo.handle_new_routing_set(NewRoutingSet { peers: &nodes[set_topo.clone()] });
 		let mix_secret_key = secrets[p].1;
@@ -392,6 +503,7 @@ fn test_change_routing_set(conf: TestConfig) {
 		&executor,
 		&mut rng,
 		&config_proto,
+		publish,
 		make_topo,
 	);
 
@@ -411,7 +523,9 @@ fn test_change_routing_set(conf: TestConfig) {
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");
-	wait_on_connections(&conf, with_swarm_channels.as_mut());
+	if publish.is_none() {
+		wait_on_connections(&conf, with_swarm_channels.as_mut());
+	}
 
 	initial_con.store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -476,5 +590,6 @@ fn testing_mess() {
 		with_surb: false,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }

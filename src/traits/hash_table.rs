@@ -69,6 +69,8 @@ pub trait Configuration {
 
 	/// Default parameters for the topology.
 	const DEFAULT_PARAMETERS: Parameters;
+
+	fn decode_infos(encoded: &[u8]) -> Option<RoutingTable<Self::Version>>;
 }
 
 /// Configuration parameters for topology.
@@ -314,11 +316,17 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 
 	fn handle_new_routing_set(&mut self, set: NewRoutingSet) {
 		if !C::DISTRIBUTE_ROUTES {
-			assert!(!C::DISTRIBUTE_ROUTES);
 			self.handle_new_routing_set_start(set.peers.iter().map(|k| &k.0), None);
 			self.refresh_static_routing_tables(set.peers);
 		} else {
-			unimplemented!("TODO");
+			self.handle_new_routing_distributed(set.peers.iter().map(|k| &k.0), None, None);
+			self.handle_new_routing_distributed(set.peers.iter().map(|k| &k.0), None, None);
+		}
+	}
+
+	fn receive_new_routing_infos(&mut self, with: MixnetId, infos: &[u8]) {
+		if let Some(routing_table) = C::decode_infos(infos) {
+			unimplemented!("TODO")
 		}
 	}
 }
@@ -531,14 +539,14 @@ impl<C: Configuration> TopologyHashTable<C> {
 		}
 	}
 
-	pub fn handle_new_routing_distributed(
+	pub fn handle_new_routing_distributed<'a>(
 		&mut self,
-		set: &[MixnetId],
+		set: impl Iterator<Item = &'a MixnetId>,
 		new_self: Option<(Option<MixnetId>, Option<MixPublicKey>)>,
-		version: C::Version,
+		version: Option<C::Version>, // if no version, update
 	) {
 		assert!(C::DISTRIBUTE_ROUTES);
-		self.handle_new_routing_set_start(set.iter(), new_self);
+		self.handle_new_routing_set_start(set, new_self);
 
 		let routing_set = if self.layered_routing_set.is_empty() {
 			&self.routing_set
@@ -551,7 +559,11 @@ impl<C: Configuration> TopologyHashTable<C> {
 			self.should_connect_pending.insert(*id, (index, true));
 		}
 		debug!(target: "mixnet", "should connect to {:?}", self.should_connect_to);
-		self.routing_table.version = version;
+		if let Some(version) = version {
+			self.routing_table.version = version;
+		} else {
+			self.routing_table.version.register_change();
+		}
 		self.refresh_self_routing_table();
 
 		// reinsert to update should_connect_pending: TODO just iterate here

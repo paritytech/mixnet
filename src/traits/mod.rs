@@ -162,6 +162,9 @@ pub trait Topology: Sized {
 	/// A new static routing set was globally defined.
 	fn handle_new_routing_set(&mut self, set: NewRoutingSet);
 
+	/// Receive routing info from peers.
+	fn receive_new_routing_infos(&mut self, with: MixnetId, infos: &[u8]);
+
 	// TODO handle new id and key.
 	// TODO handle new distributed routing table
 }
@@ -282,6 +285,8 @@ impl Topology for NoTopology {
 	}
 
 	fn handle_new_routing_set(&mut self, _set: NewRoutingSet) {}
+
+	fn receive_new_routing_infos(&mut self, _with: MixnetId, _infos: &[u8]) {}
 }
 
 impl Configuration for NoTopology {

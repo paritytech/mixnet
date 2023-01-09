@@ -212,6 +212,10 @@ impl Topology for TopologyGraph {
 	fn handle_new_routing_set(&mut self, _set: NewRoutingSet) {
 		// static set in these tests
 	}
+
+	fn receive_new_routing_infos(&mut self, _with: MixnetId, _infos: &[u8]) {
+		// static set in these tests
+	}
 }
 
 fn gen_paths(
@@ -243,7 +247,7 @@ fn gen_paths(
 }
 
 fn test_messages(conf: TestConfig) {
-	let TestConfig { num_peers, message_size, from_external, .. } = conf;
+	let TestConfig { num_peers, message_size, from_external, publish, .. } = conf;
 
 	let seed: u64 = 0;
 	let single_thread = false;
@@ -302,6 +306,7 @@ fn test_messages(conf: TestConfig) {
 		&executor,
 		&mut rng,
 		&config_proto,
+		publish,
 		make_topo,
 	);
 
@@ -338,6 +343,7 @@ fn message_exchange_no_surb() {
 		with_surb: false,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
@@ -351,6 +357,7 @@ fn fragmented_messages_no_surb() {
 		with_surb: false,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
@@ -364,6 +371,7 @@ fn message_exchange_with_surb() {
 		with_surb: true,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
@@ -377,6 +385,7 @@ fn fragmented_messages_with_surb() {
 		with_surb: true,
 		from_external: false,
 		random_dest: false,
+		publish: None,
 	})
 }
 
@@ -391,6 +400,7 @@ fn ext_fragmented_surbs() {
 		//with_surb: false, TODO -> true
 		from_external: true,
 		random_dest: false,
+		publish: None,
 	})
 }
 
@@ -404,6 +414,7 @@ fn from_external_with_surb() {
 		with_surb: true,
 		from_external: true,
 		random_dest: false,
+		publish: None,
 	})
 }
 
@@ -417,5 +428,6 @@ fn from_external_no_surb() {
 		with_surb: false,
 		from_external: true,
 		random_dest: false,
+		publish: None,
 	})
 }

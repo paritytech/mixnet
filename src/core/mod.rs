@@ -1111,11 +1111,9 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 						.push_back(MixnetEvent::Connected(connection.network_id(), key));
 				},
 				Poll::Ready(ConnectionResult::Broken(mixnet_id)) => {
-					let ShouldConnectTo { peers: _, number: _, is_static } =
-						self.topology.should_connect_to(); // TODO is_static for topology method...
 					let mut retry = false;
 					if let Some(mixnet_id) = mixnet_id.as_ref() {
-						if is_static {
+						if self.topology.should_connect_to().is_static {
 							// TODO or just peers.contains mixnet_id (could make more sense)
 							if self.topology.routing_to(&self.local_id, mixnet_id) {
 								retry = true;
