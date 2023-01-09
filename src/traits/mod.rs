@@ -25,10 +25,9 @@ pub mod hash_table;
 use crate::{Error, MixPublicKey, MixnetId, NetworkId, PeerCount, WindowStats};
 use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
-use futures::{channel::mpsc::SendError, future::poll_fn, Sink, TryFuture};
+use futures::{channel::mpsc::SendError, Sink};
 use std::{
-	collections::{BTreeMap, BTreeSet},
-	marker::Unpin,
+	collections::{BTreeMap, BTreeSet}, marker::Unpin,
 	task::{Context, Poll},
 };
 
@@ -332,17 +331,4 @@ pub trait Connection: Unpin {
 	/// Try receive a packet of a given size.
 	/// Maximum supported size is `PACKET_SIZE`, return error otherwise.
 	fn try_recv(&mut self, cx: &mut Context, size: usize) -> Poll<Result<Option<Vec<u8>>, ()>>;
-}
-
-pub fn send_flushed_fut<'a, C: Connection>(
-	conn: &'a mut C,
-) -> impl TryFuture<Ok = bool, Error = ()> + 'a {
-	poll_fn(|cx| conn.send_flushed(cx))
-}
-
-pub fn try_recv_fut<'a, C: Connection>(
-	conn: &'a mut C,
-	size: usize,
-) -> impl TryFuture<Ok = Option<Vec<u8>>, Error = ()> + 'a {
-	poll_fn(move |cx| conn.try_recv(cx, size))
 }
