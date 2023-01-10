@@ -902,55 +902,19 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 			let mut try_connect = Vec::new();
 			for peer_id in need_conn {
 				let mut maybe_net_id = None;
-				if let Some(net_id) = maybe_net_id.as_ref() {
-					if let Some(connection) = self
-						.connected_peers_index
-						.get(net_id)
-						.and_then(|ix| self.connected_peers.get_mut(*ix).and_then(Option::as_mut))
-					{
-						if connection.mixnet_id() == Some(&peer_id) {
-							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
-							connection.update_kind(
-								&mut self.peer_counts,
-								&mut self.topology,
-								self.forward_unconnected_message_queue.as_mut(),
-								&self.window,
-								false,
-							);
-							continue
-						} else {
-							// TODO log error
-							// change of peer id for network other peer should have broken
-							// connection already
-							// TODO disconnect and reconnect, but disconnect with the keep alive
-							// mechanism to process last forward.
-							// Aka keep managed connection for a while and build another one.
-							// And drop managed from connected_peers (put in slow_close managed
-							// connection) to be able to renew other another handler and p2p
-							// conn_id. Also new connection all run as half bandwidth during
-							// connection period as long as close connection period in all case.
-						}
-					}
-				}
 				if let Some(ix) = self.handshaken_peers_index.get(&peer_id) {
 					if let Some(connection) =
 						self.connected_peers.get_mut(*ix).and_then(Option::as_mut)
 					{
-						if maybe_net_id.is_some() && maybe_net_id != Some(connection.network_id()) {
-							// existing connection with change of network id.
-							// TODO slow disconnect.
-							// TODO log error
-						} else {
-							log::trace!(target: "mixnet", "New routing set, already connected to peer.");
-							connection.update_kind(
-								&mut self.peer_counts,
-								&mut self.topology,
-								self.forward_unconnected_message_queue.as_mut(),
-								&self.window,
-								false,
-							);
-							continue
-						}
+						log::trace!(target: "mixnet", "New routing set, already connected to peer.");
+						connection.update_kind(
+							&mut self.peer_counts,
+							&mut self.topology,
+							self.forward_unconnected_message_queue.as_mut(),
+							&self.window,
+							false,
+						);
+						continue
 					}
 				} else if let Some(net_id) = self.disconnected_peers.get(&peer_id) {
 					maybe_net_id = net_id.handshaken.clone();
