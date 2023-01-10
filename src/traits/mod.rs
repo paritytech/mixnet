@@ -27,7 +27,7 @@ use ambassador::delegatable_trait;
 use dyn_clone::DynClone;
 use futures::{channel::mpsc::SendError, Sink};
 use std::{
-	collections::{BTreeMap, BTreeSet},
+	collections::BTreeSet,
 	marker::Unpin,
 	task::{Context, Poll},
 };
@@ -159,8 +159,9 @@ pub trait Topology: Sized {
 	/// On topology change, might have new peer to accept.
 	/// Call to this function return the new peers only once and should
 	/// be costless when no change occurs.
-	/// TODO maybe just rely on should connect too.
-	fn try_connect(&mut self) -> Option<BTreeMap<MixnetId, Option<NetworkId>>>;
+	/// TODO relying on should connect should be enough, but something broke
+	/// on session change test.
+	fn try_connect(&mut self) -> Option<BTreeSet<MixnetId>>;
 
 	/// Return all possible connection ordered by priority and the targetted number of connections
 	/// to use.
@@ -291,7 +292,7 @@ impl Topology for NoTopology {
 		None
 	}
 
-	fn try_connect(&mut self) -> Option<BTreeMap<MixnetId, Option<NetworkId>>> {
+	fn try_connect(&mut self) -> Option<BTreeSet<MixnetId>> {
 		None
 	}
 

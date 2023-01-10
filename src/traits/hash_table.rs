@@ -23,7 +23,7 @@
 
 use crate::{
 	traits::{NewRoutingSet, ShouldConnectTo, Topology},
-	Error, MixPublicKey, MixnetId, NetworkId, PeerCount,
+	Error, MixPublicKey, MixnetId, PeerCount,
 };
 use log::{debug, error, trace};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -128,7 +128,7 @@ pub struct TopologyHashTable<C: Configuration> {
 	// TODO this do not need to be stored
 	layered_routing_set_ix: HashMap<MixnetId, u8>,
 
-	try_connect: BTreeMap<MixnetId, Option<NetworkId>>,
+	try_connect: BTreeSet<MixnetId>,
 
 	// This is only routing peers we got info for.
 	// Can be redundant with `routing_set`.
@@ -173,7 +173,7 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 		(!self.changed_routing.is_empty()).then(|| std::mem::take(&mut self.changed_routing))
 	}
 
-	fn try_connect(&mut self) -> Option<BTreeMap<MixnetId, Option<NetworkId>>> {
+	fn try_connect(&mut self) -> Option<BTreeSet<MixnetId>> {
 		(!self.try_connect.is_empty()).then(|| std::mem::take(&mut self.try_connect))
 	}
 
@@ -366,7 +366,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			layered_routing_set_ix: HashMap::new(),
 			connected_nodes: HashSet::new(),
 			changed_routing: BTreeSet::new(),
-			try_connect: BTreeMap::new(),
+			try_connect: BTreeSet::new(),
 			routing: false,
 			routing_peers: BTreeMap::new(),
 			routing_table,
@@ -542,7 +542,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 						// enough) -> maybe up nb_try_connect.
 						// TODO network_id in routing table??
 						// self.try_connect.insert(*peer, table.network_id);
-						self.try_connect.insert(*peer, None);
+						self.try_connect.insert(*peer);
 					}
 				}
 				nb_try_connect -= 1;
@@ -674,7 +674,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 					// TODO could also add receive_from.
 					for peer_id in table.connected_to.iter() {
 						if !self.routing_table.connected_to.contains(peer_id) {
-							self.try_connect.insert(*peer_id, None);
+							self.try_connect.insert(*peer_id);
 						}
 					}
 					self.routing_table = table;

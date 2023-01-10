@@ -900,7 +900,8 @@ impl<T: Configuration, C: Connection> Mixnet<T, C> {
 		}
 		if let Some(need_conn) = self.topology.try_connect() {
 			let mut try_connect = Vec::new();
-			for (peer_id, mut maybe_net_id) in need_conn {
+			for peer_id in need_conn {
+				let mut maybe_net_id = None;
 				if let Some(net_id) = maybe_net_id.as_ref() {
 					if let Some(connection) = self
 						.connected_peers_index

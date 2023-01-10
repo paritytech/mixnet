@@ -28,7 +28,7 @@ use common::{
 use libp2p_core::PeerId;
 use rand::{prelude::IteratorRandom, Rng, RngCore};
 use std::{
-	collections::{BTreeMap, BTreeSet, HashMap},
+	collections::{BTreeSet, HashMap},
 	sync::{
 		atomic::{AtomicUsize, Ordering},
 		Arc,
@@ -115,7 +115,7 @@ impl Topology for TopologyGraph {
 		None
 	}
 
-	fn try_connect(&mut self) -> Option<BTreeMap<MixnetId, Option<NetworkId>>> {
+	fn try_connect(&mut self) -> Option<BTreeSet<MixnetId>> {
 		None
 	}
 
