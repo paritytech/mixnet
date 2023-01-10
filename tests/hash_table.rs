@@ -272,9 +272,12 @@ fn test_messages<
 	);
 
 	log::trace!(target: "mixnet_test", "before waiting connections");
-	//	if publish.is_none() {
 	wait_on_connections(&conf, with_swarm_channels.as_mut());
-	//	}
+	if C::DISTRIBUTE_ROUTES {
+		// wait a bit on sync to get full path TODO should just wait on sends
+		// returning no NoPath error
+		std::thread::sleep(Duration::from_millis(1_000));
+	}
 
 	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {
@@ -532,9 +535,7 @@ fn test_change_routing_set(conf: TestConfig) {
 	log::trace!(target: "mixnet_test", "set_1: {:?}", set_1);
 	log::trace!(target: "mixnet_test", "set_2: {:?}", set_2);
 	log::trace!(target: "mixnet_test", "before waiting connections");
-	if publish.is_none() {
-		wait_on_connections(&conf, with_swarm_channels.as_mut());
-	}
+	wait_on_connections(&conf, with_swarm_channels.as_mut());
 
 	initial_con.store(true, std::sync::atomic::Ordering::Relaxed);
 

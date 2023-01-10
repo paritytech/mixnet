@@ -257,6 +257,8 @@ pub fn mk_workers<T: Configuration>(
 	}
 
 	let mut workers = Vec::new();
+	let published = publish.clone().map(|conf| (Arc::new(RwLock::new(HashMap::new())), conf));
+
 	for (i, (network_id, (from_worker_sink, to_worker_stream), to_worker, to_swarm)) in
 		handles.into_iter().enumerate()
 	{
@@ -269,8 +271,6 @@ pub fn mk_workers<T: Configuration>(
 		};
 
 		let topo = make_topo(i, network_id, &nodes[..], &secrets[..], &cfg);
-
-		let published = publish.clone().map(|conf| (Arc::new(RwLock::new(HashMap::new())), conf));
 
 		workers.push((
 			mixnet::MixnetWorker::new(cfg, topo, (from_worker_sink, to_worker_stream)),
@@ -349,9 +349,6 @@ pub fn spawn_swarms<T: Configuration>(
 	let mut swarm_futures = Vec::with_capacity(swarms.len());
 
 	let inital_connection = Arc::new(AtomicBool::new(false));
-	if publish.is_some() {
-		return (workers, inital_connection)
-	}
 	for (p, (mut swarm, mut receiver_swarm)) in swarms.into_iter().enumerate() {
 		let mut to_notify = std::mem::take(&mut to_notify[p]);
 		let mut to_wait = std::mem::take(&mut to_wait[p]);

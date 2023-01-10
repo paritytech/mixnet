@@ -610,6 +610,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			}
 		}
 		if insert {
+			log::error!(target: "mixnet", "Rec table {:?} {:?} with {:?}", (&new_table.version, &new_table.connected_to.len(), &new_table.receive_from.len()), self.local_id, (with, self.routing_peers.len()));
 			// TODO sanity check of table (not connected to too many peers), ~ consistent with
 			// peer neighbors (at least from the connected one we know)...
 			// TODO number of non connected neighbor that should be.
@@ -617,6 +618,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			self.changed_routing.insert(with);
 			self.paths.clear();
 			self.paths_depth = 0;
+			self.refresh_self_routing_table(); // To update routing_from
 			log::debug!(target: "mixnet", "current routes: {:?}", self.routing_peers);
 		}
 	}
@@ -643,6 +645,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			}
 		}
 
+		log::error!(target: "mixnet", "Refresh self route: {:?}", self.routing_table.receive_from.len());
 		if past != self.routing_table {
 			self.routing_table.version.register_change();
 			self.paths.clear();
