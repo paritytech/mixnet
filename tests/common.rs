@@ -65,58 +65,7 @@ pub enum SwarmMessage {
 }
 
 pub type TestChannels = (mpsc::Receiver<PeerTestReply>, MixnetCommandSink);
-pub type Worker<T> =
-	(MixnetWorker<T>, mpsc::Sender<WorkerCommand>, mpsc::Sender<SwarmMessage>, Option<Distributed>);
-
-#[derive(Default, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
-pub struct Version(u64);
-impl TableVersion for Version {
-	fn register_change(&mut self) {
-		self.0 += 1;
-	}
-}
-
-pub struct EncodableAuthorityTable<'a>(pub &'a RoutingTable<Version>);
-impl<'a> Encode for EncodableAuthorityTable<'a> {
-	fn encode_to<O: Output + ?Sized>(&self, output: &mut O) {
-		self.0.public_key.as_bytes().encode_to(output);
-		self.0.version.0.encode_to(output);
-		self.0.connected_to.encode_to(output);
-		self.0.receive_from.encode_to(output);
-	}
-}
-
-pub struct DecodableAuthorityTable(pub RoutingTable<Version>);
-impl Decode for DecodableAuthorityTable {
-	fn decode<I: Input>(input: &mut I) -> Result<Self, codec::Error> {
-		let public_key: [u8; 32] = Decode::decode(input)?;
-		let version = Version(Decode::decode(input)?);
-		let connected_to = Decode::decode(input)?;
-		let receive_from = Decode::decode(input)?;
-		Ok(DecodableAuthorityTable(RoutingTable {
-			public_key: public_key.into(),
-			version,
-			connected_to,
-			receive_from,
-		}))
-	}
-}
-
-#[derive(Clone, Copy)]
-pub struct PublishConf {
-	pub publish: Duration,
-	pub publish_if_change: Duration,
-	pub query: Duration,
-}
-
-pub struct Distributed {
-	published: Arc<RwLock<HashMap<MixnetId, RoutingTable<Version>>>>,
-	my_view: HashMap<MixnetId, Version>,
-	conf: PublishConf,
-	timer_publish: Delay,
-	timer_publish_if_change: Delay,
-	timer_query: Delay,
-}
+pub type Worker<T> = (MixnetWorker<T>, mpsc::Sender<WorkerCommand>, mpsc::Sender<SwarmMessage>);
 
 #[macro_export]
 macro_rules! log_unwrap {
@@ -232,7 +181,6 @@ pub fn mk_workers<T: Configuration>(
 	)>,
 	rng: &mut SmallRng,
 	config_proto: &Config,
-	publish: Option<PublishConf>,
 	mut make_topo: impl FnMut(
 		usize,
 		NetworkId,
@@ -257,7 +205,6 @@ pub fn mk_workers<T: Configuration>(
 	}
 
 	let mut workers = Vec::new();
-	let published = publish.clone().map(|conf| (Arc::new(RwLock::new(HashMap::new())), conf));
 
 	for (i, (network_id, (from_worker_sink, to_worker_stream), to_worker, to_swarm)) in
 		handles.into_iter().enumerate()
@@ -276,14 +223,6 @@ pub fn mk_workers<T: Configuration>(
 			mixnet::MixnetWorker::new(cfg, topo, (from_worker_sink, to_worker_stream)),
 			to_worker,
 			to_swarm,
-			published.clone().map(|(published, conf)| Distributed {
-				published: published.clone(),
-				my_view: HashMap::new(),
-				timer_publish: Delay::new(conf.publish),
-				timer_publish_if_change: Delay::new(conf.publish_if_change),
-				timer_query: Delay::new(conf.query),
-				conf,
-			}),
 		));
 	}
 	workers
@@ -296,7 +235,6 @@ pub fn spawn_swarms<T: Configuration>(
 	executor: &ThreadPool,
 	rng: &mut SmallRng,
 	config_proto: &Config,
-	publish: Option<PublishConf>,
 	make_topo: impl FnMut(
 		usize,
 		NetworkId,
@@ -314,7 +252,7 @@ pub fn spawn_swarms<T: Configuration>(
 	let (transports, handles) = mk_transports(num_peers, extra_external);
 	let swarms = mk_swarms(transports);
 
-	let workers = mk_workers(handles, rng, config_proto, publish, make_topo);
+	let workers = mk_workers(handles, rng, config_proto, make_topo);
 
 	let peer_ids: HashMap<_, _> = workers
 		.iter()
@@ -458,7 +396,7 @@ pub fn spawn_workers<T: Configuration>(
 	let mut test_channels = Vec::with_capacity(workers.len());
 	let mut workers_futures = Vec::with_capacity(workers.len());
 
-	for (p, (mut worker, to_worker, mut to_swarm, mut publish)) in workers.into_iter().enumerate() {
+	for (p, (mut worker, to_worker, mut to_swarm)) in workers.into_iter().enumerate() {
 		let external_1 = from_external && p == num_peers;
 		let external_2 = from_external && p > num_peers;
 		let mut target_peers = if from_external && p == 0 {
@@ -480,50 +418,6 @@ pub fn spawn_workers<T: Configuration>(
 		let mut count_connected = target_peers.is_some();
 		let mut handshake_done = HashSet::new();
 		let worker = future::poll_fn(move |cx| loop {
-			if let Some(Distributed {
-				published,
-				my_view,
-				conf,
-				timer_publish,
-				timer_publish_if_change,
-				timer_query,
-			}) = publish.as_mut()
-			{
-				if let Poll::Ready(()) = timer_publish.poll_unpin(cx) {
-					let encoded = worker.mixnet_mut().topology.encoded_routing_infos();
-					if let Some(decoded) =
-						DecodableAuthorityTable::decode(&mut encoded.as_slice()).ok()
-					{
-						let id = worker.mixnet().local_id();
-						published.write().insert(*id, decoded.0);
-					}
-
-					*timer_publish = Delay::new(conf.publish);
-				}
-				if let Poll::Ready(()) = timer_publish_if_change.poll_unpin(cx) {
-					if worker.mixnet_mut().topology.change_routing_infos() {
-						let encoded = worker.mixnet_mut().topology.encoded_routing_infos();
-						if let Some(decoded) =
-							DecodableAuthorityTable::decode(&mut encoded.as_slice()).ok()
-						{
-							let id = worker.mixnet().local_id();
-							published.write().insert(*id, decoded.0);
-						}
-					}
-
-					*timer_publish_if_change = Delay::new(conf.publish_if_change);
-				}
-				if let Poll::Ready(()) = timer_query.poll_unpin(cx) {
-					for (peer, table) in published.read().iter() {
-						worker.mixnet_mut().topology.receive_new_routing_infos(
-							*peer,
-							EncodableAuthorityTable(&table).encode().as_slice(),
-						);
-					}
-
-					*timer_query = Delay::new(conf.query);
-				}
-			}
 			match worker.poll(cx) {
 				Poll::Ready(MixnetEvent::None) => (),
 				Poll::Ready(MixnetEvent::Connected(peer, _network_id)) => {
@@ -682,7 +576,6 @@ pub struct TestConfig {
 	pub with_surb: bool,
 	pub from_external: bool,
 	pub random_dest: bool,
-	pub publish: Option<PublishConf>,
 }
 
 pub fn wait_on_connections(conf: &TestConfig, with_swarm_channels: &mut [TestChannels]) {
