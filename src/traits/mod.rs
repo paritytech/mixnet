@@ -165,8 +165,13 @@ pub trait Topology: Sized {
 	/// Receive routing info from peers.
 	fn receive_new_routing_infos(&mut self, with: MixnetId, infos: &[u8]);
 
+	/// Did local routing infos change (only the published part).
+	fn change_routing_infos(&self) -> bool;
+
+	/// Encode routing infos to publish.
+	fn encoded_routing_infos(&mut self) -> Vec<u8>;
+
 	// TODO handle new id and key.
-	// TODO handle new distributed routing table
 }
 
 // TODO a enum variant with MixPublicKey or opt MixPublicKey.
@@ -287,6 +292,14 @@ impl Topology for NoTopology {
 	fn handle_new_routing_set(&mut self, _set: NewRoutingSet) {}
 
 	fn receive_new_routing_infos(&mut self, _with: MixnetId, _infos: &[u8]) {}
+
+	fn change_routing_infos(&self) -> bool {
+		false
+	}
+
+	fn encoded_routing_infos(&mut self) -> Vec<u8> {
+		Vec::new()
+	}
 }
 
 impl Configuration for NoTopology {

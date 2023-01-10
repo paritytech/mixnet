@@ -216,6 +216,16 @@ impl Topology for TopologyGraph {
 	fn receive_new_routing_infos(&mut self, _with: MixnetId, _infos: &[u8]) {
 		// static set in these tests
 	}
+
+	fn change_routing_infos(&self) -> bool {
+		// static set in these tests
+		false
+	}
+
+	fn encoded_routing_infos(&mut self) -> Vec<u8> {
+		// static set in these tests
+		Vec::new()
+	}
 }
 
 fn gen_paths(

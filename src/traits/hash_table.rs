@@ -71,6 +71,8 @@ pub trait Configuration {
 	const DEFAULT_PARAMETERS: Parameters;
 
 	fn decode_infos(encoded: &[u8]) -> Option<RoutingTable<Self::Version>>;
+
+	fn encode_infos(infos: &RoutingTable<Self::Version>) -> Vec<u8>;
 }
 
 /// Configuration parameters for topology.
@@ -109,6 +111,9 @@ pub struct TopologyHashTable<C: Configuration> {
 	routing: bool,
 
 	routing_table: RoutingTable<C::Version>,
+
+	// when publishing, did routing change since last publishing.
+	routing_changed: bool,
 
 	// The connected nodes (for first hop use `routing_peers` joined `connected_nodes`).
 	connected_nodes: HashSet<MixnetId>,
@@ -320,14 +325,22 @@ impl<C: Configuration> Topology for TopologyHashTable<C> {
 			self.refresh_static_routing_tables(set.peers);
 		} else {
 			self.handle_new_routing_distributed(set.peers.iter().map(|k| &k.0), None, None);
-			self.handle_new_routing_distributed(set.peers.iter().map(|k| &k.0), None, None);
 		}
 	}
 
 	fn receive_new_routing_infos(&mut self, with: MixnetId, infos: &[u8]) {
 		if let Some(routing_table) = C::decode_infos(infos) {
-			unimplemented!("TODO")
+			self.receive_new_routing_table(with, routing_table);
 		}
+	}
+
+	fn change_routing_infos(&self) -> bool {
+		self.routing_changed
+	}
+
+	fn encoded_routing_infos(&mut self) -> Vec<u8> {
+		self.routing_changed = false;
+		C::encode_infos(&self.routing_table)
 	}
 }
 
@@ -357,6 +370,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 			routing: false,
 			routing_peers: BTreeMap::new(),
 			routing_table,
+			routing_changed: false,
 			paths: Default::default(),
 			paths_depth: 0,
 			params,
@@ -609,6 +623,7 @@ impl<C: Configuration> TopologyHashTable<C> {
 
 	fn refresh_self_routing_table(&mut self) {
 		log::debug!(target: "mixnet", "Refresh self route: {:?}", self.routing_table);
+		self.routing_changed = true;
 		let past = self.routing_table.clone();
 		self.routing_table.connected_to.clear(); // TODO update a bit more precise
 		for peer in self.should_connect_to.iter() {

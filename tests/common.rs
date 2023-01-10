@@ -493,9 +493,27 @@ pub fn spawn_workers<T: Configuration>(
 			}) = publish.as_mut()
 			{
 				if let Poll::Ready(()) = timer_publish.poll_unpin(cx) {
+					let encoded = worker.mixnet_mut().topology.encoded_routing_infos();
+					if let Some(decoded) =
+						DecodableAuthorityTable::decode(&mut encoded.as_slice()).ok()
+					{
+						let id = worker.mixnet().local_id();
+						published.write().insert(*id, decoded.0);
+					}
+
 					*timer_publish = Delay::new(conf.publish);
 				}
 				if let Poll::Ready(()) = timer_publish_if_change.poll_unpin(cx) {
+					if worker.mixnet_mut().topology.change_routing_infos() {
+						let encoded = worker.mixnet_mut().topology.encoded_routing_infos();
+						if let Some(decoded) =
+							DecodableAuthorityTable::decode(&mut encoded.as_slice()).ok()
+						{
+							let id = worker.mixnet().local_id();
+							published.write().insert(*id, decoded.0);
+						}
+					}
+
 					*timer_publish_if_change = Delay::new(conf.publish_if_change);
 				}
 				if let Poll::Ready(()) = timer_query.poll_unpin(cx) {

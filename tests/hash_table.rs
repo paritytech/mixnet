@@ -68,6 +68,10 @@ impl TopologyConfig for NotDistributed {
 	const DEFAULT_PARAMETERS: Parameters =
 		Parameters { max_external: Some(1), number_consumer_connection: Some(3) };
 
+	fn encode_infos(infos: &RoutingTable<Self::Version>) -> Vec<u8> {
+		Vec::new()
+	}
+
 	fn decode_infos(_: &[u8]) -> Option<RoutingTable<Self::Version>> {
 		None
 	}
@@ -95,6 +99,11 @@ impl TopologyConfig for Distributed {
 	// TODO debug for number_consumer_connection only 1
 	const DEFAULT_PARAMETERS: Parameters =
 		Parameters { max_external: Some(1), number_consumer_connection: Some(3) };
+
+	fn encode_infos(infos: &RoutingTable<Self::Version>) -> Vec<u8> {
+		use codec::Encode;
+		common::EncodableAuthorityTable(infos).encode()
+	}
 
 	fn decode_infos(mut encoded: &[u8]) -> Option<RoutingTable<Self::Version>> {
 		use codec::Decode;
@@ -263,9 +272,9 @@ fn test_messages<
 	);
 
 	log::trace!(target: "mixnet_test", "before waiting connections");
-	if publish.is_none() {
-		wait_on_connections(&conf, with_swarm_channels.as_mut());
-	}
+	//	if publish.is_none() {
+	wait_on_connections(&conf, with_swarm_channels.as_mut());
+	//	}
 
 	log::trace!(target: "mixnet_test", "after waiting connections");
 	let send = if from_external {
