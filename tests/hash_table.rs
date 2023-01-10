@@ -64,7 +64,6 @@ impl TopologyConfig for NotDistributed {
 
 	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
 
-	// TODO debug for number_consumer_connection only 1
 	const DEFAULT_PARAMETERS: Parameters =
 		Parameters { max_external: Some(1), number_consumer_connection: Some(3) };
 
@@ -96,7 +95,6 @@ impl TopologyConfig for Distributed {
 
 	const EXTERNAL_BANDWIDTH: (usize, usize) = (1, 10);
 
-	// TODO debug for number_consumer_connection only 1
 	const DEFAULT_PARAMETERS: Parameters =
 		Parameters { max_external: Some(1), number_consumer_connection: Some(3) };
 

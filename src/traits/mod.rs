@@ -111,10 +111,8 @@ pub trait Topology: Sized {
 		count: usize,
 		num_hops: usize,
 	) -> Result<(Option<MixnetId>, Vec<Vec<(MixnetId, MixPublicKey)>>), Error> {
-		// TODO consider retry with different first hop or destination on no path found
-		let mut first_external = None;
-		let start = if let Some(start) = from {
-			start
+		if let Some(start) = from {
+			self.random_path(start, recipient, count, num_hops).map(|r| (None, r))
 		} else {
 			let firsts =
 				self.first_hop_nodes_external(local_id, recipient.as_ref().map(|r| r.0), num_hops);
@@ -123,14 +121,26 @@ pub trait Topology: Sized {
 			}
 			let mut rng = rand::thread_rng();
 			use rand::Rng;
-			let n: usize = rng.gen_range(0..firsts.len());
-			first_external = Some(firsts[n]);
-			let first_ref = first_external.as_ref().expect("Init above");
-			(&first_ref.0, Some(&first_ref.1))
-		};
+			let n_start: usize = rng.gen_range(0..firsts.len());
+			let mut n: usize = n_start;
+			loop {
+				let first = &firsts[n];
+				let start = (&first.0, Some(&first.1));
 
-		self.random_path(start, recipient, count, num_hops)
-			.map(|r| (first_external.map(|e| e.0), r))
+				match self.random_path(start, recipient, count, num_hops) {
+					Ok(path) => return Ok((Some(first.0), path)),
+					Err(e) => {
+						n += 1;
+						if n == firsts.len() {
+							n = 0
+						}
+						if n == n_start {
+							return Err(e)
+						}
+					},
+				}
+			}
+		}
 	}
 
 	/// On connection successful handshake.
@@ -174,7 +184,7 @@ pub trait Topology: Sized {
 	// TODO handle new id and key.
 }
 
-// TODO a enum variant with MixPublicKey or opt MixPublicKey.
+/// Connection expected from current topology.
 pub struct ShouldConnectTo<'a> {
 	pub peers: &'a [MixnetId],
 	pub number: usize,
