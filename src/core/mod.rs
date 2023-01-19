@@ -31,7 +31,7 @@ pub use crate::core::{
 	fragment::MessageCollection,
 	sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance, PAYLOAD_TAG_SIZE},
 };
-use crate::{MessageType, MixnetId, NetworkId, SendOptions};
+use crate::{MessageType, MixPeerId, NetworkId, SendOptions};
 pub use error::Error;
 use futures::FutureExt;
 use futures_timer::Delay;
@@ -101,10 +101,10 @@ impl Packet {
 }
 
 pub enum MixEvent {
-	SendMessage((MixnetId, Vec<u8>)),
+	SendMessage((MixPeerId, Vec<u8>)),
 }
 
-pub fn to_sphinx_id(id: &NetworkId) -> Result<MixnetId, Error> {
+pub fn to_sphinx_id(id: &NetworkId) -> Result<MixPeerId, Error> {
 	let hash = id.as_ref();
 	match libp2p_core::multihash::Code::try_from(hash.code()) {
 		Ok(libp2p_core::multihash::Code::Identity) => {
@@ -119,7 +119,7 @@ pub fn to_sphinx_id(id: &NetworkId) -> Result<MixnetId, Error> {
 	}
 }
 
-pub fn to_libp2p_id(id: MixnetId) -> Result<NetworkId, Error> {
+pub fn to_libp2p_id(id: MixPeerId) -> Result<NetworkId, Error> {
 	let encoded = libp2p_core::identity::ed25519::PublicKey::decode(&id)
 		.map_err(|_e| Error::InvalidSphinxId(id.clone()))?;
 	let key = libp2p_core::identity::PublicKey::Ed25519(encoded);
@@ -160,7 +160,7 @@ pub fn public_from_ed25519(ed25519_pk: [u8; 32]) -> MixPublicKey {
 pub(crate) struct QueuedPacket {
 	deadline: Instant,
 	pub data: Packet,
-	recipient: MixnetId,
+	recipient: MixPeerId,
 }
 
 impl std::cmp::PartialOrd for QueuedPacket {
@@ -180,8 +180,8 @@ pub struct Mixnet {
 	topology: Option<Box<dyn Topology>>,
 	num_hops: usize,
 	secret: MixSecretKey,
-	local_id: MixnetId,
-	connected_peers: HashMap<MixnetId, MixPublicKey>,
+	local_id: MixPeerId,
+	connected_peers: HashMap<MixPeerId, MixPublicKey>,
 	// Incomplete incoming message fragments.
 	fragments: MessageCollection,
 	// Real messages queue, sorted by deadline.
@@ -389,7 +389,7 @@ impl Mixnet {
 
 	fn queue_packet(
 		&mut self,
-		recipient: MixnetId,
+		recipient: MixPeerId,
 		data: Vec<u8>, // TODO switch to Packet or Message (TODO merge both)
 		delay: Duration,
 	) -> Result<(), Error> {
@@ -410,7 +410,7 @@ impl Mixnet {
 	/// recipient is selected.
 	pub fn register_message(
 		&mut self,
-		peer_id: Option<MixnetId>,
+		peer_id: Option<MixPeerId>,
 		message: Vec<u8>,
 		send_options: SendOptions,
 	) -> Result<(), Error> {
@@ -511,7 +511,7 @@ impl Mixnet {
 	/// fragment completes the message, full message is returned.
 	pub fn import_message(
 		&mut self,
-		peer_id: MixnetId,
+		peer_id: MixPeerId,
 		message: Packet,
 	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
 		let next_delay =
@@ -569,16 +569,16 @@ impl Mixnet {
 	}
 
 	/// Should be called when a new peer is connected.
-	pub fn add_connected_peer(&mut self, id: MixnetId, public_key: MixPublicKey) {
+	pub fn add_connected_peer(&mut self, id: MixPeerId, public_key: MixPublicKey) {
 		self.connected_peers.insert(id, public_key);
 	}
 
 	/// Should be called when a peer is disconnected.
-	pub fn remove_connected_peer(&mut self, id: &MixnetId) {
+	pub fn remove_connected_peer(&mut self, id: &MixPeerId) {
 		self.connected_peers.remove(id);
 	}
 
-	fn cover_message(&mut self) -> Option<(MixnetId, Packet)> {
+	fn cover_message(&mut self) -> Option<(MixPeerId, Packet)> {
 		let mut rng = rand::thread_rng();
 		let message = fragment::Fragment::create_cover_fragment(&mut rng);
 		let (id, key) = self.random_cover_path()?;
@@ -591,11 +591,11 @@ impl Mixnet {
 
 	fn random_paths(
 		&self,
-		start: &MixnetId,
-		recipient: &MixnetId,
+		start: &MixPeerId,
+		recipient: &MixPeerId,
 		num_hops: &Option<usize>,
 		count: usize,
-	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
+	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();
@@ -624,7 +624,7 @@ impl Mixnet {
 		Ok(result)
 	}
 
-	fn random_cover_path(&self) -> Option<(MixnetId, MixPublicKey)> {
+	fn random_cover_path(&self) -> Option<(MixPeerId, MixPublicKey)> {
 		// Select a random connected peer
 		let neighbors = self.neighbors();
 
@@ -639,10 +639,10 @@ impl Mixnet {
 
 	fn gen_paths(
 		&self,
-		partial: &mut Vec<(MixnetId, MixPublicKey)>,
-		paths: &mut Vec<Vec<(MixnetId, MixPublicKey)>>,
-		last: &MixnetId,
-		target: &MixnetId,
+		partial: &mut Vec<(MixPeerId, MixPublicKey)>,
+		paths: &mut Vec<Vec<(MixPeerId, MixPublicKey)>>,
+		last: &MixPeerId,
+		target: &MixPeerId,
 		num_hops: usize,
 	) {
 		let neighbors = self.topology.as_ref().map(|t| t.neighbors(&last)).unwrap_or_default();
@@ -671,7 +671,7 @@ impl Mixnet {
 		self.replay_filter.cleanup(now);
 	}
 
-	fn neighbors(&self) -> Vec<(MixnetId, MixPublicKey)> {
+	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
 		self.connected_peers
 			.iter()
 			.map(|(id, key)| (id.clone(), key.clone()))

@@ -26,7 +26,7 @@ mod protocol;
 
 use crate::{
 	core::{to_sphinx_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
-	DecodedMessage, MixPublicKey, MixnetId, NetworkId, SendOptions,
+	DecodedMessage, MixPeerId, MixPublicKey, NetworkId, SendOptions,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
@@ -82,7 +82,7 @@ impl MixnetBehaviour {
 	/// multiple hops with random delays to the specified recipient.
 	pub fn send(
 		&mut self,
-		to: MixnetId,
+		to: MixPeerId,
 		message: Vec<u8>,
 		send_options: SendOptions,
 	) -> std::result::Result<(), Error> {

@@ -32,11 +32,11 @@ use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use rand::{prelude::IteratorRandom, RngCore};
 use std::collections::HashMap;
 
-use mixnet::{MixPublicKey, MixnetId, SendOptions};
+use mixnet::{MixPeerId, MixPublicKey, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
-	connections: HashMap<MixnetId, Vec<(MixnetId, MixPublicKey)>>,
+	connections: HashMap<MixPeerId, Vec<(MixPeerId, MixPublicKey)>>,
 }
 
 #[macro_export]
@@ -66,7 +66,7 @@ macro_rules! log_unwrap_opt {
 }
 
 impl TopologyGraph {
-	fn new_star(nodes: &[(MixnetId, MixPublicKey)]) -> Self {
+	fn new_star(nodes: &[(MixPeerId, MixPublicKey)]) -> Self {
 		let mut connections = HashMap::new();
 		for i in 0..nodes.len() {
 			let (node, _node_key) = nodes[i];
@@ -84,11 +84,11 @@ impl TopologyGraph {
 }
 
 impl mixnet::Topology for TopologyGraph {
-	fn neighbors(&self, id: &MixnetId) -> Vec<(MixnetId, MixPublicKey)> {
+	fn neighbors(&self, id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
 		self.connections.get(id).cloned().unwrap_or_default()
 	}
 
-	fn random_recipient(&self) -> Option<MixnetId> {
+	fn random_recipient(&self) -> Option<MixPeerId> {
 		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
 	}
 }

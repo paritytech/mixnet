@@ -28,7 +28,7 @@ pub use crate::core::{
 pub use network::{MixnetBehaviour, NetworkEvent};
 
 /// Mixnet peer identity.
-pub type MixnetId = [u8; 32];
+pub type MixPeerId = [u8; 32];
 
 /// Mixnet network peer identity.
 pub type NetworkId = libp2p_core::PeerId;
@@ -55,7 +55,7 @@ pub enum MessageType {
 	WithSurbs(Box<SurbsPayload>),
 	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
-	FromSurbs(Option<Vec<u8>>, Box<(MixnetId, MixPublicKey)>),
+	FromSurbs(Option<Vec<u8>>, Box<(MixPeerId, MixPublicKey)>),
 }
 
 impl MessageType {
@@ -86,7 +86,7 @@ impl MessageType {
 pub struct DecodedMessage {
 	/// The peer ID of the last hop that we have received the message from. This is not the message
 	/// origin.
-	pub peer: MixnetId,
+	pub peer: MixPeerId,
 	/// Message data.
 	pub message: Vec<u8>,
 	/// Message kind.

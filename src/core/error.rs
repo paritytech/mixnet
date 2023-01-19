@@ -20,7 +20,7 @@
 
 use crate::core::sphinx::Error as SphinxError;
 /// Error handling
-use crate::MixnetId;
+use crate::MixPeerId;
 use std::fmt;
 
 /// Mixnet generic error.
@@ -31,11 +31,11 @@ pub enum Error {
 	/// Sphinx format error.
 	SphinxError(SphinxError),
 	/// No path to give peer or no random peer to select from.
-	NoPath(Option<MixnetId>),
+	NoPath(Option<MixPeerId>),
 	/// Invalid network id.
 	InvalidId(libp2p_core::PeerId),
 	/// Invalid id in the Sphinx packet.
-	InvalidSphinxId(MixnetId),
+	InvalidSphinxId(MixPeerId),
 	/// Invalid message fragment format.
 	BadFragment,
 	/// Packet queue is full.

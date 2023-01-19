@@ -20,7 +20,7 @@
 
 //! Mixnet configuration.
 
-use crate::{MixPublicKey, MixSecretKey, MixnetId, Topology};
+use crate::{MixPeerId, MixPublicKey, MixSecretKey, Topology};
 
 /// Configuration data for the mixnet protocol.
 pub struct Config {
@@ -32,7 +32,7 @@ pub struct Config {
 	/// allowing communication with immediately connected peers.
 	pub topology: Option<Box<dyn Topology>>,
 	/// Local node id.
-	pub local_id: MixnetId,
+	pub local_id: MixPeerId,
 	/// Target traffic rate. This is combined for the stream of real and cover messages. If the
 	/// stream of real messages exceeds this rate incoming messages will be dropped.
 	pub target_bits_per_second: u32,
@@ -52,12 +52,16 @@ pub struct Config {
 }
 
 impl Config {
-	pub fn new(id: MixnetId) -> Self {
+	pub fn new(id: MixPeerId) -> Self {
 		let (public_key, secret_key) = super::generate_new_keys();
 		Self::new_with_keys(id, public_key, secret_key)
 	}
 
-	pub fn new_with_keys(id: MixnetId, public_key: MixPublicKey, secret_key: MixSecretKey) -> Self {
+	pub fn new_with_keys(
+		id: MixPeerId,
+		public_key: MixPublicKey,
+		secret_key: MixSecretKey,
+	) -> Self {
 		Self {
 			secret_key,
 			public_key,
