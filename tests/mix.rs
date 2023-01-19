@@ -27,12 +27,12 @@ use libp2p_core::{
 };
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
-use libp2p_swarm::{DialError, Swarm, SwarmEvent};
+use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use rand::{prelude::IteratorRandom, RngCore};
 use std::collections::HashMap;
 
-use mixnet::{MixPublicKey, MixnetId};
+use mixnet::{MixPublicKey, MixnetId, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
@@ -203,7 +203,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
-				.send(recipient.clone(), source_message.to_vec())
+				.send(
+					recipient.clone(),
+					source_message.to_vec(),
+					SendOptions { num_hop: None, with_surb: false },
+				)
 				.unwrap();
 		}
 	}

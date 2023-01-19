@@ -196,6 +196,8 @@ pub struct Mixnet {
 	average_traffic_delay: Duration,
 	// Average delay for each packet at each hop.
 	average_hop_delay: Duration,
+	// Do we keep query in peristance.
+	persist_surb_query: bool,
 }
 
 /// Message id, use as surb key and replay protection.
@@ -381,6 +383,7 @@ impl Mixnet {
 			average_traffic_delay: Duration::from_nanos(
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
+			persist_surb_query: config.persist_surb_query,
 		}
 	}
 
@@ -413,6 +416,8 @@ impl Mixnet {
 	) -> Result<(), Error> {
 		let mut rng = rand::thread_rng();
 
+		let mut surb_query =
+			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 		let maybe_peer_id = if let Some(id) = peer_id {
 			Some(id)
 		} else {
@@ -428,7 +433,30 @@ impl Mixnet {
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
 		let chunks = fragment::create_fragments(&mut rng, message, false)?;
-		let paths = self.random_paths(&peer_id, chunks.len())?;
+		let paths = self.random_paths(
+			&self.local_id.clone(),
+			&peer_id,
+			&send_options.num_hop,
+			chunks.len(),
+		)?;
+
+		let mut surb = if send_options.with_surb {
+			let Some(peer_id) =
+				paths.last().and_then(|path| path.last()).map(|peer_id| &peer_id.0) else {
+					return Err(Error::NoPath(None))
+				};
+			let paths = self
+				.random_paths(peer_id, &self.local_id.clone(), &send_options.num_hop, 1)?
+				.remove(0);
+			let first_node = paths[0].0;
+			let paths: Vec<_> = paths
+				.into_iter()
+				.map(|(id, public_key)| sphinx::PathHop { id, public_key })
+				.collect();
+			Some((first_node, paths))
+		} else {
+			None
+		};
 
 		let mut packets = Vec::with_capacity(chunks.len());
 		for (n, chunk) in chunks.into_iter().enumerate() {
@@ -437,15 +465,44 @@ impl Mixnet {
 				.iter()
 				.map(|(id, key)| sphinx::PathHop { id: *id, public_key: (*key).into() })
 				.collect();
-			let packet = sphinx::new_packet(&mut rng, hops, chunk.into_vec(), None)
-				.map_err(|e| Error::SphinxError(e))?;
+			let chunk_surb = if n == 0 { surb.take() } else { None };
+			let (packet, surb_keys) =
+				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
+					.map_err(|e| Error::SphinxError(e))?;
+			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
+				let persistance = SurbsPersistance {
+					keys,
+					query: surb_query.take(),
+					recipient: *paths[n].last().unwrap(),
+				};
+				self.surb.insert(surb_id, persistance.into(), std::time::Instant::now());
+			}
+
 			packets.push((first_id, packet));
 		}
 
 		for (peer_id, packet) in packets {
 			let delay = exp_delay(&mut rng, self.average_hop_delay);
-			self.queue_packet(peer_id, packet.0.into_vec(), delay)?;
+			self.queue_packet(peer_id, packet.into_vec(), delay)?;
 		}
+		Ok(())
+	}
+
+	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbsPayload) -> Result<(), Error> {
+		let SurbsPayload { first_node, first_key, header } = surb;
+		let mut rng = rand::thread_rng();
+
+		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
+		if chunks.len() != 1 {
+			return Err(Error::MessageTooLarge) // TODO change error
+		}
+
+		let packet = sphinx::new_surb_packet(first_key, chunks.remove(0).into_vec(), header)
+			.map_err(Error::SphinxError)?;
+		let dest = first_node;
+		// TODO no delay?
+		let delay = exp_delay(&mut rng, self.average_hop_delay);
+		self.queue_packet(dest, packet.into_vec(), delay)?;
 		Ok(())
 	}
 
@@ -534,13 +591,14 @@ impl Mixnet {
 
 	fn random_paths(
 		&self,
+		start: &MixnetId,
 		recipient: &MixnetId,
+		num_hops: &Option<usize>,
 		count: usize,
 	) -> Result<Vec<Vec<(MixnetId, MixPublicKey)>>, Error> {
 		// Generate all possible paths and select one at random
 		let mut partial = Vec::new();
 		let mut paths = Vec::new();
-		let start = self.local_id.clone();
 
 		if self.topology.is_none() {
 			// No topology is defined. Check if direct connection is possible.
@@ -550,7 +608,8 @@ impl Mixnet {
 			}
 		}
 
-		self.gen_paths(&mut partial, &mut paths, &start, recipient);
+		let num_hops = num_hops.clone().unwrap_or(self.num_hops);
+		self.gen_paths(&mut partial, &mut paths, &start, recipient, num_hops);
 
 		if paths.is_empty() {
 			return Err(Error::NoPath(Some(recipient.clone())))
@@ -584,16 +643,17 @@ impl Mixnet {
 		paths: &mut Vec<Vec<(MixnetId, MixPublicKey)>>,
 		last: &MixnetId,
 		target: &MixnetId,
+		num_hops: usize,
 	) {
 		let neighbors = self.topology.as_ref().map(|t| t.neighbors(&last)).unwrap_or_default();
 		for (id, key) in neighbors {
-			if partial.len() < self.num_hops - 1 {
+			if partial.len() < num_hops - 1 {
 				partial.push((id.clone(), key));
-				self.gen_paths(partial, paths, &id, target);
+				self.gen_paths(partial, paths, &id, target, num_hops);
 				partial.pop();
 			}
 
-			if partial.len() == self.num_hops - 1 {
+			if partial.len() == num_hops - 1 {
 				// About to complete path. Only select paths that end up at target.
 				if &id != target {
 					continue

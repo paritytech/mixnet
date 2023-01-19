@@ -26,7 +26,7 @@ mod protocol;
 
 use crate::{
 	core::{to_sphinx_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
-	DecodedMessage, MixPublicKey, MixnetId, NetworkId,
+	DecodedMessage, MixPublicKey, MixnetId, NetworkId, SendOptions,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
@@ -80,18 +80,31 @@ impl MixnetBehaviour {
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to the specified recipient.
-	pub fn send(&mut self, to: MixnetId, message: Vec<u8>, send_options: SendOptions) -> std::result::Result<(), Error> {
-		self.mixnet.register_message(Some(to), message, send_option)
+	pub fn send(
+		&mut self,
+		to: MixnetId,
+		message: Vec<u8>,
+		send_options: SendOptions,
+	) -> std::result::Result<(), Error> {
+		self.mixnet.register_message(Some(to), message, send_options)
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to a random recipient.
-	pub fn send_to_random_recipient(&mut self, message: Vec<u8>, send_options: SendOptions) -> std::result::Result<(), Error> {
+	pub fn send_to_random_recipient(
+		&mut self,
+		message: Vec<u8>,
+		send_options: SendOptions,
+	) -> std::result::Result<(), Error> {
 		self.mixnet.register_message(None, message, send_options)
 	}
 
 	/// Reply with a surb	/// multiple hops with random delays to the specified recipient.
-	pub fn reply(&mut self, message: Vec<u8>, surbs: SurbsPayload) -> std::result::Result<(), Error> {
+	pub fn reply(
+		&mut self,
+		message: Vec<u8>,
+		surbs: crate::SurbsPayload,
+	) -> std::result::Result<(), Error> {
 		self.mixnet.register_surb(message, surbs)
 	}
 
