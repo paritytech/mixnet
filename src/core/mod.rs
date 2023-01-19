@@ -26,12 +26,14 @@ mod fragment;
 mod sphinx;
 mod topology;
 
-pub use crate::core::{
-	config::Config,
-	fragment::MessageCollection,
-	sphinx::{hash, SprpKey, SurbsPayload, SurbsPersistance, PAYLOAD_TAG_SIZE},
+pub use crate::core::{config::Config, sphinx::SurbsPayload};
+use crate::{
+	core::{
+		fragment::MessageCollection,
+		sphinx::{SprpKey, SurbsPersistance},
+	},
+	MessageType, MixPeerId, NetworkId, SendOptions,
 };
-use crate::{MessageType, MixPeerId, NetworkId, SendOptions};
 pub use error::Error;
 use futures::FutureExt;
 use futures_timer::Delay;
