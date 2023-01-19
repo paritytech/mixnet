@@ -24,8 +24,8 @@ use crate::network::protocol;
 use futures::{future::BoxFuture, prelude::*};
 use libp2p_core::{upgrade::NegotiationError, UpgradeError};
 use libp2p_swarm::{
-	KeepAlive, NegotiatedSubstream, ProtocolsHandler, ProtocolsHandlerEvent,
-	ProtocolsHandlerUpgrErr, SubstreamProtocol,
+	ConnectionHandler, ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive,
+	NegotiatedSubstream, SubstreamProtocol,
 };
 use std::{
 	collections::VecDeque,
@@ -132,7 +132,7 @@ impl Handler {
 	}
 }
 
-impl ProtocolsHandler for Handler {
+impl ConnectionHandler for Handler {
 	type InEvent = Message;
 	type OutEvent = crate::network::Result;
 	type Error = Failure;
@@ -188,18 +188,16 @@ impl ProtocolsHandler for Handler {
 		}
 	}
 
-	fn inject_dial_upgrade_error(&mut self, _info: (), error: ProtocolsHandlerUpgrErr<Void>) {
-		self.outbound = None; // Request a new substream on the next `poll`.
-
+	fn inject_dial_upgrade_error(&mut self, _info: (), error: ConnectionHandlerUpgrErr<Void>) {
 		let error = match error {
-			ProtocolsHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
+			ConnectionHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
+				log::warn!(target: "mixnet", "Connection upgrade fail on dial.");
 				debug_assert_eq!(self.state, State::Active);
-
 				self.state = State::Inactive { reported: false };
 				return
 			},
 			// Note: This timeout only covers protocol negotiation.
-			ProtocolsHandlerUpgrErr::Timeout => Failure::Timeout,
+			ConnectionHandlerUpgrErr::Timeout => Failure::Timeout,
 			e => Failure::Other { error: Box::new(e) },
 		};
 
@@ -213,14 +211,14 @@ impl ProtocolsHandler for Handler {
 	fn poll(
 		&mut self,
 		cx: &mut Context<'_>,
-	) -> Poll<ProtocolsHandlerEvent<protocol::Mixnet, (), crate::network::Result, Self::Error>> {
+	) -> Poll<ConnectionHandlerEvent<protocol::Mixnet, (), crate::network::Result, Self::Error>> {
 		match self.state {
 			State::Inactive { reported: true } => {
 				return Poll::Pending // nothing to do on this connection
 			},
 			State::Inactive { reported: false } => {
 				self.state = State::Inactive { reported: true };
-				return Poll::Ready(ProtocolsHandlerEvent::Custom(Err(Failure::Unsupported)))
+				return Poll::Ready(ConnectionHandlerEvent::Custom(Err(Failure::Unsupported)))
 			},
 			State::Active => {},
 		}
@@ -236,7 +234,7 @@ impl ProtocolsHandler for Handler {
 				Poll::Ready(Ok((stream, msg))) => {
 					// An inbound message.
 					self.inbound = Some(protocol::recv_message(stream).boxed());
-					return Poll::Ready(ProtocolsHandlerEvent::Custom(Ok(Message(msg))))
+					return Poll::Ready(ConnectionHandlerEvent::Custom(Ok(Message(msg))))
 				},
 			}
 		}
@@ -245,7 +243,7 @@ impl ProtocolsHandler for Handler {
 			// Check for outbound failures.
 			if let Some(error) = self.pending_errors.pop_back() {
 				log::debug!(target: "mixnet", "Protocol failure: {:?}", error);
-				return Poll::Ready(ProtocolsHandlerEvent::Close(error))
+				return Poll::Ready(ConnectionHandlerEvent::Close(error))
 			}
 
 			// Continue outbound messages.
@@ -275,7 +273,9 @@ impl ProtocolsHandler for Handler {
 					self.outbound = Some(ProtocolState::OpenStream);
 					let protocol = SubstreamProtocol::new(protocol::Mixnet, ())
 						.with_timeout(self.config.connection_timeout);
-					return Poll::Ready(ProtocolsHandlerEvent::OutboundSubstreamRequest { protocol })
+					return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
+						protocol,
+					})
 				},
 			}
 		}

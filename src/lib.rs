@@ -18,13 +18,77 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#[macro_use]
-extern crate arrayref;
-
 mod core;
 mod network;
 
 pub use crate::core::{
-	public_from_ed25519, secret_from_ed25519, Config, Error, MixPublicKey, MixSecretKey, Topology,
+	public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config, Error, MixPublicKey,
+	MixSecretKey, SurbsPayload, Topology,
 };
-pub use network::{DecodedMessage, Mixnet, NetworkEvent};
+pub use network::{MixnetBehaviour, NetworkEvent};
+
+/// Mixnet peer identity.
+pub type MixnetId = [u8; 32];
+
+/// Mixnet network peer identity.
+pub type NetworkId = libp2p_core::PeerId;
+
+/// Options for sending a message in the mixnet.
+pub struct SendOptions {
+	/// Number of hops for the message.
+	/// If undefined, mixnet configured number of hop will be used.
+	/// This number is automatically increased by one for node that are not
+	/// in traits and by two for node that are not in topology trying to
+	/// reach another node that is not in traits.
+	pub num_hop: Option<usize>,
+
+	/// Do we attach a surb with the message.
+	pub with_surb: bool,
+}
+
+/// Variant of message received.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum MessageType {
+	/// Message only.
+	StandAlone,
+	/// Message with a surb for reply.
+	WithSurbs(Box<SurbsPayload>),
+	/// Message from a surb reply (trusted), and initial query
+	/// if stored.
+	FromSurbs(Option<Vec<u8>>, Box<(MixnetId, MixPublicKey)>),
+}
+
+impl MessageType {
+	/// can the message a surb reply.
+	pub fn with_surb(&self) -> bool {
+		matches!(self, &MessageType::WithSurbs(_))
+	}
+
+	/// Extract surb.
+	pub fn surb(self) -> Option<Box<SurbsPayload>> {
+		match self {
+			MessageType::WithSurbs(surb) => Some(surb),
+			_ => None,
+		}
+	}
+
+	/// Extract surb query if stored.
+	pub fn extract_surb_query(&mut self) -> Option<Option<Vec<u8>>> {
+		match self {
+			MessageType::FromSurbs(surb, _) => Some(surb.take()),
+			_ => None,
+		}
+	}
+}
+
+/// A full mixnet message that has reached its recipient.
+#[derive(Debug)]
+pub struct DecodedMessage {
+	/// The peer ID of the last hop that we have received the message from. This is not the message
+	/// origin.
+	pub peer: MixnetId,
+	/// Message data.
+	pub message: Vec<u8>,
+	/// Message kind.
+	pub kind: MessageType,
+}

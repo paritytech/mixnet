@@ -86,32 +86,45 @@ mod tests {
 	use super::*;
 	use libp2p_core::{
 		multiaddr::multiaddr,
-		transport::{memory::MemoryTransport, ListenerEvent, Transport},
+		transport::{memory::MemoryTransport, Transport, TransportEvent},
 	};
 	use rand::{thread_rng, Rng};
 
 	#[test]
 	fn ping_pong() {
+		let mut transport = MemoryTransport::default().boxed();
 		let mem_addr = multiaddr![Memory(thread_rng().gen::<u64>())];
-		let mut listener = MemoryTransport.listen_on(mem_addr).unwrap();
 
-		let listener_addr =
-			if let Some(Some(Ok(ListenerEvent::NewAddress(a)))) = listener.next().now_or_never() {
-				a
+		let listener = transport.listen_on(mem_addr).unwrap();
+		let (listener_addr, mut transport) = async_std::task::block_on(async move {
+			let event = transport.select_next_some().await;
+			if let TransportEvent::NewAddress { listener_id, listen_addr } = event {
+				assert_eq!(listener_id, listener);
+				(listen_addr, transport)
 			} else {
 				panic!("MemoryTransport not listening on an address!");
-			};
-
-		async_std::task::spawn(async move {
-			let listener_event = listener.next().await.unwrap();
-			let (listener_upgrade, _) = listener_event.unwrap().into_upgrade().unwrap();
-			let conn = listener_upgrade.await.unwrap();
-			recv_message(conn).await.unwrap();
+			}
 		});
 
-		async_std::task::block_on(async move {
-			let c = MemoryTransport.dial(listener_addr).unwrap().await.unwrap();
-			let _s = send_message(c, vec![42]).await.unwrap();
-		});
+		let listener = async move {
+			let event = transport.select_next_some().await;
+			if let TransportEvent::Incoming { listener_id, upgrade, .. } = event {
+				assert_eq!(listener_id, listener);
+				let mut conn = upgrade.await.unwrap();
+				let mut message = vec![0];
+				conn.read_exact(&mut message[..]).await.unwrap();
+				assert_eq!(message, vec![42]);
+			} else {
+				panic!("Unexpected event");
+			}
+		};
+
+		let mut transport = MemoryTransport::default().boxed();
+
+		async_std::task::block_on(futures::future::join(listener, async move {
+			let mut c = transport.dial(listener_addr).unwrap().await.unwrap();
+			c.write_all(&[42]).await.unwrap();
+			c.flush().await.unwrap();
+		}));
 	}
 }

@@ -18,8 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use crate::core::sphinx::Error as SphinxError;
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, MixPeerId, SphinxPeerId};
+use crate::MixnetId;
 use std::fmt;
 
 /// Mixnet generic error.
@@ -30,11 +31,11 @@ pub enum Error {
 	/// Sphinx format error.
 	SphinxError(SphinxError),
 	/// No path to give peer or no random peer to select from.
-	NoPath(Option<MixPeerId>),
+	NoPath(Option<MixnetId>),
 	/// Invalid network id.
-	InvalidId(MixPeerId),
+	InvalidId(libp2p_core::PeerId),
 	/// Invalid id in the Sphinx packet.
-	InvalidSphinxId(SphinxPeerId),
+	InvalidSphinxId(MixnetId),
 	/// Invalid message fragment format.
 	BadFragment,
 	/// Packet queue is full.
@@ -46,11 +47,7 @@ impl fmt::Display for Error {
 		match self {
 			Error::MessageTooLarge => write!(f, "Mix message is too large."),
 			Error::SphinxError(e) => write!(f, "Sphinx packet format error: {:?}.", e),
-			Error::NoPath(p) => write!(
-				f,
-				"No path to {}.",
-				p.map(|p| p.to_string()).unwrap_or_else(|| "unknown peer".into())
-			),
+			Error::NoPath(p) => write!(f, "No path to {:?}.", p),
 			Error::InvalidId(id) => write!(f, "Invalid peer id: {}.", id),
 			Error::InvalidSphinxId(id) =>
 				write!(f, "Invalid peer id in the Sphinx packet: {:?}.", id),

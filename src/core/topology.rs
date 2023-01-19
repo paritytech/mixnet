@@ -20,7 +20,7 @@
 
 //! Mixnet topology interface.
 
-use crate::core::{MixPeerId, MixPublicKey};
+use crate::{core::MixPublicKey, MixnetId};
 
 /// Provide network topology information to the mixnet.
 pub trait Topology: Send + 'static {
@@ -29,8 +29,8 @@ pub trait Topology: Send + 'static {
 	/// E.g. this can select a random validator that can accept the blockchain
 	/// transaction into the block.
 	/// Return `None` if no such selection is possible.
-	fn random_recipient(&self) -> Option<MixPeerId>;
+	fn random_recipient(&self) -> Option<MixnetId>;
 
 	/// For a given peer return a list of peers it is supposed to be connected to.
-	fn neighbors(&self, id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+	fn neighbors(&self, id: &MixnetId) -> Vec<(MixnetId, MixPublicKey)>;
 }
