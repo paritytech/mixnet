@@ -159,7 +159,7 @@ pub fn public_from_ed25519(ed25519_pk: &libp2p_core::identity::ed25519::PublicKe
 
 #[derive(PartialEq, Eq)]
 /// A real traffic message that we need to forward.
-pub(crate) struct QueuedPacket {
+struct QueuedPacket {
 	deadline: Instant,
 	pub data: Packet,
 	recipient: MixPeerId,
