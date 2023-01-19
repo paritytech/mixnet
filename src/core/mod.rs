@@ -148,8 +148,8 @@ pub fn secret_from_ed25519(seed: &[u8]) -> MixSecretKey {
 }
 
 /// Construct a Montgomery curve25519 public key from an Ed25519 public key.
-pub fn public_from_ed25519(ed25519_pk: [u8; 32]) -> MixPublicKey {
-	curve25519_dalek::edwards::CompressedEdwardsY(ed25519_pk)
+pub fn public_from_ed25519(ed25519_pk: &libp2p_core::identity::ed25519::PublicKey) -> MixPublicKey {
+	curve25519_dalek::edwards::CompressedEdwardsY(ed25519_pk.encode())
 		.decompress()
 		.expect("An Ed25519 public key is a valid point by construction.")
 		.to_montgomery()

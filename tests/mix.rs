@@ -104,7 +104,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 	let mut transports = Vec::new();
 	for _ in 0..num_peers {
 		let (peer_id, peer_key, trans) = mk_transport();
-		let peer_key_montgomery = mixnet::public_from_ed25519(peer_key.public().encode());
+		let peer_key_montgomery = mixnet::public_from_ed25519(&peer_key.public());
 		let peer_secret_key = mixnet::secret_from_ed25519(peer_key.secret().as_ref());
 		let Ok(id) = mixnet::to_sphinx_id(&peer_id) else {
 			return
