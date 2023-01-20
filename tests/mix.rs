@@ -20,27 +20,53 @@
 
 use futures::{channel::mpsc, future::Either, prelude::*};
 use libp2p_core::{
-	identity::{self},
+	identity,
 	muxing::StreamMuxerBox,
 	transport::{self, Transport},
-	upgrade, Multiaddr, PeerId,
+	upgrade, Multiaddr, PeerId as NetworkId,
 };
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
-use libp2p_tcp::TcpConfig;
+use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use rand::{prelude::IteratorRandom, RngCore};
 use std::collections::HashMap;
 
-use mixnet::MixPublicKey;
+use mixnet::{MixPeerId, MixPublicKey, SendOptions};
 
 #[derive(Clone)]
 struct TopologyGraph {
-	connections: HashMap<PeerId, Vec<(PeerId, MixPublicKey)>>,
+	connections: HashMap<MixPeerId, Vec<(MixPeerId, MixPublicKey)>>,
+}
+
+#[macro_export]
+macro_rules! log_unwrap {
+	($code:expr) => {
+		match $code {
+			Err(e) => {
+				log::error!(target: "mixnet_test", "Error in unwrap: {:?}", e);
+				panic!("{:?}", e)
+			},
+			Ok(r) => r,
+		}
+	};
+}
+
+#[macro_export]
+macro_rules! log_unwrap_opt {
+	($code:expr) => {
+		match $code {
+			None => {
+				log::error!(target: "mixnet_test", "Unwrap none");
+				panic!("")
+			},
+			Some(r) => r,
+		}
+	};
 }
 
 impl TopologyGraph {
-	fn new_star(nodes: &[(PeerId, MixPublicKey)]) -> Self {
+	fn new_star(nodes: &[(MixPeerId, MixPublicKey)]) -> Self {
 		let mut connections = HashMap::new();
 		for i in 0..nodes.len() {
 			let (node, _node_key) = nodes[i];
@@ -58,16 +84,16 @@ impl TopologyGraph {
 }
 
 impl mixnet::Topology for TopologyGraph {
-	fn neighbors(&self, id: &PeerId) -> Vec<(PeerId, MixPublicKey)> {
+	fn neighbors(&self, id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
 		self.connections.get(id).cloned().unwrap_or_default()
 	}
 
-	fn random_recipient(&self) -> Option<PeerId> {
+	fn random_recipient(&self) -> Option<MixPeerId> {
 		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
 	}
 }
 
-fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
+fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surb: bool) {
 	let _ = env_logger::try_init();
 	let mut source_message = Vec::new();
 	source_message.resize(message_size, 0);
@@ -79,16 +105,20 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 	for _ in 0..num_peers {
 		let (peer_id, peer_key, trans) = mk_transport();
 		let peer_key_montgomery = mixnet::public_from_ed25519(&peer_key.public());
-		let peer_secret_key = mixnet::secret_from_ed25519(&peer_key.secret());
-		nodes.push((peer_id.clone(), peer_key_montgomery.clone()));
+		let peer_secret_key = mixnet::secret_from_ed25519(peer_key.secret().as_ref());
+		let Ok(id) = mixnet::to_mix_peer_id(&peer_id) else {
+			return
+		};
+
+		nodes.push((id, peer_key_montgomery.clone()));
 		secrets.push(peer_secret_key);
-		transports.push(trans);
+		transports.push((peer_id, trans));
 	}
 
 	let topology = TopologyGraph::new_star(&nodes);
 
 	let mut swarms = Vec::new();
-	for (i, trans) in transports.into_iter().enumerate() {
+	for (i, (network_id, trans)) in transports.into_iter().enumerate() {
 		let (id, pub_key) = nodes[i];
 		let cfg = mixnet::Config {
 			secret_key: secrets[i].clone(),
@@ -99,9 +129,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 			timeout_ms: 10000,
 			num_hops: 3,
 			average_message_delay_ms: 50,
+			surb_ttl_ms: 100_000,
+			replay_ttl_ms: 100_000,
 		};
 
-		let mut swarm = Swarm::new(trans, mixnet::Mixnet::new(cfg), id.clone());
+		let mut swarm = Swarm::new(trans, mixnet::MixnetBehaviour::new(cfg), network_id);
 
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		swarm.listen_on(addr).unwrap();
@@ -136,7 +168,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 							tx.send(address.clone()).await.unwrap()
 						}
 						for mut rx in to_wait.drain(..) {
-							swarm.dial_addr(rx.next().await.unwrap()).unwrap();
+							swarm.dial(rx.next().await.unwrap()).unwrap();
 						}
 					},
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Connected(_)) => {
@@ -166,11 +198,15 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 	let (_, mut peer0_swarm) = swarms.remove(index);
 	for np in 1..num_peers {
 		let (recipient, _) = nodes[np];
-		log::trace!(target: "mixnet", "0: Sending {} messages to {}", message_count, recipient);
+		log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
-				.send(recipient.clone(), source_message.to_vec())
+				.send(
+					recipient.clone(),
+					source_message.to_vec(),
+					SendOptions { num_hop: None, with_surb },
+				)
 				.unwrap();
 		}
 	}
@@ -183,7 +219,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 			loop {
 				match swarm.select_next_some().await {
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
-						mixnet::DecodedMessage { peer, message },
+						mixnet::DecodedMessage { peer, message, kind: _ },
 					)) => {
 						received += 1;
 						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
@@ -224,32 +260,39 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 			done_futures.push(Box::pin(spin_future.boxed()));
 		}
 	}
+
+	if with_surb {}
 }
 
-#[test]
-fn message_exchange() {
-	test_messages(5, 10, 1);
-}
-
-#[test]
-fn fragmented_messages() {
-	test_messages(2, 1, 8 * 1024);
-}
-
-fn mk_transport() -> (PeerId, identity::ed25519::Keypair, transport::Boxed<(PeerId, StreamMuxerBox)>)
-{
+fn mk_transport(
+) -> (NetworkId, identity::ed25519::Keypair, transport::Boxed<(NetworkId, StreamMuxerBox)>) {
 	let key = identity::ed25519::Keypair::generate();
 	let id_keys = identity::Keypair::Ed25519(key.clone());
 	let peer_id = id_keys.public().to_peer_id();
-	let noise_keys = noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys).unwrap();
+	let noise_keys =
+		log_unwrap!(noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys));
 	(
 		peer_id,
 		key,
-		TcpConfig::new()
-			.nodelay(true)
+		TcpTransport::new(GenTcpConfig::new().nodelay(true))
 			.upgrade(upgrade::Version::V1)
 			.authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
 			.multiplex(mplex::MplexConfig::default())
 			.boxed(),
 	)
+}
+
+#[test]
+fn message_exchange_no_surb() {
+	test_messages(5, 10, 1, false);
+}
+
+#[test]
+fn message_exchange_with_surb() {
+	test_messages(5, 10, 1, true);
+}
+
+#[test]
+fn fragmented_messages() {
+	test_messages(2, 1, 8 * 1024, false);
 }

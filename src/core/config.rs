@@ -20,10 +20,7 @@
 
 //! Mixnet configuration.
 
-use libp2p_core::identity::ed25519::Keypair;
-
-use super::MixPeerId;
-use crate::{public_from_ed25519, secret_from_ed25519, MixPublicKey, MixSecretKey, Topology};
+use crate::{MixPeerId, MixPublicKey, MixSecretKey, Topology};
 
 /// Configuration data for the mixnet protocol.
 pub struct Config {
@@ -46,19 +43,34 @@ pub struct Config {
 	pub num_hops: u32,
 	/// Average number of seconds to delay each each message fragment at each hop.
 	pub average_message_delay_ms: u32,
+	/// Retention time until we drop surb query.
+	pub surb_ttl_ms: u64,
+	/// Retention time until we drop surb replay protection.
+	pub replay_ttl_ms: u64,
 }
 
 impl Config {
-	pub fn new_with_ed25519_keypair(kp: &Keypair, id: MixPeerId) -> Self {
+	pub fn new(id: MixPeerId) -> Self {
+		let (public_key, secret_key) = super::generate_new_keys();
+		Self::new_with_keys(id, public_key, secret_key)
+	}
+
+	pub fn new_with_keys(
+		id: MixPeerId,
+		public_key: MixPublicKey,
+		secret_key: MixSecretKey,
+	) -> Self {
 		Self {
-			secret_key: secret_from_ed25519(&kp.secret()),
-			public_key: public_from_ed25519(&kp.public()),
+			secret_key,
+			public_key,
 			topology: None,
 			local_id: id,
 			target_bits_per_second: 128 * 1024,
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
+			surb_ttl_ms: 100_000,
+			replay_ttl_ms: 100_000,
 		}
 	}
 

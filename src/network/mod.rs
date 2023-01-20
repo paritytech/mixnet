@@ -18,21 +18,21 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! The [`Mixnet`] struct implements the [`NetworkBehaviour`] trait. When used with a
+//! The [`MixnetBehaviour`] struct implements the [`NetworkBehaviour`] trait. When used with a
 //! [`libp2p_swarm::Swarm`], it will handle the mixnet protocol.
 
 mod handler;
 mod protocol;
 
 use crate::{
-	core::{self, Config, MixEvent, PUBLIC_KEY_LEN},
-	MixPublicKey,
+	core::{to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
+	DecodedMessage, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
-use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
+use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr};
 use libp2p_swarm::{
-	IntoProtocolsHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
+	IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
 use std::{
 	collections::{HashMap, VecDeque},
@@ -56,21 +56,21 @@ impl Connection {
 }
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
-pub struct Mixnet {
-	connected: HashMap<PeerId, Connection>,
-	handshakes: HashMap<PeerId, Connection>,
-	mixnet: core::Mixnet,
+pub struct MixnetBehaviour {
+	connected: HashMap<NetworkPeerId, Connection>,
+	handshakes: HashMap<NetworkPeerId, Connection>,
+	mixnet: Mixnet,
 	events: VecDeque<NetworkEvent>,
-	handshake_queue: VecDeque<PeerId>,
+	handshake_queue: VecDeque<NetworkPeerId>,
 	public_key: MixPublicKey,
 }
 
-impl Mixnet {
+impl MixnetBehaviour {
 	/// Creates a new network behaviour with the given configuration.
 	pub fn new(config: Config) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
-			mixnet: core::Mixnet::new(config),
+			mixnet: Mixnet::new(config),
 			connected: Default::default(),
 			handshakes: Default::default(),
 			events: Default::default(),
@@ -80,8 +80,13 @@ impl Mixnet {
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
 	/// multiple hops with random delays to the specified recipient.
-	pub fn send(&mut self, to: PeerId, message: Vec<u8>) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_message(Some(to), message)
+	pub fn send(
+		&mut self,
+		to: MixPeerId,
+		message: Vec<u8>,
+		send_options: SendOptions,
+	) -> std::result::Result<(), Error> {
+		self.mixnet.register_message(Some(to), message, send_options)
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
@@ -89,8 +94,19 @@ impl Mixnet {
 	pub fn send_to_random_recipient(
 		&mut self,
 		message: Vec<u8>,
-	) -> std::result::Result<(), core::Error> {
-		self.mixnet.register_message(None, message)
+		send_options: SendOptions,
+	) -> std::result::Result<(), Error> {
+		self.mixnet.register_message(None, message, send_options)
+	}
+
+	/// Reply with a surb
+	/// multiple hops with random delays to the specified recipient.
+	pub fn reply(
+		&mut self,
+		message: Vec<u8>,
+		surbs: crate::SurbPayload,
+	) -> std::result::Result<(), Error> {
+		self.mixnet.register_surb_reply(message, surbs)
 	}
 
 	fn handshake_message(&self) -> Vec<u8> {
@@ -102,32 +118,24 @@ impl Mixnet {
 #[derive(Debug)]
 pub enum NetworkEvent {
 	/// A new peer has connected over the mixnet protocol.
-	Connected(PeerId),
+	Connected(NetworkPeerId),
 	/// A peer has disconnected the mixnet protocol.
-	Disconnected(PeerId),
+	Disconnected(NetworkPeerId),
 	/// A message has reached us.
 	Message(DecodedMessage),
+	/// Can ignore.
+	None,
 }
 
-/// A full mixnet message that has reached its recipient.
-#[derive(Debug)]
-pub struct DecodedMessage {
-	/// The peer ID of the last hop that we have received the message from. This is not the message
-	/// origin.
-	pub peer: PeerId,
-	/// Message data.
-	pub message: Vec<u8>,
-}
-
-impl NetworkBehaviour for Mixnet {
-	type ProtocolsHandler = Handler;
+impl NetworkBehaviour for MixnetBehaviour {
+	type ConnectionHandler = Handler;
 	type OutEvent = NetworkEvent;
 
-	fn new_handler(&mut self) -> Self::ProtocolsHandler {
+	fn new_handler(&mut self) -> Self::ConnectionHandler {
 		Handler::new(handler::Config::new())
 	}
 
-	fn inject_event(&mut self, peer_id: PeerId, _: ConnectionId, event: Result) {
+	fn inject_event(&mut self, peer_id: NetworkPeerId, _: ConnectionId, event: Result) {
 		match event {
 			Ok(Message(message)) => {
 				if let Some(mut connection) = self.handshakes.remove(&peer_id) {
@@ -141,18 +149,26 @@ impl NetworkBehaviour for Mixnet {
 					let pub_key = MixPublicKey::from(pk);
 					log::trace!(target: "mixnet", "Handshake message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					self.connected.insert(peer_id, connection);
-					self.mixnet.add_connected_peer(peer_id, pub_key);
-					self.events.push_back(NetworkEvent::Connected(peer_id));
+					if let Ok(id) = to_mix_peer_id(&peer_id) {
+						self.connected.insert(peer_id, connection);
+						self.mixnet.add_connected_peer(id, pub_key);
+						self.events.push_back(NetworkEvent::Connected(peer_id));
+					}
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					if let Ok(Some(message)) = self.mixnet.import_message(peer_id, message) {
-						self.events.push_front(NetworkEvent::Message(DecodedMessage {
-							peer: peer_id,
-							message,
-						}))
-					}
+					let Ok(id) = to_mix_peer_id(&peer_id) else {
+						return
+					};
+					let message = Packet::from_vec(message);
+					let Ok(Some((message, kind))) = self.mixnet.import_message(id, message) else {
+						return
+					};
+					self.events.push_front(NetworkEvent::Message(DecodedMessage {
+						peer: id,
+						message,
+						kind,
+					}))
 				}
 			},
 			Err(e) => {
@@ -163,10 +179,11 @@ impl NetworkBehaviour for Mixnet {
 
 	fn inject_connection_established(
 		&mut self,
-		peer_id: &PeerId,
-		conn: &ConnectionId,
+		peer_id: &NetworkPeerId,
+		con_id: &ConnectionId,
 		endpoint: &ConnectedPoint,
-		_errors: Option<&Vec<Multiaddr>>,
+		_: Option<&Vec<Multiaddr>>,
+		_: usize,
 	) {
 		if self.handshakes.contains_key(peer_id) || self.connected.contains_key(peer_id) {
 			log::trace!(target: "mixnet", "Duplicate connection: {}", peer_id);
@@ -174,41 +191,36 @@ impl NetworkBehaviour for Mixnet {
 		}
 		log::trace!(target: "mixnet", "Connected: {}", peer_id);
 		let address = match endpoint {
-			ConnectedPoint::Dialer { address } => Some(address.clone()),
+			ConnectedPoint::Dialer { address, .. } => Some(address.clone()),
 			ConnectedPoint::Listener { .. } => None,
 		};
-		//log::trace!(target: "mixnet", "Connected: {}", peer_id);
-		if self.handshakes.insert(*peer_id, Connection::new(*conn, address)).is_none() {
+		if self.handshakes.insert(*peer_id, Connection::new(*con_id, address)).is_none() {
 			self.handshake_queue.push_back(peer_id.clone());
 		}
 	}
 
 	fn inject_connection_closed(
 		&mut self,
-		peer_id: &PeerId,
-		_conn: &ConnectionId,
+		peer_id: &NetworkPeerId,
+		_: &ConnectionId,
 		_: &ConnectedPoint,
-		_: <Self::ProtocolsHandler as IntoProtocolsHandler>::Handler,
+		_: <Self::ConnectionHandler as IntoConnectionHandler>::Handler,
+		_: usize,
 	) {
-		self.handshakes.remove(peer_id);
-		self.connected.remove(peer_id);
-		self.mixnet.remove_connected_peer(peer_id);
-	}
-
-	fn inject_disconnected(&mut self, peer_id: &PeerId) {
 		log::trace!(target: "mixnet", "Disconnected: {}", peer_id);
 		self.handshakes.remove(peer_id);
-		self.mixnet.remove_connected_peer(peer_id);
-		if self.connected.remove(peer_id).is_some() {
-			self.events.push_back(NetworkEvent::Disconnected(peer_id.clone()));
-		}
+		self.connected.remove(peer_id);
+		let Ok(id) = to_mix_peer_id(peer_id) else {
+			return
+		};
+		self.mixnet.remove_connected_peer(&id);
 	}
 
 	fn poll(
 		&mut self,
 		cx: &mut Context<'_>,
 		_: &mut impl PollParameters,
-	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ProtocolsHandler>> {
+	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
 		if let Some(e) = self.events.pop_back() {
 			return Poll::Ready(NetworkBehaviourAction::GenerateEvent(e))
 		}
@@ -223,17 +235,23 @@ impl NetworkBehaviour for Mixnet {
 			}
 		}
 
-		if let Poll::Ready(MixEvent::SendMessage((recipient, data))) = self.mixnet.poll(cx) {
-			if let Some(connection) = self.connected.get(&recipient) {
-				return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-					peer_id: recipient,
-					handler: NotifyHandler::One(connection.id),
-					event: Message(data),
-				})
-			} else {
-				log::warn!(target: "mixnet", "Message for offline peer {}", recipient);
-			}
+		match self.mixnet.poll(cx) {
+			Poll::Ready(MixEvent::SendMessage((recipient, data))) => {
+				let Ok(id) = crate::core::to_network_peer_id(recipient) else {
+					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::None))
+				};
+				if let Some(connection) = self.connected.get(&id) {
+					return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+						peer_id: id,
+						handler: NotifyHandler::One(connection.id),
+						event: Message(data),
+					})
+				} else {
+					log::warn!(target: "mixnet", "Message for offline peer {:?}", recipient);
+					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::None))
+				}
+			},
+			Poll::Pending => Poll::Pending,
 		}
-		Poll::Pending
 	}
 }

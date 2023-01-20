@@ -20,7 +20,7 @@
 
 //! Mixnet topology interface.
 
-use crate::core::{MixPeerId, MixPublicKey};
+use crate::{core::MixPublicKey, MixPeerId};
 
 /// Provide network topology information to the mixnet.
 pub trait Topology: Send + 'static {

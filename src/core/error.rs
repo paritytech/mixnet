@@ -18,8 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use crate::core::sphinx::Error as SphinxError;
 /// Error handling
-use crate::core::{sphinx::Error as SphinxError, MixPeerId, SphinxPeerId};
+use crate::{MixPeerId, NetworkPeerId};
 use std::fmt;
 
 /// Mixnet generic error.
@@ -32,13 +33,15 @@ pub enum Error {
 	/// No path to give peer or no random peer to select from.
 	NoPath(Option<MixPeerId>),
 	/// Invalid network id.
-	InvalidId(MixPeerId),
+	InvalidId(NetworkPeerId),
 	/// Invalid id in the Sphinx packet.
-	InvalidSphinxId(SphinxPeerId),
+	InvalidSphinxId(MixPeerId),
 	/// Invalid message fragment format.
 	BadFragment,
 	/// Packet queue is full.
 	QueueFull,
+	/// Surb reply not expected.
+	UnexpectedSurbReply,
 }
 
 impl fmt::Display for Error {
@@ -46,16 +49,13 @@ impl fmt::Display for Error {
 		match self {
 			Error::MessageTooLarge => write!(f, "Mix message is too large."),
 			Error::SphinxError(e) => write!(f, "Sphinx packet format error: {:?}.", e),
-			Error::NoPath(p) => write!(
-				f,
-				"No path to {}.",
-				p.map(|p| p.to_string()).unwrap_or_else(|| "unknown peer".into())
-			),
+			Error::NoPath(p) => write!(f, "No path to {:?}.", p),
 			Error::InvalidId(id) => write!(f, "Invalid peer id: {}.", id),
 			Error::InvalidSphinxId(id) =>
 				write!(f, "Invalid peer id in the Sphinx packet: {:?}.", id),
 			Error::BadFragment => write!(f, "Bad message fragment."),
 			Error::QueueFull => write!(f, "Packet queue is full."),
+			Error::UnexpectedSurbReply => write!(f, "Surb reply received but not expected."),
 		}
 	}
 }
