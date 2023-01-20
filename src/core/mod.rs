@@ -32,7 +32,7 @@ use crate::{
 		fragment::MessageCollection,
 		sphinx::{SentSurbInfo, SprpKey},
 	},
-	MessageType, MixPeerId, NetworkId, SendOptions,
+	MessageType, MixPeerId, NetworkPeerId, SendOptions,
 };
 pub use error::Error;
 use futures::FutureExt;
@@ -101,7 +101,7 @@ pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
 }
 
-pub fn to_mix_peer_id(id: &NetworkId) -> Result<MixPeerId, Error> {
+pub fn to_mix_peer_id(id: &NetworkPeerId) -> Result<MixPeerId, Error> {
 	let hash = id.as_ref();
 	match libp2p_core::multihash::Code::try_from(hash.code()) {
 		Ok(libp2p_core::multihash::Code::Identity) => {
@@ -116,11 +116,11 @@ pub fn to_mix_peer_id(id: &NetworkId) -> Result<MixPeerId, Error> {
 	}
 }
 
-pub fn to_libp2p_id(id: MixPeerId) -> Result<NetworkId, Error> {
+pub fn to_network_peer_id(id: MixPeerId) -> Result<NetworkPeerId, Error> {
 	let encoded = libp2p_core::identity::ed25519::PublicKey::decode(&id)
 		.map_err(|_e| Error::InvalidSphinxId(id.clone()))?;
 	let key = libp2p_core::identity::PublicKey::Ed25519(encoded);
-	Ok(NetworkId::from_public_key(&key))
+	Ok(NetworkPeerId::from_public_key(&key))
 }
 
 fn exp_delay<R: Rng + CryptoRng + ?Sized>(rng: &mut R, target: Duration) -> Duration {
@@ -184,7 +184,7 @@ pub struct Mixnet {
 	// Real messages queue, sorted by deadline.
 	packet_queue: BinaryHeap<QueuedPacket>,
 	// Message waiting for surb.
-	surb: SurbsCollection,
+	pending_surbs: SurbsCollection,
 	// Received message filter.
 	replay_filter: ReplayFilter,
 	// Timer for the next poll for messages.
@@ -201,12 +201,12 @@ pub struct Mixnet {
 pub struct ReplayTag(pub [u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
 
 pub struct SurbsCollection {
-	pending: MixnetCollection<ReplayTag, SentSurbInfo>,
+	pending: TimedHashMap<ReplayTag, SentSurbInfo>,
 }
 
 impl SurbsCollection {
 	pub fn new(config: &Config) -> Self {
-		SurbsCollection { pending: MixnetCollection::new(config.surb_ttl_ms) }
+		SurbsCollection { pending: TimedHashMap::new(config.surb_ttl_ms) }
 	}
 
 	pub fn insert(&mut self, surb_id: ReplayTag, surb: SentSurbInfo, now: Instant) {
@@ -226,12 +226,12 @@ impl SurbsCollection {
 /// TODO also lru over a max number of elements.
 /// TODO eventually bloom filter and disk backend.
 pub struct ReplayFilter {
-	seen: MixnetCollection<ReplayTag, ()>,
+	seen: TimedHashMap<ReplayTag, ()>,
 }
 
 impl ReplayFilter {
 	pub fn new(config: &Config) -> Self {
-		ReplayFilter { seen: MixnetCollection::new(config.replay_ttl_ms) }
+		ReplayFilter { seen: TimedHashMap::new(config.replay_ttl_ms) }
 	}
 
 	pub fn insert(&mut self, tag: ReplayTag, now: Instant) {
@@ -248,7 +248,7 @@ impl ReplayFilter {
 }
 
 // TODO this could be optimize, but here simple size inefficient implementation
-struct MixnetCollection<K, V> {
+struct TimedHashMap<K, V> {
 	messages: HashMap<K, (V, Wrapping<usize>)>,
 	expiration: Duration,
 	exp_deque: VecDeque<(Instant, Option<K>)>,
@@ -257,7 +257,7 @@ struct MixnetCollection<K, V> {
 
 type Entry<'a, K, V> = std::collections::hash_map::Entry<'a, K, (V, Wrapping<usize>)>;
 
-impl<K, V> MixnetCollection<K, V>
+impl<K, V> TimedHashMap<K, V>
 where
 	K: Eq + std::hash::Hash + Clone,
 {
@@ -364,7 +364,7 @@ impl Mixnet {
 	/// Create a new instance with given config.
 	pub fn new(config: Config) -> Self {
 		Mixnet {
-			surb: SurbsCollection::new(&config),
+			pending_surbs: SurbsCollection::new(&config),
 			replay_filter: ReplayFilter::new(&config),
 			topology: config.topology,
 			num_hops: config.num_hops as usize,
@@ -391,11 +391,8 @@ impl Mixnet {
 			return Err(Error::QueueFull)
 		}
 		let deadline = Instant::now() + delay;
-		self.packet_queue.push(QueuedPacket {
-			deadline,
-			data: Packet::from_vec(data),
-			recipient,
-		}); // TODO use right error
+		self.packet_queue
+			.push(QueuedPacket { deadline, data: Packet::from_vec(data), recipient }); // TODO use right error
 		Ok(())
 	}
 
@@ -463,7 +460,8 @@ impl Mixnet {
 					.map_err(|e| Error::SphinxError(e))?;
 			if let Some(HeaderInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
 				let persistance = SentSurbInfo { keys, recipient: *paths[n].last().unwrap() };
-				self.surb.insert(surb_id, persistance.into(), std::time::Instant::now());
+				self.pending_surbs
+					.insert(surb_id, persistance.into(), std::time::Instant::now());
 			}
 
 			packets.push((first_id, packet));
@@ -476,7 +474,11 @@ impl Mixnet {
 		Ok(())
 	}
 
-	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbPayload) -> Result<(), Error> {
+	pub fn register_surb_reply(
+		&mut self,
+		message: Vec<u8>,
+		surb: SurbPayload,
+	) -> Result<(), Error> {
 		let SurbPayload { first_node, first_key, header } = surb;
 		let mut rng = rand::thread_rng();
 
@@ -507,7 +509,7 @@ impl Mixnet {
 		let result = sphinx::unwrap_packet(
 			&self.secret,
 			message,
-			&mut self.surb,
+			&mut self.pending_surbs,
 			&mut self.replay_filter,
 			next_delay,
 		);
@@ -654,7 +656,7 @@ impl Mixnet {
 
 	fn cleanup(&mut self, now: Instant) {
 		self.fragments.cleanup(now);
-		self.surb.cleanup(now);
+		self.pending_surbs.cleanup(now);
 		self.replay_filter.cleanup(now);
 	}
 

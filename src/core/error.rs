@@ -20,7 +20,7 @@
 
 use crate::core::sphinx::Error as SphinxError;
 /// Error handling
-use crate::{MixPeerId, NetworkId};
+use crate::{MixPeerId, NetworkPeerId};
 use std::fmt;
 
 /// Mixnet generic error.
@@ -33,7 +33,7 @@ pub enum Error {
 	/// No path to give peer or no random peer to select from.
 	NoPath(Option<MixPeerId>),
 	/// Invalid network id.
-	InvalidId(NetworkId),
+	InvalidId(NetworkPeerId),
 	/// Invalid id in the Sphinx packet.
 	InvalidSphinxId(MixPeerId),
 	/// Invalid message fragment format.

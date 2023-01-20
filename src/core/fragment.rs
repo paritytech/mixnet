@@ -20,7 +20,7 @@
 
 //! Mix message fragment management
 
-use super::{error::Error, MixnetCollection};
+use super::{error::Error, TimedHashMap};
 use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType, SurbPayload};
 use rand::Rng;
 use static_assertions::const_assert;
@@ -232,12 +232,12 @@ impl IncompleteMessage {
 
 /// Manages partial message fragments.
 pub struct MessageCollection {
-	messages: MixnetCollection<MessageHash, IncompleteMessage>,
+	messages: TimedHashMap<MessageHash, IncompleteMessage>,
 }
 
 impl MessageCollection {
 	pub fn new() -> Self {
-		Self { messages: MixnetCollection::new(FRAGMENT_EXPIRATION_MS) }
+		Self { messages: TimedHashMap::new(FRAGMENT_EXPIRATION_MS) }
 	}
 
 	/// Insert a new new message fragment in the collection. If the fragment completes some message,

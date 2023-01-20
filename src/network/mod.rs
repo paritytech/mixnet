@@ -26,7 +26,7 @@ mod protocol;
 
 use crate::{
 	core::{to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
-	DecodedMessage, MixPeerId, MixPublicKey, NetworkId, SendOptions,
+	DecodedMessage, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
@@ -57,11 +57,11 @@ impl Connection {
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct MixnetBehaviour {
-	connected: HashMap<NetworkId, Connection>,
-	handshakes: HashMap<NetworkId, Connection>,
+	connected: HashMap<NetworkPeerId, Connection>,
+	handshakes: HashMap<NetworkPeerId, Connection>,
 	mixnet: Mixnet,
 	events: VecDeque<NetworkEvent>,
-	handshake_queue: VecDeque<NetworkId>,
+	handshake_queue: VecDeque<NetworkPeerId>,
 	public_key: MixPublicKey,
 }
 
@@ -106,7 +106,7 @@ impl MixnetBehaviour {
 		message: Vec<u8>,
 		surbs: crate::SurbPayload,
 	) -> std::result::Result<(), Error> {
-		self.mixnet.register_surb(message, surbs)
+		self.mixnet.register_surb_reply(message, surbs)
 	}
 
 	fn handshake_message(&self) -> Vec<u8> {
@@ -118,9 +118,9 @@ impl MixnetBehaviour {
 #[derive(Debug)]
 pub enum NetworkEvent {
 	/// A new peer has connected over the mixnet protocol.
-	Connected(NetworkId),
+	Connected(NetworkPeerId),
 	/// A peer has disconnected the mixnet protocol.
-	Disconnected(NetworkId),
+	Disconnected(NetworkPeerId),
 	/// A message has reached us.
 	Message(DecodedMessage),
 	/// Can ignore.
@@ -135,7 +135,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		Handler::new(handler::Config::new())
 	}
 
-	fn inject_event(&mut self, peer_id: NetworkId, _: ConnectionId, event: Result) {
+	fn inject_event(&mut self, peer_id: NetworkPeerId, _: ConnectionId, event: Result) {
 		match event {
 			Ok(Message(message)) => {
 				if let Some(mut connection) = self.handshakes.remove(&peer_id) {
@@ -179,7 +179,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 	fn inject_connection_established(
 		&mut self,
-		peer_id: &NetworkId,
+		peer_id: &NetworkPeerId,
 		con_id: &ConnectionId,
 		endpoint: &ConnectedPoint,
 		_: Option<&Vec<Multiaddr>>,
@@ -201,7 +201,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 	fn inject_connection_closed(
 		&mut self,
-		peer_id: &NetworkId,
+		peer_id: &NetworkPeerId,
 		_: &ConnectionId,
 		_: &ConnectedPoint,
 		_: <Self::ConnectionHandler as IntoConnectionHandler>::Handler,
@@ -237,7 +237,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 
 		match self.mixnet.poll(cx) {
 			Poll::Ready(MixEvent::SendMessage((recipient, data))) => {
-				let Ok(id) = crate::core::to_libp2p_id(recipient) else {
+				let Ok(id) = crate::core::to_network_peer_id(recipient) else {
 					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::None))
 				};
 				if let Some(connection) = self.connected.get(&id) {
