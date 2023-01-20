@@ -31,7 +31,6 @@ pub struct SessionTopology {
 }
 
 impl SessionTopology {
-
 	pub fn new(nodes: Vec<(MixPeerId, MixPublicKey, Vec<MixPeerAddress>)>) -> Self {
 		Self { nodes }
 	}

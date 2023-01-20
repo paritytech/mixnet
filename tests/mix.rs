@@ -62,7 +62,6 @@ macro_rules! log_unwrap_opt {
 
 fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surb: bool) {
 	let _ = env_logger::try_init();
-
 	let mut source_message = Vec::new();
 	source_message.resize(message_size, 0);
 	rand::thread_rng().fill_bytes(&mut source_message);
