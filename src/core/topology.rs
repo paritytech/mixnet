@@ -20,17 +20,59 @@
 
 //! Mixnet topology interface.
 
-use crate::{core::MixPublicKey, MixPeerId};
+use crate::{core::MixPublicKey, MixPeerId, core::MixPeerAddress};
+use rand::{prelude::{SliceRandom, IteratorRandom}, CryptoRng, Rng};
 
-/// Provide network topology information to the mixnet.
-pub trait Topology: Send + 'static {
-	/// Select a random recipient for the message to be delivered. This is
-	/// called when the user sends the message with no recipient specified.
-	/// E.g. this can select a random validator that can accept the blockchain
-	/// transaction into the block.
-	/// Return `None` if no such selection is possible.
-	fn random_recipient(&self) -> Option<MixPeerId>;
+const NUM_GATEWAYS: usize = 5;
 
-	/// For a given peer return a list of peers it is supposed to be connected to.
-	fn neighbors(&self, id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)>;
+/// Contains network information. Current implementation assumes that each node
+/// in the set is connected to every other node.
+#[derive(Default)]
+pub struct SessionTopology {
+	nodes: Vec<(MixPeerId, MixPublicKey, Vec<MixPeerAddress>)>,
+}
+
+impl SessionTopology {
+	pub fn new(nodes: Vec<(MixPeerId, MixPublicKey, Vec<MixPeerAddress>)>) -> Self {
+		Self { nodes }
+	}
+
+	pub fn random_recipient<R: Rng + CryptoRng + ?Sized>(&self, rng: &mut R) -> Option<MixPeerId> {
+		self.nodes.iter().choose(rng).map(|(id, _, _)| id.clone())
+	}
+
+	/// If the node isn't part of the topology this returns a set of gateway addresses to connect to.
+	pub fn gateways<R: Rng + CryptoRng + ?Sized>(&self, rng: &mut R) -> Vec<MixPeerAddress> {
+		self.nodes
+			.as_slice()
+			.choose_multiple(rng, NUM_GATEWAYS)
+			.map(|(_, _, addrs)| addrs.clone())
+			.flatten()
+			.collect()
+	}
+
+	pub fn random_path_to<R: Rng + CryptoRng + ?Sized>(
+		&self,
+		rng: &mut R,
+		start: &MixPeerId,
+		recipient: &MixPeerId,
+		num_hops: usize,
+	) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
+		let (_, start_pk, _) = self.nodes.iter().find(|(id, _, _)| id == start)?;
+		let (_, last_pk, _) = self.nodes.iter().find(|(id, _, _)| id == recipient)?;
+
+		let mut result = vec![];
+		let mut prev = *start;
+		let mut next = *start;
+		let mut next_pk = *start_pk;
+		for i in 0 .. num_hops - 1 {
+			while next == prev || (i == num_hops - 2 && next == *recipient) {
+				(next, next_pk, _)= *self.nodes.as_slice().choose(rng)?;
+			}
+			result.push((next, next_pk));
+			prev = next;
+		}
+		result.push((recipient.clone(), last_pk.clone()));
+		Some(result)
+	}
 }

@@ -37,7 +37,7 @@ use crate::{
 pub use error::Error;
 use futures::FutureExt;
 use futures_timer::Delay;
-use rand::{prelude::IteratorRandom, CryptoRng, Rng};
+use rand::{CryptoRng, Rng};
 use rand_distr::Distribution;
 pub use sphinx::Error as SphinxError;
 use sphinx::Unwrapped;
@@ -47,10 +47,15 @@ use std::{
 	num::Wrapping,
 	task::{Context, Poll},
 	time::{Duration, Instant},
+	sync::Arc,
 };
 
-pub use crate::core::topology::Topology;
+pub use topology::SessionTopology;
 
+pub type Surb = Box<SurbPayload>;
+
+/// Mixnet peer network address.
+pub type MixPeerAddress = libp2p_core::Multiaddr;
 /// Mixnet peer DH static public key.
 pub type MixPublicKey = sphinx::PublicKey;
 /// Mixnet peer DH static secret key.
@@ -96,6 +101,11 @@ impl Packet {
 		self.0.as_mut()
 	}
 }
+
+pub type SessionIndex = u32;
+
+// TODO: public key store mod
+pub struct PublicKeyStore;
 
 pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
@@ -174,7 +184,7 @@ impl std::cmp::Ord for QueuedPacket {
 
 /// Mixnet core. Mixes messages, tracks fragments and delays.
 pub struct Mixnet {
-	topology: Option<Box<dyn Topology>>,
+	topology: SessionTopology,
 	num_hops: usize,
 	secret: MixSecretKey,
 	local_id: MixPeerId,
@@ -362,11 +372,11 @@ pub fn generate_new_keys() -> (MixPublicKey, MixSecretKey) {
 
 impl Mixnet {
 	/// Create a new instance with given config.
-	pub fn new(config: Config) -> Self {
+	pub fn new(config: Config, _keystore: Arc<PublicKeyStore>) -> Self {
 		Mixnet {
 			pending_surbs: SurbsCollection::new(&config),
 			replay_filter: ReplayFilter::new(&config),
-			topology: config.topology,
+			topology: Default::default(),
 			num_hops: config.num_hops as usize,
 			secret: config.secret_key,
 			local_id: config.local_id,
@@ -379,6 +389,19 @@ impl Mixnet {
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
 		}
+	}
+
+	pub fn gateways(&self) -> Vec<MixPeerAddress> {
+		let mut rng = rand::thread_rng();
+		self.topology.gateways(&mut rng)
+	}
+
+	pub fn set_session_topolgy(&mut self, _index: SessionIndex, topology: SessionTopology) {
+		self.topology = topology;
+	}
+
+	pub fn start_session(&mut self, _index: SessionIndex) {
+		unimplemented!()
 	}
 
 	fn queue_packet(
@@ -410,12 +433,7 @@ impl Mixnet {
 		let maybe_peer_id = if let Some(id) = peer_id {
 			Some(id)
 		} else {
-			if let Some(t) = self.topology.as_ref() {
-				t.random_recipient()
-			} else {
-				// Select a random connected peer
-				self.connected_peers.keys().choose(&mut rng).cloned()
-			}
+			self.topology.random_recipient(&mut rng)
 		};
 
 		let peer_id =
@@ -477,9 +495,9 @@ impl Mixnet {
 	pub fn register_surb_reply(
 		&mut self,
 		message: Vec<u8>,
-		surb: SurbPayload,
+		surb: Surb,
 	) -> Result<(), Error> {
-		let SurbPayload { first_node, first_key, header } = surb;
+		let SurbPayload { first_node, first_key, header } = *surb;
 		let mut rng = rand::thread_rng();
 
 		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
@@ -550,7 +568,7 @@ impl Mixnet {
 					log::debug!(target: "mixnet", "Imported message from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
-					log::warn!(target: "mixnet", "Inserted fragment message from {:?}, stored surb enveloppe.", peer_id);
+					log::warn!(target: "mixnet", "Inserted fragment message from {:?}, stored surb envelope.", peer_id);
 				}
 			},
 		}
@@ -585,30 +603,13 @@ impl Mixnet {
 		num_hops: &Option<usize>,
 		count: usize,
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		// Generate all possible paths and select one at random
-		let mut partial = Vec::new();
-		let mut paths = Vec::new();
-
-		if self.topology.is_none() {
-			// No topology is defined. Check if direct connection is possible.
-			match self.connected_peers.get(recipient) {
-				Some(key) if count == 1 => return Ok(vec![vec![(recipient.clone(), key.clone())]]),
-				_ => return Err(Error::NoPath(Some(recipient.clone()))),
-			}
-		}
-
-		let num_hops = num_hops.clone().unwrap_or(self.num_hops);
-		self.gen_paths(&mut partial, &mut paths, &start, recipient, num_hops);
-
-		if paths.is_empty() {
-			return Err(Error::NoPath(Some(recipient.clone())))
-		}
-
 		let mut rng = rand::thread_rng();
 		let mut result = Vec::new();
-		while result.len() < count {
-			let n: usize = rng.gen_range(0..paths.len());
-			result.push(paths[n].clone());
+		for _ in 0 .. count {
+			match self.topology.random_path_to(&mut rng, &start, recipient, num_hops.unwrap_or(self.num_hops)) {
+				Some(path) => result.push(path),
+				None => return Err(Error::NoPath(Some(recipient.clone()))),
+			}
 		}
 		Ok(result)
 	}
@@ -624,34 +625,6 @@ impl Mixnet {
 		let mut rng = rand::thread_rng();
 		let n: usize = rng.gen_range(0..neighbors.len());
 		Some(neighbors[n].clone())
-	}
-
-	fn gen_paths(
-		&self,
-		partial: &mut Vec<(MixPeerId, MixPublicKey)>,
-		paths: &mut Vec<Vec<(MixPeerId, MixPublicKey)>>,
-		last: &MixPeerId,
-		target: &MixPeerId,
-		num_hops: usize,
-	) {
-		let neighbors = self.topology.as_ref().map(|t| t.neighbors(&last)).unwrap_or_default();
-		for (id, key) in neighbors {
-			if partial.len() < num_hops - 1 {
-				partial.push((id.clone(), key));
-				self.gen_paths(partial, paths, &id, target, num_hops);
-				partial.pop();
-			}
-
-			if partial.len() == num_hops - 1 {
-				// About to complete path. Only select paths that end up at target.
-				if &id != target {
-					continue
-				}
-				partial.push((id, key));
-				paths.push(partial.clone());
-				partial.pop();
-			}
-		}
 	}
 
 	fn cleanup(&mut self, now: Instant) {
