@@ -23,7 +23,7 @@ mod network;
 
 pub use crate::core::{
 	public_from_ed25519, secret_from_ed25519, to_mix_peer_id, Config, Error, MixPublicKey,
-	MixSecretKey, SurbPayload, Topology,
+	MixSecretKey, SurbPayload, SessionTopology,
 };
 pub use network::{MixnetBehaviour, NetworkEvent};
 

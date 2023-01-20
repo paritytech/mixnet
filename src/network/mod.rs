@@ -25,8 +25,11 @@ mod handler;
 mod protocol;
 
 use crate::{
-	core::{to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
-	DecodedMessage, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions,
+	core::{
+		to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PublicKeyStore,
+		Surb, MixPeerAddress, SessionIndex, PUBLIC_KEY_LEN
+	},
+	DecodedMessage, MixPublicKey, NetworkPeerId, SendOptions, SessionTopology,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
@@ -38,6 +41,7 @@ use std::{
 	collections::{HashMap, VecDeque},
 	task::{Context, Poll},
 	time::Duration,
+	sync::Arc,
 };
 
 type Result = std::result::Result<Message, Failure>;
@@ -67,26 +71,15 @@ pub struct MixnetBehaviour {
 
 impl MixnetBehaviour {
 	/// Creates a new network behaviour with the given configuration.
-	pub fn new(config: Config) -> Self {
+	pub fn new(config: Config, keystore: Arc<PublicKeyStore>) -> Self {
 		Self {
 			public_key: config.public_key.clone(),
-			mixnet: Mixnet::new(config),
+			mixnet: Mixnet::new(config, keystore),
 			connected: Default::default(),
 			handshakes: Default::default(),
 			events: Default::default(),
 			handshake_queue: Default::default(),
 		}
-	}
-
-	/// Send a new message to the mix network. The message will be split, chunked and sent over
-	/// multiple hops with random delays to the specified recipient.
-	pub fn send(
-		&mut self,
-		to: MixPeerId,
-		message: Vec<u8>,
-		send_options: SendOptions,
-	) -> std::result::Result<(), Error> {
-		self.mixnet.register_message(Some(to), message, send_options)
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over
@@ -109,6 +102,26 @@ impl MixnetBehaviour {
 		self.mixnet.register_surb_reply(message, surbs)
 	}
 
+	/// Send a reply to a previously received message.
+	pub fn send_reply(_surb: Surb, _payload: Vec<u8>) {
+		unimplemented!()
+	}
+
+	/// If the node isn't part of the topology this returns a set of gateway addresses to connect to.
+	pub fn gateways(&self) -> Vec<MixPeerAddress> {
+		self.mixnet.gateways()
+	}
+
+	/// Set network information for a future session.
+	pub fn set_session_topolgy(&mut self, index: SessionIndex, topology: SessionTopology) {
+		self.mixnet.set_session_topolgy(index, topology);
+	}
+
+	/// Start a previously configured session.
+	pub fn start_session(&mut self, index: SessionIndex) {
+		self.mixnet.start_session(index);
+	}
+	
 	fn handshake_message(&self) -> Vec<u8> {
 		self.public_key.to_bytes().to_vec()
 	}

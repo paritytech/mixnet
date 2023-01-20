@@ -20,7 +20,7 @@
 
 //! Mixnet configuration.
 
-use crate::{MixPeerId, MixPublicKey, MixSecretKey, Topology};
+use crate::{MixPeerId, MixPublicKey, MixSecretKey};
 
 /// Configuration data for the mixnet protocol.
 pub struct Config {
@@ -28,9 +28,6 @@ pub struct Config {
 	pub secret_key: MixSecretKey,
 	/// DH public key for this node
 	pub public_key: MixPublicKey,
-	/// Topology information provider. If this set to none a fallback topology is used, only
-	/// allowing communication with immediately connected peers.
-	pub topology: Option<Box<dyn Topology>>,
 	/// Local node id.
 	pub local_id: MixPeerId,
 	/// Target traffic rate. This is combined for the stream of real and cover messages. If the
@@ -63,7 +60,6 @@ impl Config {
 		Self {
 			secret_key,
 			public_key,
-			topology: None,
 			local_id: id,
 			target_bits_per_second: 128 * 1024,
 			timeout_ms: 5000,
@@ -72,10 +68,5 @@ impl Config {
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 		}
-	}
-
-	pub fn with_topology(mut self, topology: Box<dyn Topology>) -> Self {
-		self.topology = Some(topology);
-		self
 	}
 }
