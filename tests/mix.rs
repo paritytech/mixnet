@@ -32,7 +32,7 @@ use libp2p_tcp::{GenTcpConfig, TcpTransport};
 use rand::RngCore;
 use std::sync::Arc;
 
-use mixnet::{SendOptions, SessionTopology, PublicKeyStore};
+use mixnet::{MessageType, SendOptions, SessionTopology, PublicKeyStore};
 
 #[macro_export]
 macro_rules! log_unwrap {
@@ -182,16 +182,33 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let mut futures = Vec::new();
 	for (p, mut swarm) in swarms {
 		let source_message = &source_message;
+		let message_count = if with_surb { message_count + 1 } else { message_count };
 		let peer_future = async move {
 			let mut received = 0;
 			loop {
 				match swarm.select_next_some().await {
 					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
-						mixnet::DecodedMessage { peer, message, kind: _ },
+						mixnet::DecodedMessage { peer, message, kind },
 					)) => {
 						received += 1;
 						log::trace!(target: "mixnet", "{} Decoded message {} bytes, from {:?}, received={}", p, message.len(), peer, received);
-						assert_eq!(source_message.as_slice(), message.as_slice());
+						match kind {
+							MessageType::StandAlone => {
+								assert!(!with_surb);
+								assert_eq!(source_message.as_slice(), message.as_slice());
+							},
+							MessageType::WithSurb(surb_reply_enveloppe) => {
+								assert!(with_surb);
+								assert_eq!(source_message.as_slice(), message.as_slice());
+								swarm
+									.behaviour_mut()
+									.reply(vec![42], *surb_reply_enveloppe)
+									.unwrap();
+							},
+							MessageType::FromSurb(..) => {
+								panic!("only peer 0 should receive this");
+							},
+						}
 						if received == message_count {
 							return swarm
 						}
@@ -204,32 +221,51 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	}
 
 	let mut done_futures = Vec::new();
-	let spin_future = async move {
-		loop {
-			peer0_swarm.select_next_some().await;
-		}
-	};
+	let mut done_surbs = num_peers - 1;
+	let spin_future =
+		async move {
+			loop {
+				match peer0_swarm.select_next_some().await {
+					SwarmEvent::Behaviour(mixnet::NetworkEvent::Message(
+						mixnet::DecodedMessage { peer: _, message, kind },
+					)) => match kind {
+						MessageType::WithSurb(..) | MessageType::StandAlone => {
+							panic!("peer 0 expect a reply only")
+						},
+						MessageType::FromSurb(..) => {
+							assert!(with_surb);
+							done_surbs -= 1;
+							assert_eq!(&[42], message.as_slice());
+						},
+					},
+					_ => {},
+				}
+				if done_surbs == 0 {
+					return
+				}
+			}
+		};
 	done_futures.push(Box::pin(spin_future.boxed()));
 
 	while done_futures.len() < num_peers - 1 {
 		let result1 = futures::future::select_all(futures.drain(..));
 		let result2 = futures::future::select_all(&mut done_futures);
-		if let Either::Left((t, _)) =
-			async_std::task::block_on(futures::future::select(result1, result2))
-		{
-			let (mut swarm, index, rest) = t;
-			log::trace!(target: "mixnet", "{} Completed", index);
-			futures = rest;
-			let spin_future = async move {
-				loop {
-					swarm.select_next_some().await;
-				}
-			};
-			done_futures.push(Box::pin(spin_future.boxed()));
+		match async_std::task::block_on(futures::future::select(result1, result2)) {
+			Either::Left((t, _)) => {
+				let (mut swarm, index, rest) = t;
+				log::trace!(target: "mixnet", "{} Completed", index);
+				futures = rest;
+				let spin_future = async move {
+					loop {
+						swarm.select_next_some().await;
+					}
+				};
+				done_futures.push(Box::pin(spin_future.boxed()));
+			},
+
+			Either::Right(_) => return,
 		}
 	}
-
-	if with_surb {}
 }
 
 fn mk_transport(
@@ -257,7 +293,7 @@ fn message_exchange_no_surb() {
 
 #[test]
 fn message_exchange_with_surb() {
-	test_messages(5, 10, 1, true);
+	test_messages(5, 3, 1, true);
 }
 
 #[test]

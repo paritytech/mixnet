@@ -21,7 +21,7 @@
 //! Mix message fragment management
 
 use super::{error::Error, TimedHashMap};
-use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType, SurbPayload};
+use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType};
 use rand::Rng;
 use static_assertions::const_assert;
 use std::{
@@ -164,12 +164,12 @@ struct IncompleteMessage {
 	target_iv: Option<Box<[u8; 32]>>,
 	target_hash: MessageHash,
 	fragments: HashMap<u32, Fragment>,
-	has_surb: Option<Box<SurbPayload>>,
+	complete_type: MessageType,
 }
 
 impl IncompleteMessage {
 	fn current_len(&self) -> usize {
-		let surb_len = if self.has_surb.is_some() { SURB_REPLY_SIZE } else { 0 };
+		let surb_len = if self.complete_type.with_surb() { SURB_REPLY_SIZE } else { 0 };
 		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surb_len
 	}
 
@@ -185,7 +185,7 @@ impl IncompleteMessage {
 
 	fn total_expected_fragments(&self) -> Option<usize> {
 		self.target_len.map(|target_len| {
-			let surb_len = if self.has_surb.is_some() { SURB_REPLY_SIZE } else { 0 };
+			let surb_len = if self.complete_type.with_surb() { SURB_REPLY_SIZE } else { 0 };
 			(target_len as usize + surb_len) / FRAGMENT_PAYLOAD_SIZE + 1
 		})
 	}
@@ -218,12 +218,7 @@ impl IncompleteMessage {
 		if let Some(iv) = self.target_iv {
 			let hash = hash(&iv[..], &result);
 			if hash == self.target_hash {
-				let kind = if let Some(surb) = self.has_surb {
-					MessageType::WithSurb(surb)
-				} else {
-					MessageType::StandAlone
-				};
-				return Ok((result, kind))
+				return Ok((result, self.complete_type))
 			}
 		}
 		Err(Error::BadFragment)
@@ -255,11 +250,6 @@ impl MessageCollection {
 		};
 
 		let expires_ix = self.messages.next_inserted_entry();
-		let has_surb = match kind {
-			MessageType::WithSurb(surb) => Some(surb),
-			MessageType::StandAlone => None,
-			MessageType::FromSurb(..) => return Err(Error::UnexpectedSurbReply),
-		};
 
 		match self.messages.entry(fragment.hash()) {
 			Entry::Occupied(mut e) => {
@@ -268,8 +258,8 @@ impl MessageCollection {
 					e.get_mut().0.target_len = fragment.message_len();
 					e.get_mut().0.target_iv = fragment.iv();
 				}
-				if has_surb.is_some() {
-					e.get_mut().0.has_surb = has_surb;
+				if kind != MessageType::StandAlone {
+					e.get_mut().0.complete_type = kind;
 				}
 				e.get_mut().0.fragments.insert(index, fragment);
 				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().0.num_fragments(), e.get().0.total_expected_fragments());
@@ -287,7 +277,7 @@ impl MessageCollection {
 					target_len: fragment.message_len(),
 					target_iv: fragment.iv(),
 					fragments: Default::default(),
-					has_surb,
+					complete_type: kind,
 				};
 				let hash = fragment.hash();
 				message.fragments.insert(index, fragment);
@@ -356,7 +346,7 @@ pub fn create_fragments(
 #[cfg(test)]
 mod test {
 	use super::*;
-	use crate::core::sphinx::SURB_REPLY_SIZE;
+	use crate::core::sphinx::{SurbPayload, SURB_REPLY_SIZE};
 	use rand::{prelude::SliceRandom, RngCore};
 
 	#[test]

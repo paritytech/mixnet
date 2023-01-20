@@ -56,17 +56,19 @@ impl SessionTopology {
 		recipient: &MixPeerId,
 		num_hops: usize,
 	) -> Option<Vec<(MixPeerId, MixPublicKey)>> {
-		let (_, first_pk, _) = self.nodes.iter().find(|(id, _, _)| id == start)?;
-		let (_, last_pk, _) = self.nodes.iter().find(|(id, _, _)| id == start)?;
+		let (_, start_pk, _) = self.nodes.iter().find(|(id, _, _)| id == start)?;
+		let (_, last_pk, _) = self.nodes.iter().find(|(id, _, _)| id == recipient)?;
 
-		let mut result = vec![(start.clone(), first_pk.clone())];
-		let mut next = start.clone();
-		let mut next_pk = first_pk.clone();
-		for _ in 0 .. num_hops - 1 {
-			while result.last().unwrap().0 == next {
+		let mut result = vec![];
+		let mut prev = *start;
+		let mut next = *start;
+		let mut next_pk = *start_pk;
+		for i in 0 .. num_hops - 1 {
+			while next == prev || (i == num_hops - 2 && next == *recipient) {
 				(next, next_pk, _)= *self.nodes.as_slice().choose(rng)?;
 			}
 			result.push((next, next_pk));
+			prev = next;
 		}
 		result.push((recipient.clone(), last_pk.clone()));
 		Some(result)

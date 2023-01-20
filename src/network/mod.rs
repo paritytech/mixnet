@@ -132,7 +132,7 @@ impl MixnetBehaviour {
 	pub fn start_session(&mut self, index: SessionIndex) {
 		self.mixnet.start_session(index);
 	}
-	
+
 	fn handshake_message(&self) -> Vec<u8> {
 		self.public_key.to_bytes().to_vec()
 	}
@@ -271,7 +271,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 						event: Message(data),
 					})
 				} else {
-					log::warn!(target: "mixnet", "Message for offline peer {:?}", recipient);
+					log::warn!(target: "mixnet", "Message for offline peer {:?} ({})", recipient, id);
 					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::None))
 				}
 			},
