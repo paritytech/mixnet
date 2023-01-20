@@ -148,7 +148,7 @@ pub enum Unwrapped {
 	Forward((NodeId, Delay, Packet)),
 	Payload(Vec<u8>),
 	PayloadWithSurb(Vec<u8>, Vec<u8>),
-	SurbReply(Vec<u8>, Option<Vec<u8>>, Box<(crate::MixPeerId, crate::MixPublicKey)>),
+	SurbReply(Vec<u8>, Box<(crate::MixPeerId, crate::MixPublicKey)>),
 }
 enum NextHopOutcome {
 	Forward(NextHop),
@@ -159,7 +159,6 @@ enum NextHopOutcome {
 
 pub struct SentSurbInfo {
 	pub keys: Vec<SprpKey>,
-	pub message_payload: Option<Vec<u8>>,
 	pub recipient: (crate::MixPeerId, crate::MixPublicKey),
 }
 
@@ -516,7 +515,7 @@ pub fn read_surb_payload(
 				return Err(Error::Payload)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-			Ok(Unwrapped::SurbReply(decrypted_payload, surb.message_payload, Box::new(surb.recipient)))
+			Ok(Unwrapped::SurbReply(decrypted_payload, Box::new(surb.recipient)))
 		},
 		None => {
 			log::trace!(target: "mixnet", "Surb reply received after timeout {:?}", &replay_tag);
@@ -528,7 +527,7 @@ pub fn read_surb_payload(
 #[cfg(test)]
 mod test {
 	use super::{
-		Delay, NodeId, PathHop, PublicKey, RawKey, StaticSecret, HeaderInfo, Unwrapped, MAX_HOPS,
+		Delay, HeaderInfo, NodeId, PathHop, PublicKey, RawKey, StaticSecret, Unwrapped, MAX_HOPS,
 	};
 	use rand::{rngs::OsRng, CryptoRng, RngCore};
 
@@ -604,8 +603,7 @@ mod test {
 			let (mut packet, surb_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
 			if let Some(HeaderInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
-				let persistance =
-					crate::core::sphinx::SentSurbInfo { keys, message_payload: None, recipient };
+				let persistance = crate::core::sphinx::SentSurbInfo { keys, recipient };
 				surb_collection.insert(surb_id, persistance.into(), std::time::Instant::now());
 			}
 

@@ -55,7 +55,7 @@ pub enum MessageType {
 	WithSurb(Box<SurbPayload>),
 	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
-	FromSurb(Option<Vec<u8>>, Box<(MixPeerId, MixPublicKey)>),
+	FromSurb(Box<(MixPeerId, MixPublicKey)>),
 }
 
 impl MessageType {
@@ -68,14 +68,6 @@ impl MessageType {
 	pub fn surb(self) -> Option<Box<SurbPayload>> {
 		match self {
 			MessageType::WithSurb(surb) => Some(surb),
-			_ => None,
-		}
-	}
-
-	/// Extract surb query if stored.
-	pub fn extract_surb_query(&mut self) -> Option<Option<Vec<u8>>> {
-		match self {
-			MessageType::FromSurb(surb, _) => Some(surb.take()),
 			_ => None,
 		}
 	}

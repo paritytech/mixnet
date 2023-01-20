@@ -47,8 +47,6 @@ pub struct Config {
 	pub surb_ttl_ms: u64,
 	/// Retention time until we drop surb replay protection.
 	pub replay_ttl_ms: u64,
-	/// Do we keep trace of query with the surb keys.
-	pub persist_surb_query: bool,
 }
 
 impl Config {
@@ -71,7 +69,6 @@ impl Config {
 			timeout_ms: 5000,
 			num_hops: 3,
 			average_message_delay_ms: 500,
-			persist_surb_query: true,
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 		}

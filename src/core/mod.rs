@@ -30,7 +30,7 @@ pub use crate::core::{config::Config, sphinx::SurbPayload};
 use crate::{
 	core::{
 		fragment::MessageCollection,
-		sphinx::{SprpKey, SentSurbInfo},
+		sphinx::{SentSurbInfo, SprpKey},
 	},
 	MessageType, MixPeerId, NetworkId, SendOptions,
 };
@@ -198,8 +198,6 @@ pub struct Mixnet {
 	average_traffic_delay: Duration,
 	// Average delay for each packet at each hop.
 	average_hop_delay: Duration,
-	// Do we keep query in peristance.
-	persist_surb_query: bool,
 }
 
 /// Message id, use as surb key and replay protection.
@@ -385,7 +383,6 @@ impl Mixnet {
 			average_traffic_delay: Duration::from_nanos(
 				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
 			),
-			persist_surb_query: config.persist_surb_query,
 		}
 	}
 
@@ -418,8 +415,6 @@ impl Mixnet {
 	) -> Result<(), Error> {
 		let mut rng = rand::thread_rng();
 
-		let mut surb_query =
-			(self.persist_surb_query && send_options.with_surb).then(|| message.clone());
 		let maybe_peer_id = if let Some(id) = peer_id {
 			Some(id)
 		} else {
@@ -472,11 +467,7 @@ impl Mixnet {
 				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(|e| Error::SphinxError(e))?;
 			if let Some(HeaderInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
-				let persistance = SentSurbInfo {
-					keys,
-					message_payload: surb_query.take(),
-					recipient: *paths[n].last().unwrap(),
-				};
+				let persistance = SentSurbInfo { keys, recipient: *paths[n].last().unwrap() };
 				self.surb.insert(surb_id, persistance.into(), std::time::Instant::now());
 			}
 
@@ -543,10 +534,9 @@ impl Mixnet {
 				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
 				self.queue_packet(next_id, packet.into_vec(), Duration::from_nanos(delay as u64))?;
 			},
-			Ok(Unwrapped::SurbReply(payload, query, recipient)) => {
-				if let Some(m) = self
-					.fragments
-					.insert_fragment(payload, MessageType::FromSurb(query, recipient))?
+			Ok(Unwrapped::SurbReply(payload, recipient)) => {
+				if let Some(m) =
+					self.fragments.insert_fragment(payload, MessageType::FromSurb(recipient))?
 				{
 					log::debug!(target: "mixnet", "Imported surb from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))

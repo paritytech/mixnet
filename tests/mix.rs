@@ -129,7 +129,6 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 			timeout_ms: 10000,
 			num_hops: 3,
 			average_message_delay_ms: 50,
-			persist_surb_query: true,
 			surb_ttl_ms: 100_000,
 			replay_ttl_ms: 100_000,
 		};

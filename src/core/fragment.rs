@@ -373,12 +373,9 @@ mod test {
 
 		assert_eq!(
 			fragments
-				.insert_fragment(
-					small_fragment,
-					MessageType::FromSurb(Some(vec![1]), recipient.clone())
-				)
+				.insert_fragment(small_fragment, MessageType::FromSurb(recipient.clone()))
 				.unwrap(),
-			Some((vec![42], MessageType::FromSurb(Some(vec![1]), recipient)))
+			Some((vec![42], MessageType::FromSurb(recipient)))
 		);
 
 		let mut large = Vec::new();
