@@ -29,15 +29,10 @@ use libp2p_mplex as mplex;
 use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{GenTcpConfig, TcpTransport};
-use rand::{prelude::IteratorRandom, RngCore};
-use std::collections::HashMap;
+use rand::RngCore;
+use std::sync::Arc;
 
-use mixnet::{MixPeerId, MixPublicKey, SendOptions};
-
-#[derive(Clone)]
-struct TopologyGraph {
-	connections: HashMap<MixPeerId, Vec<(MixPeerId, MixPublicKey)>>,
-}
+use mixnet::{SendOptions, SessionTopology, PublicKeyStore};
 
 #[macro_export]
 macro_rules! log_unwrap {
@@ -65,36 +60,9 @@ macro_rules! log_unwrap_opt {
 	};
 }
 
-impl TopologyGraph {
-	fn new_star(nodes: &[(MixPeerId, MixPublicKey)]) -> Self {
-		let mut connections = HashMap::new();
-		for i in 0..nodes.len() {
-			let (node, _node_key) = nodes[i];
-			let mut neighbors = Vec::new();
-			for j in 0..nodes.len() {
-				if i != j {
-					neighbors.push(nodes[j].clone())
-				}
-			}
-			connections.insert(node.clone(), neighbors);
-		}
-
-		Self { connections }
-	}
-}
-
-impl mixnet::Topology for TopologyGraph {
-	fn neighbors(&self, id: &MixPeerId) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.connections.get(id).cloned().unwrap_or_default()
-	}
-
-	fn random_recipient(&self) -> Option<MixPeerId> {
-		self.connections.keys().choose(&mut rand::thread_rng()).cloned()
-	}
-}
-
 fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surb: bool) {
 	let _ = env_logger::try_init();
+
 	let mut source_message = Vec::new();
 	source_message.resize(message_size, 0);
 	rand::thread_rng().fill_bytes(&mut source_message);
@@ -110,20 +78,18 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			return
 		};
 
-		nodes.push((id, peer_key_montgomery.clone()));
+		let addr = format!("/ip4/127.0.0.1/tcp/0").parse().unwrap();
+		nodes.push((id, peer_key_montgomery.clone(), vec![addr]));
 		secrets.push(peer_secret_key);
 		transports.push((peer_id, trans));
 	}
 
-	let topology = TopologyGraph::new_star(&nodes);
-
 	let mut swarms = Vec::new();
 	for (i, (network_id, trans)) in transports.into_iter().enumerate() {
-		let (id, pub_key) = nodes[i];
+		let (id, pub_key, addrs) = &nodes[i];
 		let cfg = mixnet::Config {
 			secret_key: secrets[i].clone(),
 			public_key: pub_key.clone(),
-			topology: Some(Box::new(topology.clone())),
 			local_id: id.clone(),
 			target_bits_per_second: 1024 * 1024,
 			timeout_ms: 10000,
@@ -133,10 +99,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			replay_ttl_ms: 100_000,
 		};
 
-		let mut swarm = Swarm::new(trans, mixnet::MixnetBehaviour::new(cfg), network_id);
-
-		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
-		swarm.listen_on(addr).unwrap();
+		let keystore = Arc::new(PublicKeyStore);
+		let mut mixnet = mixnet::MixnetBehaviour::new(cfg, keystore);
+		let topology = SessionTopology::new(nodes.clone());
+		mixnet.set_session_topolgy(0, topology);
+		let mut swarm = Swarm::new(trans, mixnet, network_id);
+		swarm.listen_on(addrs[0].clone()).unwrap();
 		swarms.push(swarm);
 	}
 
@@ -197,7 +165,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let index = swarms.iter().position(|(p, _)| *p == 0).unwrap();
 	let (_, mut peer0_swarm) = swarms.remove(index);
 	for np in 1..num_peers {
-		let (recipient, _) = nodes[np];
+		let (recipient, _, _) = nodes[np];
 		log::trace!(target: "mixnet", "0: Sending {} messages to {:?}", message_count, recipient);
 		for _ in 0..message_count {
 			peer0_swarm

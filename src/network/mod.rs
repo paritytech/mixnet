@@ -29,7 +29,7 @@ use crate::{
 		to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PublicKeyStore,
 		Surb, MixPeerAddress, SessionIndex, PUBLIC_KEY_LEN
 	},
-	DecodedMessage, MixPublicKey, NetworkPeerId, SendOptions, SessionTopology,
+	DecodedMessage, MixPublicKey, MixPeerId, NetworkPeerId, SendOptions, SessionTopology,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
@@ -80,6 +80,17 @@ impl MixnetBehaviour {
 			events: Default::default(),
 			handshake_queue: Default::default(),
 		}
+	}
+
+	/// Send a new message to the mix network. The message will be split, chunked and sent over
+	/// multiple hops with random delays to the specified recipient.
+	pub fn send(
+		&mut self,
+		to: MixPeerId,
+		message: Vec<u8>,
+		send_options: SendOptions,
+	) -> std::result::Result<(), Error> {
+		self.mixnet.register_message(Some(to), message, send_options)
 	}
 
 	/// Send a new message to the mix network. The message will be split, chunked and sent over

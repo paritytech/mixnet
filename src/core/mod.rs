@@ -568,7 +568,7 @@ impl Mixnet {
 					log::debug!(target: "mixnet", "Imported message from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
-					log::warn!(target: "mixnet", "Inserted fragment message from {:?}, stored surb enveloppe.", peer_id);
+					log::warn!(target: "mixnet", "Inserted fragment message from {:?}, stored surb envelope.", peer_id);
 				}
 			},
 		}

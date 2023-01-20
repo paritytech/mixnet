@@ -31,6 +31,11 @@ pub struct SessionTopology {
 }
 
 impl SessionTopology {
+
+	pub fn new(nodes: Vec<(MixPeerId, MixPublicKey, Vec<MixPeerAddress>)>) -> Self {
+		Self { nodes }
+	}
+
 	pub fn random_recipient<R: Rng + CryptoRng + ?Sized>(&self, rng: &mut R) -> Option<MixPeerId> {
 		self.nodes.iter().choose(rng).map(|(id, _, _)| id.clone())
 	}
