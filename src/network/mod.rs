@@ -160,9 +160,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 					let Ok(id) = to_sphinx_id(&peer_id) else {
 						return
 					};
-					let Ok(message) = Packet::from_vec(message) else {
-						return
-					};
+					let message = Packet::from_vec(message);
 					let Ok(Some((message, kind))) = self.mixnet.import_message(id, message) else {
 						return
 					};

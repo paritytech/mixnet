@@ -371,7 +371,7 @@ pub fn new_packet<T: Rng + CryptoRng>(
 			crypto::sprp_encrypt(&key.key, tagged_payload).map_err(|_| Error::PayloadEncrypt)?;
 	}
 
-	let packet = Packet::new(&header[..], &tagged_payload[..])?;
+	let packet = Packet::new(&header[..], &tagged_payload[..]);
 	Ok((packet, surb_key))
 }
 
@@ -387,7 +387,7 @@ pub fn new_surb_packet(
 	tagged_payload =
 		crypto::sprp_encrypt(&first_key.key, tagged_payload).map_err(|_| Error::PayloadEncrypt)?;
 
-	let packet = Packet::new(&surb_header[..], &tagged_payload[..])?;
+	let packet = Packet::new(&surb_header[..], &tagged_payload[..]);
 	Ok(packet)
 }
 

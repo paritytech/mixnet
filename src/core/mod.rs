@@ -75,22 +75,17 @@ pub struct HeaderInfo {
 pub struct Packet(pub Vec<u8>);
 
 impl Packet {
-	fn new(header: &[u8], payload: &[u8]) -> Result<Self, SphinxError> {
+	fn new(header: &[u8], payload: &[u8]) -> Self {
 		let mut packet = Vec::with_capacity(PACKET_SIZE);
-		if header.len() != sphinx::HEADER_SIZE {
-			return Err(SphinxError::InvalidPacket)
-		}
+		debug_assert!(header.len() != sphinx::HEADER_SIZE);
 		packet.extend_from_slice(header);
 		packet.extend_from_slice(payload);
 		Self::from_vec(packet)
 	}
 
-	pub fn from_vec(data: Vec<u8>) -> Result<Self, SphinxError> {
-		if data.len() == PACKET_SIZE {
-			Ok(Packet(data))
-		} else {
-			Err(SphinxError::InvalidPacket)
-		}
+	pub fn from_vec(data: Vec<u8>) -> Self {
+		debug_assert!(data.len() == PACKET_SIZE);
+		Packet(data)
 	}
 
 	fn into_vec(self) -> Vec<u8> {
@@ -398,7 +393,7 @@ impl Mixnet {
 		let deadline = Instant::now() + delay;
 		self.packet_queue.push(QueuedPacket {
 			deadline,
-			data: Packet::from_vec(data).map_err(|_| Error::MessageTooLarge)?,
+			data: Packet::from_vec(data),
 			recipient,
 		}); // TODO use right error
 		Ok(())
