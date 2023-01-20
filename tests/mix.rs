@@ -93,7 +93,7 @@ impl mixnet::Topology for TopologyGraph {
 	}
 }
 
-fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
+fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surb: bool) {
 	let _ = env_logger::try_init();
 	let mut source_message = Vec::new();
 	source_message.resize(message_size, 0);
@@ -205,7 +205,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 				.send(
 					recipient.clone(),
 					source_message.to_vec(),
-					SendOptions { num_hop: None, with_surb: false },
+					SendOptions { num_hop: None, with_surb },
 				)
 				.unwrap();
 		}
@@ -260,6 +260,8 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize) {
 			done_futures.push(Box::pin(spin_future.boxed()));
 		}
 	}
+
+	if with_surb {}
 }
 
 fn mk_transport(
@@ -281,11 +283,16 @@ fn mk_transport(
 }
 
 #[test]
-fn message_exchange() {
-	test_messages(5, 10, 1);
+fn message_exchange_no_surb() {
+	test_messages(5, 10, 1, false);
+}
+
+#[test]
+fn message_exchange_with_surb() {
+	test_messages(5, 10, 1, true);
 }
 
 #[test]
 fn fragmented_messages() {
-	test_messages(2, 1, 8 * 1024);
+	test_messages(2, 1, 8 * 1024, false);
 }

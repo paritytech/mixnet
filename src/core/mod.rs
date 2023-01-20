@@ -421,7 +421,7 @@ impl Mixnet {
 		let peer_id =
 			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
 
-		let chunks = fragment::create_fragments(&mut rng, message, false)?;
+		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surb)?;
 		let paths = self.random_paths(
 			&self.local_id.clone(),
 			&peer_id,
