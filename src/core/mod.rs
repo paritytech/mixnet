@@ -495,9 +495,9 @@ impl Mixnet {
 	pub fn register_surb_reply(
 		&mut self,
 		message: Vec<u8>,
-		surb: SurbPayload,
+		surb: Surb,
 	) -> Result<(), Error> {
-		let SurbPayload { first_node, first_key, header } = surb;
+		let SurbPayload { first_node, first_key, header } = *surb;
 		let mut rng = rand::thread_rng();
 
 		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;

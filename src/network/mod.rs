@@ -103,19 +103,13 @@ impl MixnetBehaviour {
 		self.mixnet.register_message(None, message, send_options)
 	}
 
-	/// Reply with a surb
-	/// multiple hops with random delays to the specified recipient.
-	pub fn reply(
+	/// Send a reply to a previously received message.
+	pub fn send_reply(
 		&mut self,
 		message: Vec<u8>,
-		surbs: crate::SurbPayload,
+		surb: Surb,
 	) -> std::result::Result<(), Error> {
-		self.mixnet.register_surb_reply(message, surbs)
-	}
-
-	/// Send a reply to a previously received message.
-	pub fn send_reply(_surb: Surb, _payload: Vec<u8>) {
-		unimplemented!()
+		self.mixnet.register_surb_reply(message, surb)
 	}
 
 	/// If the node isn't part of the topology this returns a set of gateway addresses to connect to.

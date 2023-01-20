@@ -23,6 +23,8 @@
 use crate::{core::MixPublicKey, MixPeerId, core::MixPeerAddress};
 use rand::{prelude::{SliceRandom, IteratorRandom}, CryptoRng, Rng};
 
+const NUM_GATEWAYS: usize = 5;
+
 /// Contains network information. Current implementation assumes that each node
 /// in the set is connected to every other node.
 #[derive(Default)]
@@ -39,10 +41,11 @@ impl SessionTopology {
 		self.nodes.iter().choose(rng).map(|(id, _, _)| id.clone())
 	}
 
+	/// If the node isn't part of the topology this returns a set of gateway addresses to connect to.
 	pub fn gateways<R: Rng + CryptoRng + ?Sized>(&self, rng: &mut R) -> Vec<MixPeerAddress> {
 		self.nodes
 			.as_slice()
-			.choose_multiple(rng, 5)
+			.choose_multiple(rng, NUM_GATEWAYS)
 			.map(|(_, _, addrs)| addrs.clone())
 			.flatten()
 			.collect()

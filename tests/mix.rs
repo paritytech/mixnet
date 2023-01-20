@@ -201,7 +201,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 								assert_eq!(source_message.as_slice(), message.as_slice());
 								swarm
 									.behaviour_mut()
-									.reply(vec![42], *surb_reply_enveloppe)
+									.send_reply(vec![42], surb_reply_enveloppe)
 									.unwrap();
 							},
 							MessageType::FromSurb(..) => {
