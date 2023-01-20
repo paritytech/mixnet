@@ -77,7 +77,7 @@ pub struct Packet(pub Vec<u8>);
 impl Packet {
 	fn new(header: &[u8], payload: &[u8]) -> Self {
 		let mut packet = Vec::with_capacity(PACKET_SIZE);
-		debug_assert!(header.len() != sphinx::HEADER_SIZE);
+		debug_assert!(header.len() == sphinx::HEADER_SIZE);
 		packet.extend_from_slice(header);
 		packet.extend_from_slice(payload);
 		Self::from_vec(packet)
@@ -101,7 +101,7 @@ pub enum MixEvent {
 	SendMessage((MixPeerId, Vec<u8>)),
 }
 
-pub fn to_sphinx_id(id: &NetworkId) -> Result<MixPeerId, Error> {
+pub fn to_mix_peer_id(id: &NetworkId) -> Result<MixPeerId, Error> {
 	let hash = id.as_ref();
 	match libp2p_core::multihash::Code::try_from(hash.code()) {
 		Ok(libp2p_core::multihash::Code::Identity) => {

@@ -22,7 +22,7 @@ mod core;
 mod network;
 
 pub use crate::core::{
-	public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config, Error, MixPublicKey,
+	public_from_ed25519, secret_from_ed25519, to_mix_peer_id, Config, Error, MixPublicKey,
 	MixSecretKey, SurbPayload, Topology,
 };
 pub use network::{MixnetBehaviour, NetworkEvent};

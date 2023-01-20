@@ -579,7 +579,7 @@ mod test {
 
 		let keypair = libp2p_core::identity::Keypair::generate_ed25519();
 		let network_id = keypair.public().into();
-		let id = crate::core::to_sphinx_id(&network_id).unwrap();
+		let id = crate::core::to_mix_peer_id(&network_id).unwrap();
 		let config = crate::Config::new(id);
 		// Generate the "nodes" and path for the forward sphinx packet.
 		let mut num_hops = 1;

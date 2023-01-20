@@ -25,7 +25,7 @@ mod handler;
 mod protocol;
 
 use crate::{
-	core::{to_sphinx_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
+	core::{to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PUBLIC_KEY_LEN},
 	DecodedMessage, MixPeerId, MixPublicKey, NetworkId, SendOptions,
 };
 use futures_timer::Delay;
@@ -149,7 +149,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 					let pub_key = MixPublicKey::from(pk);
 					log::trace!(target: "mixnet", "Handshake message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					if let Ok(id) = to_sphinx_id(&peer_id) {
+					if let Ok(id) = to_mix_peer_id(&peer_id) {
 						self.connected.insert(peer_id, connection);
 						self.mixnet.add_connected_peer(id, pub_key);
 						self.events.push_back(NetworkEvent::Connected(peer_id));
@@ -157,7 +157,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
 					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
 					connection.read_timeout.reset(Duration::new(2, 0));
-					let Ok(id) = to_sphinx_id(&peer_id) else {
+					let Ok(id) = to_mix_peer_id(&peer_id) else {
 						return
 					};
 					let message = Packet::from_vec(message);
@@ -210,7 +210,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		log::trace!(target: "mixnet", "Disconnected: {}", peer_id);
 		self.handshakes.remove(peer_id);
 		self.connected.remove(peer_id);
-		let Ok(id) = to_sphinx_id(peer_id) else {
+		let Ok(id) = to_mix_peer_id(peer_id) else {
 			return
 		};
 		self.mixnet.remove_connected_peer(&id);
