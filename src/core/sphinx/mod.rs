@@ -25,13 +25,13 @@
 // Notable changes include:
 // * Switching to Lioness cipher for payload encryption.
 // * Simplifying routing commands into a fixed structure: a node id and some reserved node id for
-// the command variant (last nodes, last node with SURBS and last node from SURBS).
+// the command variant (last nodes, last node with SURB and last node from SURB).
 // * Drop support for Delay command.
 
 ///! Sphinx packet format.
 mod crypto;
 
-use super::TransmitInfo;
+use super::HeaderInfo;
 use crate::core::{Packet, ReplayFilter, ReplayTag, SurbsCollection};
 pub use crypto::{hash, HASH_OUTPUT_SIZE};
 use crypto::{PacketKeys, StreamCipher, GROUP_ELEMENT_SIZE, MAC_SIZE, SPRP_KEY_SIZE};
@@ -46,7 +46,7 @@ pub type NodeId = [u8; NODE_ID_SIZE];
 
 type Header = [u8; HEADER_SIZE];
 type RawKey = [u8; KEY_SIZE];
-type NewHeader = (Header, TransmitInfo);
+type HeaderWithInfo = (Header, HeaderInfo);
 
 /// Maximum hops the packet format supports.
 pub const MAX_HOPS: usize = 5;
@@ -58,13 +58,13 @@ const NODE_ID_SIZE: usize = 32;
 const KEY_SIZE: usize = 32;
 
 /// Empty node id, last hop.
-const TARGET_ID: NodeId = [0u8; NODE_ID_SIZE];
+const EMPTY_ID_NO_SURB: NodeId = [0u8; NODE_ID_SIZE];
 
 /// Empty node id, last hop.
-const TARGET_ID_WITH_SURBS: NodeId = [1u8; NODE_ID_SIZE];
+const EMPTY_ID_WITH_SURB: NodeId = [1u8; NODE_ID_SIZE];
 
 /// Empty node id, last hop, this is a surb reply.
-const TARGET_ID_FROM_SURBS: NodeId = [2u8; NODE_ID_SIZE];
+const EMPTY_ID_REPLY: NodeId = [2u8; NODE_ID_SIZE];
 
 /// The "authenticated data" portion of the Sphinx
 /// packet header which as specified contains the
@@ -85,7 +85,7 @@ const PAYLOAD_TAG: [u8; PAYLOAD_TAG_SIZE] = [0u8; PAYLOAD_TAG_SIZE];
 pub(crate) const HEADER_SIZE: usize = AD_SIZE + GROUP_ELEMENT_SIZE + ROUTING_INFO_SIZE + MAC_SIZE;
 
 /// Size of the surb definition in payload.
-pub(crate) const SURBS_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
+pub(crate) const SURB_REPLY_SIZE: usize = NODE_ID_SIZE + SPRP_KEY_SIZE + HEADER_SIZE;
 
 /// The size in bytes of each routing info slot.
 const PER_HOP_ROUTING_INFO_SIZE: usize = NODE_ID_SIZE + MAC_SIZE;
@@ -147,19 +147,19 @@ struct NextHop {
 pub enum Unwrapped {
 	Forward((NodeId, Delay, Packet)),
 	Payload(Vec<u8>),
-	SurbQuery(Vec<u8>, Vec<u8>),
+	PayloadWithSurb(Vec<u8>, Vec<u8>),
 	SurbReply(Vec<u8>, Option<Vec<u8>>, Box<(crate::MixPeerId, crate::MixPublicKey)>),
 }
-enum DoNextHop {
+enum NextHopOutcome {
 	Forward(NextHop),
 	Payload,
-	SurbQuery,
+	PayloadWithSurb,
 	SurbReply,
 }
 
-pub struct SurbPersistance {
+pub struct SentSurbInfo {
 	pub keys: Vec<SprpKey>,
-	pub query: Option<Vec<u8>>,
+	pub message_payload: Option<Vec<u8>>,
 	pub recipient: (crate::MixPeerId, crate::MixPublicKey),
 }
 
@@ -176,21 +176,21 @@ unsafe impl bytemuck::Pod for SurbPayload {}
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-struct SurbReply([u8; SURBS_REPLY_SIZE]);
+struct EncodedSurbPayload([u8; SURB_REPLY_SIZE]);
 
-unsafe impl bytemuck::Zeroable for SurbReply {}
-unsafe impl bytemuck::Pod for SurbReply {}
+unsafe impl bytemuck::Zeroable for EncodedSurbPayload {}
+unsafe impl bytemuck::Pod for EncodedSurbPayload {}
 
 impl From<Vec<u8>> for SurbPayload {
 	fn from(encoded: Vec<u8>) -> Self {
-		let buf: &[u8; SURBS_REPLY_SIZE] =
-			unsafe { &*(encoded.as_slice().as_ptr() as *const [u8; SURBS_REPLY_SIZE]) };
-		bytemuck::cast(SurbReply(*buf))
+		let buf: &[u8; SURB_REPLY_SIZE] =
+			unsafe { &*(encoded.as_slice().as_ptr() as *const [u8; SURB_REPLY_SIZE]) };
+		bytemuck::cast(EncodedSurbPayload(*buf))
 	}
 }
 
 impl SurbPayload {
-	fn append(&self, dest: &mut Vec<u8>) {
+	fn append_to(&self, dest: &mut Vec<u8>) {
 		dest.extend_from_slice(&self.first_node[..]);
 		dest.extend_from_slice(&self.first_key.key[..]);
 		dest.extend_from_slice(&self.header[..]);
@@ -200,19 +200,19 @@ impl SurbPayload {
 struct EncodedHop<'a>(&'a mut [u8]);
 
 impl<'a> EncodedHop<'a> {
-	fn next_hop(&self) -> DoNextHop {
+	fn next_hop(&self) -> NextHopOutcome {
 		let mut id = [0u8; NODE_ID_SIZE];
 		id.copy_from_slice(&self.0[..NODE_ID_SIZE]);
-		if id == TARGET_ID {
-			DoNextHop::Payload
-		} else if id == TARGET_ID_WITH_SURBS {
-			DoNextHop::SurbQuery
-		} else if id == TARGET_ID_FROM_SURBS {
-			DoNextHop::SurbReply
+		if id == EMPTY_ID_NO_SURB {
+			NextHopOutcome::Payload
+		} else if id == EMPTY_ID_WITH_SURB {
+			NextHopOutcome::PayloadWithSurb
+		} else if id == EMPTY_ID_REPLY {
+			NextHopOutcome::SurbReply
 		} else {
 			let mut mac = [0u8; MAC_SIZE];
 			mac.copy_from_slice(&self.0[NEXT_HOP_MAC_OFFSET..NEXT_HOP_MAC_OFFSET + MAC_SIZE]);
-			DoNextHop::Forward(NextHop { id, mac })
+			NextHopOutcome::Forward(NextHop { id, mac })
 		}
 	}
 
@@ -227,7 +227,7 @@ fn create_header<T: Rng + CryptoRng>(
 	path: Vec<PathHop>,
 	surb_header: bool,
 	with_surb: bool,
-) -> Result<NewHeader, Error> {
+) -> Result<HeaderWithInfo, Error> {
 	let num_hops = path.len();
 	// Derive the key material for each hop.
 	let mut raw_key: [u8; KEY_SIZE] = Default::default();
@@ -286,11 +286,11 @@ fn create_header<T: Rng + CryptoRng>(
 	}
 	if with_surb {
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE;
-		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_WITH_SURBS[..]);
+		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&EMPTY_ID_WITH_SURB[..]);
 	}
 	if surb_header {
 		let offset = (num_hops - 1) * PER_HOP_ROUTING_INFO_SIZE;
-		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&TARGET_ID_FROM_SURBS[..]);
+		routing_info[offset..offset + NODE_ID_SIZE].copy_from_slice(&EMPTY_ID_REPLY[..]);
 	}
 	let mut hop_index = num_hops - 1;
 	loop {
@@ -324,7 +324,7 @@ fn create_header<T: Rng + CryptoRng>(
 		sprp_keys.push(k);
 		i += 1
 	}
-	Ok((header, TransmitInfo { sprp_keys, surb_id }))
+	Ok((header, HeaderInfo { sprp_keys, surb_id }))
 }
 
 /// Create a new sphinx packet
@@ -333,15 +333,15 @@ pub fn new_packet<T: Rng + CryptoRng>(
 	path: Vec<PathHop>,
 	payload: Vec<u8>,
 	with_surb: Option<(NodeId, Vec<PathHop>)>,
-) -> Result<(Packet, Option<TransmitInfo>), Error> {
-	let (header, TransmitInfo { sprp_keys, .. }) =
+) -> Result<(Packet, Option<HeaderInfo>), Error> {
+	let (header, HeaderInfo { sprp_keys, .. }) =
 		create_header(&mut rng, path, false, with_surb.is_some())?;
 
 	// prepend payload tag of zero bytes
 	let mut tagged_payload;
 	let surb_key = if let Some((first_node, path)) = with_surb {
-		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURBS_REPLY_SIZE + payload.len());
-		let (header, TransmitInfo { sprp_keys, surb_id }) =
+		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + SURB_REPLY_SIZE + payload.len());
+		let (header, HeaderInfo { sprp_keys, surb_id }) =
 			create_header(&mut rng, path, true, false)?;
 
 		debug_assert!(header.len() == HEADER_SIZE);
@@ -349,16 +349,16 @@ pub fn new_packet<T: Rng + CryptoRng>(
 		let first_key = SprpKey { key: sprp_keys[sprp_keys.len() - 1].key };
 		let encoded = SurbPayload { first_node, first_key, header };
 		debug_assert!(tagged_payload.len() == PAYLOAD_TAG_SIZE);
-		encoded.append(&mut tagged_payload);
+		encoded.append_to(&mut tagged_payload);
 		debug_assert!(
-			tagged_payload.len() == SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE,
+			tagged_payload.len() == SURB_REPLY_SIZE + PAYLOAD_TAG_SIZE,
 			"{:?}",
-			(tagged_payload.len(), SURBS_REPLY_SIZE + PAYLOAD_TAG_SIZE)
+			(tagged_payload.len(), SURB_REPLY_SIZE + PAYLOAD_TAG_SIZE)
 		);
 		debug_assert!(
-			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURBS_REPLY_SIZE + payload.len()
+			crate::core::fragment::FRAGMENT_PACKET_SIZE == SURB_REPLY_SIZE + payload.len()
 		);
-		Some(TransmitInfo { sprp_keys, surb_id })
+		Some(HeaderInfo { sprp_keys, surb_id })
 	} else {
 		tagged_payload = Vec::with_capacity(PAYLOAD_TAG_SIZE + payload.len());
 		tagged_payload.resize(PAYLOAD_TAG_SIZE, 0u8);
@@ -449,12 +449,9 @@ pub fn unwrap_packet(
 	let hop = EncodedHop(cmd_buf);
 	let maybe_next_hop = hop.next_hop();
 
-	// Decrypt the Sphinx Packet Payload.
-	let mut p = vec![0u8; payload.len()]; // TODO looks useless
-	p.copy_from_slice(payload);
 	// Transform the packet for forwarding to the next mix
 	match maybe_next_hop {
-		DoNextHop::Forward(next_hop) => {
+		NextHopOutcome::Forward(next_hop) => {
 			let decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecrypt)?;
@@ -468,7 +465,7 @@ pub fn unwrap_packet(
 
 			Ok(Unwrapped::Forward((next_hop.id, next_delay(), packet)))
 		},
-		DoNextHop::Payload => {
+		NextHopOutcome::Payload => {
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecrypt)?;
@@ -479,7 +476,7 @@ pub fn unwrap_packet(
 			filter.insert(replay_tag, Instant::now());
 			Ok(Unwrapped::Payload(decrypted_payload))
 		},
-		DoNextHop::SurbQuery => {
+		NextHopOutcome::PayloadWithSurb => {
 			let mut decrypted_payload =
 				crypto::sprp_decrypt(&keys.payload_encryption, payload.to_vec())
 					.map_err(|_| Error::PayloadDecrypt)?;
@@ -487,11 +484,11 @@ pub fn unwrap_packet(
 				return Err(Error::Payload)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-			let payload = decrypted_payload.split_off(SURBS_REPLY_SIZE);
+			let payload = decrypted_payload.split_off(SURB_REPLY_SIZE);
 			filter.insert(replay_tag, Instant::now());
-			Ok(Unwrapped::SurbQuery(decrypted_payload, payload))
+			Ok(Unwrapped::PayloadWithSurb(decrypted_payload, payload))
 		},
-		DoNextHop::SurbReply =>
+		NextHopOutcome::SurbReply =>
 		// Previous reading of header was only for hmac.
 			read_surb_payload(&replay_tag, payload.to_vec(), surb),
 	}
@@ -519,7 +516,7 @@ pub fn read_surb_payload(
 				return Err(Error::Payload)
 			}
 			let _ = decrypted_payload.drain(..PAYLOAD_TAG_SIZE);
-			Ok(Unwrapped::SurbReply(decrypted_payload, surb.query, Box::new(surb.recipient)))
+			Ok(Unwrapped::SurbReply(decrypted_payload, surb.message_payload, Box::new(surb.recipient)))
 		},
 		None => {
 			log::trace!(target: "mixnet", "Surb reply received after timeout {:?}", &replay_tag);
@@ -531,7 +528,7 @@ pub fn read_surb_payload(
 #[cfg(test)]
 mod test {
 	use super::{
-		Delay, NodeId, PathHop, PublicKey, RawKey, StaticSecret, TransmitInfo, Unwrapped, MAX_HOPS,
+		Delay, NodeId, PathHop, PublicKey, RawKey, StaticSecret, HeaderInfo, Unwrapped, MAX_HOPS,
 	};
 	use rand::{rngs::OsRng, CryptoRng, RngCore};
 
@@ -606,9 +603,9 @@ mod test {
 			// Create the packet.
 			let (mut packet, surb_keys) =
 				super::new_packet(OsRng, path, payload.to_vec(), None).unwrap();
-			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
+			if let Some(HeaderInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
 				let persistance =
-					crate::core::sphinx::SurbPersistance { keys, query: None, recipient };
+					crate::core::sphinx::SentSurbInfo { keys, message_payload: None, recipient };
 				surb_collection.insert(surb_id, persistance.into(), std::time::Instant::now());
 			}
 

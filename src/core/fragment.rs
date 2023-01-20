@@ -21,7 +21,7 @@
 //! Mix message fragment management
 
 use super::{error::Error, MixnetCollection};
-use crate::{core::sphinx::SURBS_REPLY_SIZE, MessageType};
+use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType};
 use rand::Rng;
 use static_assertions::const_assert;
 use std::{
@@ -35,7 +35,7 @@ type MessageHash = [u8; 32];
 pub const FRAGMENT_PACKET_SIZE: usize = 2048;
 const FRAGMENT_HEADER_SIZE: usize = 4 + 32;
 const FRAGMENT_FIRST_CHUNK_HEADER_SIZE: usize = FRAGMENT_HEADER_SIZE + 32 + 4;
-const_assert!(SURBS_REPLY_SIZE < FRAGMENT_PACKET_SIZE - FRAGMENT_FIRST_CHUNK_HEADER_SIZE);
+const_assert!(SURB_REPLY_SIZE < FRAGMENT_PACKET_SIZE - FRAGMENT_FIRST_CHUNK_HEADER_SIZE);
 const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 
@@ -97,7 +97,7 @@ impl Fragment {
 		buf.extend_from_slice(chunk);
 
 		debug_assert!(if with_surb && index == 0 {
-			buf.len() == FRAGMENT_PACKET_SIZE - SURBS_REPLY_SIZE
+			buf.len() == FRAGMENT_PACKET_SIZE - SURB_REPLY_SIZE
 		} else {
 			buf.len() == FRAGMENT_PACKET_SIZE
 		});
@@ -125,7 +125,7 @@ impl Fragment {
 		let index = u32::from_be_bytes(index);
 
 		if with_surb {
-			if fragment.len() != FRAGMENT_PACKET_SIZE - SURBS_REPLY_SIZE {
+			if fragment.len() != FRAGMENT_PACKET_SIZE - SURB_REPLY_SIZE {
 				return Err(Error::BadFragment)
 			}
 			if index != 0 {
@@ -177,7 +177,7 @@ struct IncompleteMessage {
 
 impl IncompleteMessage {
 	fn current_len(&self) -> usize {
-		let surb_len = if self.kind.with_surb() { SURBS_REPLY_SIZE } else { 0 };
+		let surb_len = if self.kind.with_surb() { SURB_REPLY_SIZE } else { 0 };
 		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surb_len
 	}
 
@@ -193,7 +193,7 @@ impl IncompleteMessage {
 
 	fn total_expected_fragments(&self) -> Option<usize> {
 		self.target_len.map(|target_len| {
-			let surb_len = if self.kind.with_surb() { SURBS_REPLY_SIZE } else { 0 };
+			let surb_len = if self.kind.with_surb() { SURB_REPLY_SIZE } else { 0 };
 			(target_len as usize + surb_len) / FRAGMENT_PAYLOAD_SIZE + 1
 		})
 	}
@@ -234,11 +234,13 @@ impl IncompleteMessage {
 }
 
 /// Manages partial message fragments.
-pub struct MessageCollection(MixnetCollection<MessageHash, IncompleteMessage>);
+pub struct MessageCollection {
+	messages: MixnetCollection<MessageHash, IncompleteMessage>,
+}
 
 impl MessageCollection {
 	pub fn new() -> Self {
-		MessageCollection(MixnetCollection::new(FRAGMENT_EXPIRATION_MS))
+		Self { messages: MixnetCollection::new(FRAGMENT_EXPIRATION_MS) }
 	}
 
 	/// Insert a new new message fragment in the collection. If the fragment completes some message,
@@ -255,8 +257,8 @@ impl MessageCollection {
 			return Ok(None)
 		};
 
-		let expires_ix = self.0.next_inserted_entry();
-		match self.0.entry(fragment.hash()) {
+		let expires_ix = self.messages.next_inserted_entry();
+		match self.messages.entry(fragment.hash()) {
 			Entry::Occupied(mut e) => {
 				let with_surb = fragment.with_surb;
 				let index = fragment.index;
@@ -272,7 +274,7 @@ impl MessageCollection {
 				if e.get().0.is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
 					let e = e.remove();
-					let e = self.0.removed_entry(e);
+					let e = self.messages.removed_entry(e);
 					return Ok(Some(e.reconstruct()?))
 				}
 			},
@@ -293,7 +295,7 @@ impl MessageCollection {
 					return Ok(Some(message.reconstruct()?))
 				}
 				e.insert((message, expires_ix));
-				self.0.inserted_entry(hash, Instant::now());
+				self.messages.inserted_entry(hash, Instant::now());
 			},
 		}
 		Ok(None)
@@ -301,7 +303,7 @@ impl MessageCollection {
 
 	/// Perform periodic maintenance. Messages that sit in the collection for too long are expunged.
 	pub fn cleanup(&mut self, now: Instant) {
-		let removed = self.0.cleanup(now);
+		let removed = self.messages.cleanup(now);
 		if removed > 0 {
 			log::trace!(target: "mixnet", "Fragment cleanup. Removed {} fragments", removed)
 		}
@@ -315,7 +317,7 @@ pub fn create_fragments(
 	mut message: Vec<u8>,
 	with_surb: bool,
 ) -> Result<Vec<Fragment>, Error> {
-	let surb_len = if with_surb { SURBS_REPLY_SIZE } else { 0 };
+	let surb_len = if with_surb { SURB_REPLY_SIZE } else { 0 };
 	let additional_first_header = FRAGMENT_FIRST_CHUNK_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
 	if message.len() > MAX_MESSAGE_SIZE {
 		return Err(Error::MessageTooLarge)
@@ -337,7 +339,7 @@ pub fn create_fragments(
 	for n in 0..nb_chunks {
 		let additional_header = if n == 0 { additional_first_header } else { 0 };
 		let fragment_len = if with_surb && n == 0 {
-			FRAGMENT_PAYLOAD_SIZE - SURBS_REPLY_SIZE - additional_header
+			FRAGMENT_PAYLOAD_SIZE - SURB_REPLY_SIZE - additional_header
 		} else {
 			FRAGMENT_PAYLOAD_SIZE - additional_header
 		};
@@ -428,7 +430,7 @@ mod test {
 	fn cleanup() {
 		let mut rng = rand::thread_rng();
 		let mut fragments = MessageCollection::new();
-		fragments.0.expiration = std::time::Duration::from_millis(0);
+		fragments.messages.expiration = std::time::Duration::from_millis(0);
 		let mut message = Vec::new();
 		message.resize(FRAGMENT_PACKET_SIZE * 2, 0u8);
 		let message_fragments = create_fragments(&mut rng, message, false).unwrap();
@@ -438,8 +440,8 @@ mod test {
 				.unwrap(),
 			None
 		);
-		assert_eq!(1, fragments.0.messages.len());
+		assert_eq!(1, fragments.messages.messages.len());
 		fragments.cleanup(Instant::now());
-		assert_eq!(0, fragments.0.messages.len());
+		assert_eq!(0, fragments.messages.messages.len());
 	}
 }

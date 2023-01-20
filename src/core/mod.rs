@@ -30,7 +30,7 @@ pub use crate::core::{config::Config, sphinx::SurbPayload};
 use crate::{
 	core::{
 		fragment::MessageCollection,
-		sphinx::{SprpKey, SurbPersistance},
+		sphinx::{SprpKey, SentSurbInfo},
 	},
 	MessageType, MixPeerId, NetworkId, SendOptions,
 };
@@ -64,7 +64,7 @@ const MAX_QUEUED_PACKETS: usize = 8192;
 pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
 
 /// Associated information to a packet or header.
-pub struct TransmitInfo {
+pub struct HeaderInfo {
 	sprp_keys: Vec<SprpKey>,
 	surb_id: Option<ReplayTag>,
 }
@@ -208,7 +208,7 @@ pub struct Mixnet {
 pub struct ReplayTag(pub [u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
 
 pub struct SurbsCollection {
-	pending: MixnetCollection<ReplayTag, SurbPersistance>,
+	pending: MixnetCollection<ReplayTag, SentSurbInfo>,
 }
 
 impl SurbsCollection {
@@ -216,7 +216,7 @@ impl SurbsCollection {
 		SurbsCollection { pending: MixnetCollection::new(config.surb_ttl_ms) }
 	}
 
-	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbPersistance, now: Instant) {
+	pub fn insert(&mut self, surb_id: ReplayTag, surb: SentSurbInfo, now: Instant) {
 		self.pending.insert(surb_id, surb, now);
 	}
 
@@ -471,10 +471,10 @@ impl Mixnet {
 			let (packet, surb_keys) =
 				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(|e| Error::SphinxError(e))?;
-			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
-				let persistance = SurbPersistance {
+			if let Some(HeaderInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
+				let persistance = SentSurbInfo {
 					keys,
-					query: surb_query.take(),
+					message_payload: surb_query.take(),
 					recipient: *paths[n].last().unwrap(),
 				};
 				self.surb.insert(surb_id, persistance.into(), std::time::Instant::now());
@@ -554,8 +554,8 @@ impl Mixnet {
 					log::error!(target: "mixnet", "Surb fragment from {:?}", peer_id);
 				}
 			},
-			Ok(Unwrapped::SurbQuery(encoded_surb, payload)) => {
-				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
+			Ok(Unwrapped::PayloadWithSurb(encoded_surb, payload)) => {
+				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURB_REPLY_SIZE);
 				if let Some(m) = self.fragments.insert_fragment(
 					payload,
 					MessageType::WithSurb(Box::new(encoded_surb.into())),
