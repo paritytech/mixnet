@@ -21,7 +21,7 @@
 //! Mix message fragment management
 
 use super::{error::Error, MixnetCollection};
-use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType};
+use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType, SurbPayload};
 use rand::Rng;
 use static_assertions::const_assert;
 use std::{
@@ -65,7 +65,6 @@ fn hash(iv: &[u8], data: &[u8]) -> MessageHash {
 pub struct Fragment {
 	buf: Vec<u8>,
 	index: u32,
-	with_surb: bool,
 }
 
 impl Fragment {
@@ -74,7 +73,7 @@ impl Fragment {
 		let mut buf = vec![0; FRAGMENT_PACKET_SIZE];
 		buf[0..4].copy_from_slice(&COVER_TAG[..]);
 		rng.fill_bytes(&mut buf[4..]);
-		Fragment { buf, index: 0, with_surb: false }
+		Fragment { buf, index: 0 }
 	}
 
 	pub fn create(
@@ -83,7 +82,6 @@ impl Fragment {
 		iv: &[u8],
 		message_len: u32,
 		chunk: &[u8],
-		with_surb: bool,
 	) -> Fragment {
 		let mut buf = Vec::with_capacity(FRAGMENT_PACKET_SIZE);
 		buf.extend_from_slice(&index.to_be_bytes());
@@ -96,13 +94,7 @@ impl Fragment {
 		// chunk size must match (need to be padded).
 		buf.extend_from_slice(chunk);
 
-		debug_assert!(if with_surb && index == 0 {
-			buf.len() == FRAGMENT_PACKET_SIZE - SURB_REPLY_SIZE
-		} else {
-			buf.len() == FRAGMENT_PACKET_SIZE
-		});
-
-		Fragment { buf, index, with_surb }
+		Fragment { buf, index }
 	}
 
 	fn hash(&self) -> MessageHash {
@@ -111,7 +103,7 @@ impl Fragment {
 		hash
 	}
 
-	pub fn from_message(fragment: Vec<u8>, kind: &MessageType) -> Result<Option<Self>, Error> {
+	fn from_encoded(fragment: Vec<u8>, kind: &MessageType) -> Result<Option<Self>, Error> {
 		let with_surb = kind.with_surb();
 		if !with_surb && fragment.len() != FRAGMENT_PACKET_SIZE {
 			return Err(Error::BadFragment)
@@ -133,7 +125,7 @@ impl Fragment {
 			}
 		}
 
-		Ok(Some(Fragment { buf: fragment, index, with_surb }))
+		Ok(Some(Fragment { buf: fragment, index }))
 	}
 
 	pub fn iv(&self) -> Option<Box<[u8; 32]>> {
@@ -172,12 +164,12 @@ struct IncompleteMessage {
 	target_iv: Option<Box<[u8; 32]>>,
 	target_hash: MessageHash,
 	fragments: HashMap<u32, Fragment>,
-	kind: MessageType,
+	has_surb: Option<Box<SurbPayload>>,
 }
 
 impl IncompleteMessage {
 	fn current_len(&self) -> usize {
-		let surb_len = if self.kind.with_surb() { SURB_REPLY_SIZE } else { 0 };
+		let surb_len = if self.has_surb.is_some() { SURB_REPLY_SIZE } else { 0 };
 		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surb_len
 	}
 
@@ -193,7 +185,7 @@ impl IncompleteMessage {
 
 	fn total_expected_fragments(&self) -> Option<usize> {
 		self.target_len.map(|target_len| {
-			let surb_len = if self.kind.with_surb() { SURB_REPLY_SIZE } else { 0 };
+			let surb_len = if self.has_surb.is_some() { SURB_REPLY_SIZE } else { 0 };
 			(target_len as usize + surb_len) / FRAGMENT_PAYLOAD_SIZE + 1
 		})
 	}
@@ -226,7 +218,12 @@ impl IncompleteMessage {
 		if let Some(iv) = self.target_iv {
 			let hash = hash(&iv[..], &result);
 			if hash == self.target_hash {
-				return Ok((result, self.kind))
+				let kind = if let Some(surb) = self.has_surb {
+					MessageType::WithSurb(surb)
+				} else {
+					MessageType::StandAlone
+				};
+				return Ok((result, kind))
 			}
 		}
 		Err(Error::BadFragment)
@@ -250,7 +247,7 @@ impl MessageCollection {
 		fragment: Vec<u8>,
 		kind: MessageType,
 	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
-		let fragment = if let Some(fragment) = Fragment::from_message(fragment, &kind)? {
+		let fragment = if let Some(fragment) = Fragment::from_encoded(fragment, &kind)? {
 			fragment
 		} else {
 			// Discard cover message
@@ -258,18 +255,23 @@ impl MessageCollection {
 		};
 
 		let expires_ix = self.messages.next_inserted_entry();
+		let has_surb = match kind {
+			MessageType::WithSurb(surb) => Some(surb),
+			MessageType::StandAlone => None,
+			MessageType::FromSurb(..) => return Err(Error::UnexpectedSurbReply),
+		};
+
 		match self.messages.entry(fragment.hash()) {
 			Entry::Occupied(mut e) => {
-				let with_surb = fragment.with_surb;
 				let index = fragment.index;
 				if index == 0 {
 					e.get_mut().0.target_len = fragment.message_len();
 					e.get_mut().0.target_iv = fragment.iv();
 				}
-				e.get_mut().0.fragments.insert(index, fragment);
-				if with_surb {
-					e.get_mut().0.kind = kind;
+				if has_surb.is_some() {
+					e.get_mut().0.has_surb = has_surb;
 				}
+				e.get_mut().0.fragments.insert(index, fragment);
 				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().0.num_fragments(), e.get().0.total_expected_fragments());
 				if e.get().0.is_complete() {
 					log::trace!(target: "mixnet", "Fragment complete");
@@ -285,7 +287,7 @@ impl MessageCollection {
 					target_len: fragment.message_len(),
 					target_iv: fragment.iv(),
 					fragments: Default::default(),
-					kind,
+					has_surb,
 				};
 				let hash = fragment.hash();
 				message.fragments.insert(index, fragment);
@@ -345,8 +347,7 @@ pub fn create_fragments(
 		};
 		let chunk = &message[offset..offset + fragment_len];
 		offset += fragment_len;
-		let fragment =
-			Fragment::create(n as u32, hash, iv.as_slice(), message_len as u32, chunk, with_surb);
+		let fragment = Fragment::create(n as u32, hash, iv.as_slice(), message_len as u32, chunk);
 		fragments.push(fragment);
 	}
 	Ok(fragments)
@@ -355,27 +356,25 @@ pub fn create_fragments(
 #[cfg(test)]
 mod test {
 	use super::*;
+	use crate::core::sphinx::SURB_REPLY_SIZE;
 	use rand::{prelude::SliceRandom, RngCore};
 
 	#[test]
 	fn create_and_insert_small() {
-		let peer_public_key =
-			x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from([0u8; 32]));
-		let recipient = Box::new(([0u8; 32], peer_public_key)); // unused in test
-
 		let mut rng = rand::thread_rng();
 		let mut fragments = MessageCollection::new();
 
-		let small_fragment = create_fragments(&mut rng, vec![42], false).unwrap();
+		let small_fragment = create_fragments(&mut rng, vec![42], true).unwrap();
 		assert_eq!(small_fragment.len(), 1);
 		let small_fragment = small_fragment[0].clone().into_vec();
-		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE);
+		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE - SURB_REPLY_SIZE);
 
+		let dummy_surb = Box::new(SurbPayload::from(vec![0; SURB_REPLY_SIZE]));
 		assert_eq!(
 			fragments
-				.insert_fragment(small_fragment, MessageType::FromSurb(recipient.clone()))
+				.insert_fragment(small_fragment, MessageType::WithSurb(dummy_surb.clone()))
 				.unwrap(),
-			Some((vec![42], MessageType::FromSurb(recipient)))
+			Some((vec![42], MessageType::WithSurb(dummy_surb)))
 		);
 
 		let mut large = Vec::new();

@@ -40,6 +40,8 @@ pub enum Error {
 	BadFragment,
 	/// Packet queue is full.
 	QueueFull,
+	/// Surb reply not expected.
+	UnexpectedSurbReply,
 }
 
 impl fmt::Display for Error {
@@ -53,6 +55,7 @@ impl fmt::Display for Error {
 				write!(f, "Invalid peer id in the Sphinx packet: {:?}.", id),
 			Error::BadFragment => write!(f, "Bad message fragment."),
 			Error::QueueFull => write!(f, "Packet queue is full."),
+			Error::UnexpectedSurbReply => write!(f, "Surb reply received but not expected."),
 		}
 	}
 }
