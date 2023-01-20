@@ -23,7 +23,7 @@ mod network;
 
 pub use crate::core::{
 	public_from_ed25519, secret_from_ed25519, to_sphinx_id, Config, Error, MixPublicKey,
-	MixSecretKey, SurbsPayload, Topology,
+	MixSecretKey, SurbPayload, Topology,
 };
 pub use network::{MixnetBehaviour, NetworkEvent};
 
@@ -52,22 +52,22 @@ pub enum MessageType {
 	/// Message only.
 	StandAlone,
 	/// Message with a surb for reply.
-	WithSurbs(Box<SurbsPayload>),
+	WithSurb(Box<SurbPayload>),
 	/// Message from a surb reply (trusted), and initial query
 	/// if stored.
-	FromSurbs(Option<Vec<u8>>, Box<(MixPeerId, MixPublicKey)>),
+	FromSurb(Option<Vec<u8>>, Box<(MixPeerId, MixPublicKey)>),
 }
 
 impl MessageType {
 	/// can the message a surb reply.
 	pub fn with_surb(&self) -> bool {
-		matches!(self, &MessageType::WithSurbs(_))
+		matches!(self, &MessageType::WithSurb(_))
 	}
 
 	/// Extract surb.
-	pub fn surb(self) -> Option<Box<SurbsPayload>> {
+	pub fn surb(self) -> Option<Box<SurbPayload>> {
 		match self {
-			MessageType::WithSurbs(surb) => Some(surb),
+			MessageType::WithSurb(surb) => Some(surb),
 			_ => None,
 		}
 	}
@@ -75,7 +75,7 @@ impl MessageType {
 	/// Extract surb query if stored.
 	pub fn extract_surb_query(&mut self) -> Option<Option<Vec<u8>>> {
 		match self {
-			MessageType::FromSurbs(surb, _) => Some(surb.take()),
+			MessageType::FromSurb(surb, _) => Some(surb.take()),
 			_ => None,
 		}
 	}

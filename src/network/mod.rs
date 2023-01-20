@@ -99,11 +99,12 @@ impl MixnetBehaviour {
 		self.mixnet.register_message(None, message, send_options)
 	}
 
-	/// Reply with a surb	/// multiple hops with random delays to the specified recipient.
+	/// Reply with a surb
+	/// multiple hops with random delays to the specified recipient.
 	pub fn reply(
 		&mut self,
 		message: Vec<u8>,
-		surbs: crate::SurbsPayload,
+		surbs: crate::SurbPayload,
 	) -> std::result::Result<(), Error> {
 		self.mixnet.register_surb(message, surbs)
 	}

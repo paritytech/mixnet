@@ -26,11 +26,11 @@ mod fragment;
 mod sphinx;
 mod topology;
 
-pub use crate::core::{config::Config, sphinx::SurbsPayload};
+pub use crate::core::{config::Config, sphinx::SurbPayload};
 use crate::{
 	core::{
 		fragment::MessageCollection,
-		sphinx::{SprpKey, SurbsPersistance},
+		sphinx::{SprpKey, SurbPersistance},
 	},
 	MessageType, MixPeerId, NetworkId, SendOptions,
 };
@@ -208,7 +208,7 @@ pub struct Mixnet {
 pub struct ReplayTag(pub [u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
 
 pub struct SurbsCollection {
-	pending: MixnetCollection<ReplayTag, SurbsPersistance>,
+	pending: MixnetCollection<ReplayTag, SurbPersistance>,
 }
 
 impl SurbsCollection {
@@ -216,7 +216,7 @@ impl SurbsCollection {
 		SurbsCollection { pending: MixnetCollection::new(config.surb_ttl_ms) }
 	}
 
-	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbsPersistance, now: Instant) {
+	pub fn insert(&mut self, surb_id: ReplayTag, surb: SurbPersistance, now: Instant) {
 		self.pending.insert(surb_id, surb, now);
 	}
 
@@ -472,7 +472,7 @@ impl Mixnet {
 				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
 					.map_err(|e| Error::SphinxError(e))?;
 			if let Some(TransmitInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
-				let persistance = SurbsPersistance {
+				let persistance = SurbPersistance {
 					keys,
 					query: surb_query.take(),
 					recipient: *paths[n].last().unwrap(),
@@ -490,8 +490,8 @@ impl Mixnet {
 		Ok(())
 	}
 
-	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbsPayload) -> Result<(), Error> {
-		let SurbsPayload { first_node, first_key, header } = surb;
+	pub fn register_surb(&mut self, message: Vec<u8>, surb: SurbPayload) -> Result<(), Error> {
+		let SurbPayload { first_node, first_key, header } = surb;
 		let mut rng = rand::thread_rng();
 
 		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
@@ -543,22 +543,22 @@ impl Mixnet {
 				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
 				self.queue_packet(next_id, packet.into_vec(), Duration::from_nanos(delay as u64))?;
 			},
-			Ok(Unwrapped::SurbsReply(payload, query, recipient)) => {
+			Ok(Unwrapped::SurbReply(payload, query, recipient)) => {
 				if let Some(m) = self
 					.fragments
-					.insert_fragment(payload, MessageType::FromSurbs(query, recipient))?
+					.insert_fragment(payload, MessageType::FromSurb(query, recipient))?
 				{
 					log::debug!(target: "mixnet", "Imported surb from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))
 				} else {
-					log::error!(target: "mixnet", "Surbs fragment from {:?}", peer_id);
+					log::error!(target: "mixnet", "Surb fragment from {:?}", peer_id);
 				}
 			},
-			Ok(Unwrapped::SurbsQuery(encoded_surb, payload)) => {
+			Ok(Unwrapped::SurbQuery(encoded_surb, payload)) => {
 				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURBS_REPLY_SIZE);
 				if let Some(m) = self.fragments.insert_fragment(
 					payload,
-					MessageType::WithSurbs(Box::new(encoded_surb.into())),
+					MessageType::WithSurb(Box::new(encoded_surb.into())),
 				)? {
 					log::debug!(target: "mixnet", "Imported message from {:?} ({} bytes)", peer_id, m.0.len());
 					return Ok(Some(m))

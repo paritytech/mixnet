@@ -373,10 +373,10 @@ mod test {
 			fragments
 				.insert_fragment(
 					small_fragment,
-					MessageType::FromSurbs(Some(vec![1]), recipient.clone())
+					MessageType::FromSurb(Some(vec![1]), recipient.clone())
 				)
 				.unwrap(),
-			Some((vec![42], MessageType::FromSurbs(Some(vec![1]), recipient)))
+			Some((vec![42], MessageType::FromSurb(Some(vec![1]), recipient)))
 		);
 
 		let mut large = Vec::new();
