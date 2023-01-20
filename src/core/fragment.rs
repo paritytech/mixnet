@@ -34,8 +34,8 @@ type MessageHash = [u8; 32];
 /// Target fragment size. Includes the header and the payload.
 pub const FRAGMENT_PACKET_SIZE: usize = 2048;
 const FRAGMENT_HEADER_SIZE: usize = 4 + 32;
-const FRAGMENT_FIRST_CHUNK_HEADER_SIZE: usize = FRAGMENT_HEADER_SIZE + 32 + 4;
-const_assert!(SURB_REPLY_SIZE < FRAGMENT_PACKET_SIZE - FRAGMENT_FIRST_CHUNK_HEADER_SIZE);
+const FIRST_FRAGMENT_HEADER_SIZE: usize = FRAGMENT_HEADER_SIZE + 32 + 4;
+const_assert!(SURB_REPLY_SIZE < FRAGMENT_PACKET_SIZE - FIRST_FRAGMENT_HEADER_SIZE);
 const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 
@@ -158,7 +158,7 @@ impl Fragment {
 
 	pub fn data(&self) -> &[u8] {
 		let offset =
-			if self.index == 0 { FRAGMENT_FIRST_CHUNK_HEADER_SIZE } else { FRAGMENT_HEADER_SIZE };
+			if self.index == 0 { FIRST_FRAGMENT_HEADER_SIZE } else { FRAGMENT_HEADER_SIZE };
 		&self.buf[offset..]
 	}
 
@@ -318,7 +318,7 @@ pub fn create_fragments(
 	with_surb: bool,
 ) -> Result<Vec<Fragment>, Error> {
 	let surb_len = if with_surb { SURB_REPLY_SIZE } else { 0 };
-	let additional_first_header = FRAGMENT_FIRST_CHUNK_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
+	let additional_first_header = FIRST_FRAGMENT_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
 	if message.len() > MAX_MESSAGE_SIZE {
 		return Err(Error::MessageTooLarge)
 	}
