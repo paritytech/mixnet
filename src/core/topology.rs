@@ -20,8 +20,14 @@
 
 //! Mixnet topology interface.
 
-use crate::{core::MixPublicKey, MixPeerId, core::MixPeerAddress};
-use rand::{prelude::{SliceRandom, IteratorRandom}, CryptoRng, Rng};
+use crate::{
+	core::{MixPeerAddress, MixPublicKey},
+	MixPeerId,
+};
+use rand::{
+	prelude::{IteratorRandom, SliceRandom},
+	CryptoRng, Rng,
+};
 
 const NUM_GATEWAYS: usize = 5;
 
@@ -41,7 +47,8 @@ impl SessionTopology {
 		self.nodes.iter().choose(rng).map(|(id, _, _)| id.clone())
 	}
 
-	/// If the node isn't part of the topology this returns a set of gateway addresses to connect to.
+	/// If the node isn't part of the topology this returns a set of gateway addresses to connect
+	/// to.
 	pub fn gateways<R: Rng + CryptoRng + ?Sized>(&self, rng: &mut R) -> Vec<MixPeerAddress> {
 		self.nodes
 			.as_slice()
@@ -65,9 +72,9 @@ impl SessionTopology {
 		let mut prev = *start;
 		let mut next = *start;
 		let mut next_pk = *start_pk;
-		for i in 0 .. num_hops - 1 {
+		for i in 0..num_hops - 1 {
 			while next == prev || (i == num_hops - 2 && next == *recipient) {
-				(next, next_pk, _)= *self.nodes.as_slice().choose(rng)?;
+				(next, next_pk, _) = *self.nodes.as_slice().choose(rng)?;
 			}
 			result.push((next, next_pk));
 			prev = next;

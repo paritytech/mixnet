@@ -45,9 +45,9 @@ use std::{
 	cmp::Ordering,
 	collections::{BinaryHeap, HashMap, VecDeque},
 	num::Wrapping,
+	sync::Arc,
 	task::{Context, Poll},
 	time::{Duration, Instant},
-	sync::Arc,
 };
 
 pub use topology::SessionTopology;
@@ -492,11 +492,7 @@ impl Mixnet {
 		Ok(())
 	}
 
-	pub fn register_surb_reply(
-		&mut self,
-		message: Vec<u8>,
-		surb: Surb,
-	) -> Result<(), Error> {
+	pub fn register_surb_reply(&mut self, message: Vec<u8>, surb: Surb) -> Result<(), Error> {
 		let SurbPayload { first_node, first_key, header } = *surb;
 		let mut rng = rand::thread_rng();
 
@@ -605,8 +601,13 @@ impl Mixnet {
 	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
 		let mut rng = rand::thread_rng();
 		let mut result = Vec::new();
-		for _ in 0 .. count {
-			match self.topology.random_path_to(&mut rng, &start, recipient, num_hops.unwrap_or(self.num_hops)) {
+		for _ in 0..count {
+			match self.topology.random_path_to(
+				&mut rng,
+				&start,
+				recipient,
+				num_hops.unwrap_or(self.num_hops),
+			) {
 				Some(path) => result.push(path),
 				None => return Err(Error::NoPath(Some(recipient.clone()))),
 			}

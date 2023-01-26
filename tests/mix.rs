@@ -28,11 +28,11 @@ use libp2p_core::{
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
-use libp2p_tcp::{GenTcpConfig, TcpTransport};
+use libp2p_tcp::{async_io::Transport as TcpTransport, Config as GenTcpConfig};
 use rand::RngCore;
 use std::sync::Arc;
 
-use mixnet::{MessageType, SendOptions, SessionTopology, PublicKeyStore};
+use mixnet::{MessageType, PublicKeyStore, SendOptions, SessionTopology};
 
 #[macro_export]
 macro_rules! log_unwrap {
@@ -102,7 +102,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		let mut mixnet = mixnet::MixnetBehaviour::new(cfg, keystore);
 		let topology = SessionTopology::new(nodes.clone());
 		mixnet.set_session_topolgy(0, topology);
-		let mut swarm = Swarm::new(trans, mixnet, network_id);
+		let mut swarm = Swarm::with_threadpool_executor(trans, mixnet, network_id);
 		swarm.listen_on(addrs[0].clone()).unwrap();
 		swarms.push(swarm);
 	}

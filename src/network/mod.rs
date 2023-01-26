@@ -26,10 +26,10 @@ mod protocol;
 
 use crate::{
 	core::{
-		to_mix_peer_id, Config, Error, MixEvent, Mixnet, Packet, PublicKeyStore,
-		Surb, MixPeerAddress, SessionIndex, PUBLIC_KEY_LEN
+		to_mix_peer_id, Config, Error, MixEvent, MixPeerAddress, Mixnet, Packet, PublicKeyStore,
+		SessionIndex, Surb, PUBLIC_KEY_LEN,
 	},
-	DecodedMessage, MixPublicKey, MixPeerId, NetworkPeerId, SendOptions, SessionTopology,
+	DecodedMessage, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, SessionTopology,
 };
 use futures_timer::Delay;
 use handler::{Failure, Handler, Message};
@@ -39,9 +39,9 @@ use libp2p_swarm::{
 };
 use std::{
 	collections::{HashMap, VecDeque},
+	sync::Arc,
 	task::{Context, Poll},
 	time::Duration,
-	sync::Arc,
 };
 
 type Result = std::result::Result<Message, Failure>;
@@ -104,15 +104,12 @@ impl MixnetBehaviour {
 	}
 
 	/// Send a reply to a previously received message.
-	pub fn send_reply(
-		&mut self,
-		message: Vec<u8>,
-		surb: Surb,
-	) -> std::result::Result<(), Error> {
+	pub fn send_reply(&mut self, message: Vec<u8>, surb: Surb) -> std::result::Result<(), Error> {
 		self.mixnet.register_surb_reply(message, surb)
 	}
 
-	/// If the node isn't part of the topology this returns a set of gateway addresses to connect to.
+	/// If the node isn't part of the topology this returns a set of gateway addresses to connect
+	/// to.
 	pub fn gateways(&self) -> Vec<MixPeerAddress> {
 		self.mixnet.gateways()
 	}
