@@ -18,146 +18,230 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Sphinx crypto primitives
+//! Key exchange, secret derivation, MAC computation, and encryption.
 
-use super::{RawKey, KEY_SIZE};
-use aes::{
-	cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher as AesStreamCipher},
-	Aes128,
+use super::packet::{EncryptedHeader, KxPublic, Mac, Payload, MAX_HOPS};
+use arrayref::array_refs;
+use arrayvec::ArrayVec;
+use blake2::{
+	digest::{
+		consts::{U16, U32, U64},
+		generic_array::GenericArray,
+		FixedOutput, Mac as DigestMac,
+	},
+	Blake2bMac,
 };
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use c2_chacha::{
+	stream_cipher::{NewStreamCipher, SyncStreamCipher},
+	ChaCha20,
+};
+use curve25519_dalek::{
+	constants::ED25519_BASEPOINT_TABLE, montgomery::MontgomeryPoint, scalar::Scalar,
+	traits::IsIdentity,
+};
+use lioness::LionessDefault;
+use rand::{CryptoRng, Rng};
 
-type Aes128Ctr = ctr::Ctr64BE<Aes128>;
+// These should all be 16 bytes long
+const KX_BLINDING_FACTOR_PERSONA: &[u8] = b"sphinx-blind-fac";
+const SMALL_DERIVED_SECRETS_PERSONA: &[u8] = b"sphinx-small-d-s";
+const PAYLOAD_ENCRYPTION_KEY_PERSONA: &[u8] = b"sphinx-pl-en-key";
 
-type LionessCipher = lioness::LionessDefault;
+////////////////////////////////////////////////////////////////////////////////
+// Key exchange
+////////////////////////////////////////////////////////////////////////////////
 
-/// the key size of the MAC in bytes
-pub const MAC_KEY_SIZE: usize = 32;
+/// Shared secret produced by key exchange between a message sender and a mixnode.
+pub type KxSharedSecret = [u8; 32];
 
-/// the output size of the MAC in bytes.
-pub const MAC_SIZE: usize = 16;
-
-/// the key size of the stream cipher in bytes.
-pub const STREAM_KEY_SIZE: usize = 16;
-
-/// the IV size of the stream cipher in bytes.
-pub const STREAM_IV_SIZE: usize = 16;
-
-/// the key size of the SPRP in bytes.
-pub const SPRP_KEY_SIZE: usize = lioness::RAW_KEY_SIZE;
-
-/// the size of the DH group element in bytes.
-pub const GROUP_ELEMENT_SIZE: usize = KEY_SIZE;
-
-/// Output size of the fragment hasher.
-pub const HASH_OUTPUT_SIZE: usize = 32;
-
-const KDF_OUTPUT_SIZE: usize =
-	MAC_KEY_SIZE + STREAM_KEY_SIZE + STREAM_IV_SIZE + SPRP_KEY_SIZE + KEY_SIZE;
-
-const KDF_INFO_STR: &str = "paritytech-kdf-v0-hkdf-sha256";
-
-/// Stream cipher for sphinx crypto usage.
-pub struct StreamCipher {
-	cipher: Aes128Ctr,
+/// Apply X25519 bit clamping to the given raw bytes to produce a scalar for use with Curve25519.
+fn clamp_scalar(mut scalar: [u8; 32]) -> Scalar {
+	scalar[0] &= 248;
+	scalar[31] &= 127;
+	scalar[31] |= 64;
+	Scalar::from_bits(scalar)
 }
 
-impl StreamCipher {
-	/// Create a new StreamCipher struct.
-	pub fn new(raw_key: &[u8; STREAM_KEY_SIZE], raw_iv: &[u8; STREAM_IV_SIZE]) -> StreamCipher {
-		let key = GenericArray::from_slice(&raw_key[..]);
-		let iv = GenericArray::from_slice(raw_iv);
-		StreamCipher { cipher: Aes128Ctr::new(key, iv) }
+/// Generate a key-exchange secret key.
+pub fn gen_kx_secret(rng: &mut (impl Rng + CryptoRng)) -> Scalar {
+	let mut secret = [0; 32];
+	rng.fill_bytes(&mut secret);
+	clamp_scalar(secret)
+}
+
+/// Derive the public key corresponding to a secret key.
+pub fn derive_kx_public(kx_secret: &Scalar) -> KxPublic {
+	(&ED25519_BASEPOINT_TABLE * kx_secret).to_montgomery().to_bytes()
+}
+
+fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> Scalar {
+	let mut h = Blake2bMac::<U32>::new_with_salt_and_personal(
+		kx_shared_secret,
+		b"",
+		KX_BLINDING_FACTOR_PERSONA,
+	)
+	.expect("Key, salt, and persona sizes are fixed and small enough");
+	h.update(kx_public);
+	clamp_scalar(h.finalize().into_bytes().into())
+}
+
+/// Apply the blinding factor to `kx_secret`.
+fn blind_kx_secret(
+	kx_secret: &mut Scalar,
+	kx_public: &KxPublic,
+	kx_shared_secret: &KxSharedSecret,
+) {
+	*kx_secret *= derive_kx_blinding_factor(kx_public, kx_shared_secret);
+}
+
+/// Apply the blinding factor to `kx_public`.
+pub fn blind_kx_public(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> KxPublic {
+	(MontgomeryPoint(*kx_public) * derive_kx_blinding_factor(kx_public, kx_shared_secret))
+		.to_bytes()
+}
+
+pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &Scalar) -> KxSharedSecret {
+	(MontgomeryPoint(*kx_public) * kx_secret).to_bytes()
+}
+
+pub fn kx_shared_secret_is_identity(kx_shared_secret: &KxSharedSecret) -> bool {
+	MontgomeryPoint(*kx_shared_secret).is_identity()
+}
+
+/// Generate a public key to go in a packet and the corresponding shared secrets for each hop.
+pub fn gen_kx_public_and_shared_secrets(
+	kx_public: &mut KxPublic,
+	kx_shared_secrets: &mut ArrayVec<KxSharedSecret, MAX_HOPS>,
+	rng: &mut (impl Rng + CryptoRng),
+	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
+) {
+	let mut kx_secret = gen_kx_secret(rng);
+	*kx_public = derive_kx_public(&kx_secret);
+	let mut kx_public = *kx_public;
+
+	for (i, their_kx_public) in their_kx_publics.iter().enumerate() {
+		if i != 0 {
+			if i != 1 {
+				// An alternative would be to use blind_kx_public, but this is much cheaper
+				kx_public = derive_kx_public(&kx_secret);
+			}
+			blind_kx_secret(
+				&mut kx_secret,
+				&kx_public,
+				kx_shared_secrets.last().expect(
+					"On at least second iteration of loop, shared secret pushed every iteration",
+				),
+			);
+		}
+		kx_shared_secrets.push(derive_kx_shared_secret(their_kx_public, &kx_secret));
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Additional secret derivation
+////////////////////////////////////////////////////////////////////////////////
+
+fn derive_secret(derived: &mut [u8], kx_shared_secret: &KxSharedSecret, persona: &[u8]) {
+	for (i, chunk) in derived.chunks_mut(64).enumerate() {
+		// This is the construction libsodium uses for crypto_kdf_derive_from_key; see
+		// https://doc.libsodium.org/key_derivation/
+		let h = Blake2bMac::<U64>::new_with_salt_and_personal(
+			kx_shared_secret,
+			&i.to_le_bytes(),
+			persona,
+		)
+		.expect("Key, salt, and persona sizes are fixed and small enough");
+		h.finalize_into(GenericArray::from_mut_slice(chunk));
+	}
+}
+
+const MAC_KEY_SIZE: usize = 16;
+pub type MacKey = [u8; MAC_KEY_SIZE];
+const HEADER_ENCRYPTION_KEY_SIZE: usize = 32;
+pub type HeaderEncryptionKey = [u8; HEADER_ENCRYPTION_KEY_SIZE];
+const DELAY_SEED_SIZE: usize = 16;
+pub type DelaySeed = [u8; DELAY_SEED_SIZE];
+const SMALL_DERIVED_SECRETS_SIZE: usize =
+	MAC_KEY_SIZE + HEADER_ENCRYPTION_KEY_SIZE + DELAY_SEED_SIZE;
+
+pub struct SmallDerivedSecrets([u8; SMALL_DERIVED_SECRETS_SIZE]);
+
+impl SmallDerivedSecrets {
+	pub fn new(kx_shared_secret: &KxSharedSecret) -> Self {
+		let mut derived = [0; SMALL_DERIVED_SECRETS_SIZE];
+		derive_secret(&mut derived, kx_shared_secret, SMALL_DERIVED_SECRETS_PERSONA);
+		Self(derived)
 	}
 
-	/// Given a key return a cipher stream of length n.
-	pub fn generate(&mut self, n: usize) -> Vec<u8> {
-		let mut output = vec![0u8; n];
-		self.cipher.apply_keystream(&mut output);
-		output
+	fn split(&self) -> (&MacKey, &HeaderEncryptionKey, &DelaySeed) {
+		array_refs![&self.0, MAC_KEY_SIZE, HEADER_ENCRYPTION_KEY_SIZE, DELAY_SEED_SIZE]
 	}
 
-	pub fn xor_key_stream(&mut self, dst: &mut [u8], src: &[u8]) {
-		dst.copy_from_slice(src);
-		self.cipher.apply_keystream(dst);
+	pub fn mac_key(&self) -> &MacKey {
+		self.split().0
+	}
+
+	pub fn header_encryption_key(&self) -> &HeaderEncryptionKey {
+		self.split().1
+	}
+
+	pub fn delay_seed(&self) -> &DelaySeed {
+		self.split().2
 	}
 }
 
-/// PacketKeys are the per-hop Sphinx Packet Keys, derived from the blinded
-/// DH key exchange.
-#[derive(Copy, Clone)]
-#[repr(C)]
-pub struct PacketKeys {
-	pub header_mac: [u8; MAC_KEY_SIZE],
-	pub header_encryption: [u8; STREAM_KEY_SIZE],
-	pub header_encryption_iv: [u8; STREAM_IV_SIZE],
-	pub payload_encryption: [u8; SPRP_KEY_SIZE],
-	pub blinding_factor: [u8; KEY_SIZE],
+pub const PAYLOAD_ENCRYPTION_KEY_SIZE: usize = 192;
+pub type PayloadEncryptionKey = [u8; PAYLOAD_ENCRYPTION_KEY_SIZE];
+
+pub fn derive_payload_encryption_key(kx_shared_secret: &KxSharedSecret) -> PayloadEncryptionKey {
+	let mut derived = [0; PAYLOAD_ENCRYPTION_KEY_SIZE];
+	derive_secret(&mut derived, kx_shared_secret, PAYLOAD_ENCRYPTION_KEY_PERSONA);
+	derived
 }
 
-unsafe impl bytemuck::Zeroable for PacketKeys {}
+////////////////////////////////////////////////////////////////////////////////
+// MAC computation
+////////////////////////////////////////////////////////////////////////////////
 
-unsafe impl bytemuck::Pod for PacketKeys {}
-
-unsafe impl bytemuck::Zeroable for KdfOutput {}
-
-unsafe impl bytemuck::Pod for KdfOutput {}
-
-#[derive(Copy, Clone)]
-#[repr(transparent)]
-struct KdfOutput([u8; KDF_OUTPUT_SIZE]);
-
-/// `kdf` takes the input key material and returns the Sphinx Packet keys.
-pub fn kdf(input: &RawKey) -> PacketKeys {
-	let output = hkdf_expand(input, String::from(KDF_INFO_STR).into_bytes().as_slice());
-	bytemuck::cast(KdfOutput(output))
+pub fn compute_mac(encrypted_header: &[u8], pad: &[u8], key: &MacKey) -> Mac {
+	let mut h = Blake2bMac::<U16>::new_from_slice(key).expect("Key size is fixed and small enough");
+	h.update(encrypted_header);
+	h.update(pad);
+	h.finalize().into_bytes().into()
 }
 
-pub fn hkdf_expand(prk: &[u8], info: &[u8]) -> [u8; KDF_OUTPUT_SIZE] {
-	let mut output = [0u8; KDF_OUTPUT_SIZE];
-	let hk = Hkdf::<Sha256>::from_prk(prk).unwrap();
-	hk.expand(info, &mut output).unwrap();
-	output
+pub fn mac_ok(mac: &Mac, encrypted_header: &EncryptedHeader, key: &MacKey) -> bool {
+	let mut h = Blake2bMac::<U16>::new_from_slice(key).expect("Key size is fixed and small enough");
+	h.update(encrypted_header);
+	h.verify(mac.into()).is_ok()
 }
 
-/// Hash the input.
-pub fn hash(input: &[u8; KEY_SIZE]) -> [u8; HASH_OUTPUT_SIZE] {
-	use blake2::digest::{FixedOutput, Update};
-	type Blake2b256 = blake2::Blake2b<blake2::digest::typenum::U32>;
-	let mut r = [0u8; HASH_OUTPUT_SIZE];
-	let mut ctx = Blake2b256::default();
-	ctx.update(input);
-	let hash = ctx.finalize_fixed();
-	r.copy_from_slice(&hash);
-	r
+////////////////////////////////////////////////////////////////////////////////
+// Header encryption
+////////////////////////////////////////////////////////////////////////////////
+
+pub fn apply_header_encryption_keystream(data: &mut [u8], key: &HeaderEncryptionKey) {
+	// Key is only used once, so fine for nonce to be 0
+	let mut c = ChaCha20::new(key.into(), &[0; 8].into());
+	c.apply_keystream(data);
 }
 
-/// hmac returns the hmac of all the data slices using a given key
-pub fn hmac_list(key: &[u8; MAC_KEY_SIZE], data: &[&[u8]]) -> [u8; MAC_SIZE] {
-	type HmacSha256 = Hmac<Sha256>;
-	let mut mac = HmacSha256::new_from_slice(key).unwrap();
-	for d in data {
-		mac.update(d);
+pub fn apply_keystream(data: &mut [u8], keystream: &[u8]) {
+	for (d, k) in data.iter_mut().zip(keystream) {
+		*d ^= *k;
 	}
-	let mut output = [0u8; MAC_SIZE];
-	output.copy_from_slice(&mac.finalize().into_bytes()[..MAC_SIZE]);
-	output
 }
 
-/// Returns the plaintext of the message msg, decrypted via the
-/// Sphinx SPRP with a given key.
-pub fn sprp_decrypt(key: &[u8; SPRP_KEY_SIZE], mut msg: Vec<u8>) -> Result<Vec<u8>, ()> {
-	let cipher = LionessCipher::new_raw(key);
-	cipher.decrypt(&mut msg).map_err(|_| ())?;
-	Ok(msg)
+////////////////////////////////////////////////////////////////////////////////
+// Payload encryption
+////////////////////////////////////////////////////////////////////////////////
+
+pub fn encrypt_payload(payload: &mut Payload, key: &PayloadEncryptionKey) {
+	let l = LionessDefault::new_raw(key);
+	l.encrypt(payload).expect("Payload size is fixed and large enough");
 }
 
-/// Returns the ciphertext of the message msg, encrypted via the
-/// Sphinx SPRP with a given key.
-pub fn sprp_encrypt(key: &[u8; SPRP_KEY_SIZE], mut msg: Vec<u8>) -> Result<Vec<u8>, ()> {
-	let cipher = LionessCipher::new_raw(key);
-	cipher.encrypt(&mut msg).map_err(|_| ())?;
-	Ok(msg)
+pub fn decrypt_payload(payload: &mut Payload, key: &PayloadEncryptionKey) {
+	let l = LionessDefault::new_raw(key);
+	l.decrypt(payload).expect("Payload size is fixed and large enough");
 }

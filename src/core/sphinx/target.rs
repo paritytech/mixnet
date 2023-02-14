@@ -18,25 +18,37 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Sphinx packet building and "peeling".
+//! Hop target type.
 
-mod build;
-mod crypto;
-mod delay;
-mod packet;
-mod peel;
-mod target;
-mod tests;
+use super::packet::{PeerId, RawMixnodeIndex, MAX_MIXNODE_INDEX};
+use std::fmt;
 
-pub use self::{
-	build::*,
-	crypto::KxSharedSecret,
-	delay::Delay,
-	packet::{
-		CoverId, KxPublic, Packet, Payload, PayloadData, PeerId, RawMixnodeIndex, SurbId,
-		COVER_ID_SIZE, KX_PUBLIC_SIZE, MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PAYLOAD_DATA_SIZE,
-		PAYLOAD_SIZE, PEER_ID_SIZE, SURB_ID_SIZE,
-	},
-	peel::*,
-	target::{MixnodeIndex, Target},
-};
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// The contained index is always <= `MAX_MIXNODE_INDEX`.
+pub struct MixnodeIndex(RawMixnodeIndex);
+
+impl MixnodeIndex {
+	pub fn new(raw_index: RawMixnodeIndex) -> Option<Self> {
+		if raw_index <= MAX_MIXNODE_INDEX {
+			Some(Self(raw_index))
+		} else {
+			None
+		}
+	}
+
+	pub fn get(self) -> RawMixnodeIndex {
+		self.0
+	}
+}
+
+impl fmt::Display for MixnodeIndex {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		self.0.fmt(fmt)
+	}
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Target {
+	MixnodeIndex(MixnodeIndex),
+	PeerId(PeerId),
+}

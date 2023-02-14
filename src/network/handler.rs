@@ -39,19 +39,19 @@ use void::Void;
 /// The configuration for the protocol.
 #[derive(Clone, Debug)]
 pub struct Config {
-	/// Target traffic rate in bits per second.
-	connection_timeout: Duration,
+	pub log_target: &'static str,
+	pub connection_timeout: Duration,
 }
 
-impl Config {
-	pub fn new() -> Self {
-		Self { connection_timeout: Duration::new(10, 0) }
+impl Default for Config {
+	fn default() -> Self {
+		Self { log_target: "mixnet", connection_timeout: Duration::new(10, 0) }
 	}
 }
 
-/// The message event
+/// The packet event
 #[derive(Debug)]
-pub struct Message(pub Vec<u8>);
+pub struct Packet(pub Vec<u8>);
 
 /// An outbound failure.
 #[derive(Debug)]
@@ -69,7 +69,7 @@ impl fmt::Display for Failure {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Failure::Timeout => f.write_str("Mix message timeout"),
-			Failure::Other { error } => write!(f, "Mixnet error: {}", error),
+			Failure::Other { error } => write!(f, "Mixnet error: {error}"),
 			Failure::Unsupported => write!(f, "Mixnet protocol not supported"),
 		}
 	}
@@ -85,7 +85,7 @@ impl Error for Failure {
 	}
 }
 
-/// Protocol handler that handles dispatching messages.
+/// Protocol handler that handles dispatching packets.
 ///
 /// If the remote doesn't send anything within a time frame, produces an error that closes the
 /// connection.
@@ -98,11 +98,11 @@ pub struct Handler {
 	outbound: Option<ProtocolState>,
 	/// The inbound handler, i.e. if there is an inbound
 	/// substream, this is always a future that waits for the
-	/// next inbound message.
-	inbound: Option<MessageFuture>,
+	/// next inbound packet.
+	inbound: Option<PacketFuture>,
 	/// Tracks the state of our handler.
 	state: State,
-	pending_message: Option<Message>,
+	pending_packet: Option<Packet>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,13 +127,13 @@ impl Handler {
 			outbound: None,
 			inbound: None,
 			state: State::Active,
-			pending_message: None,
+			pending_packet: None,
 		}
 	}
 }
 
 impl ConnectionHandler for Handler {
-	type InEvent = Message;
+	type InEvent = Packet;
 	type OutEvent = crate::network::Result;
 	type Error = Failure;
 	type InboundProtocol = protocol::Mixnet;
@@ -150,40 +150,40 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_fully_negotiated_outbound(&mut self, stream: NegotiatedSubstream, (): ()) {
-		if let Some(message) = self.pending_message.take() {
-			let Message(message) = message;
-			let stream = protocol::send_message(stream, message).boxed();
+		if let Some(packet) = self.pending_packet.take() {
+			let Packet(packet) = packet;
+			let stream = protocol::send_message(stream, packet).boxed();
 			self.outbound = Some(ProtocolState::Sending(stream));
 		} else {
 			self.outbound = Some(ProtocolState::Idle(stream));
 		}
 	}
 
-	fn inject_event(&mut self, message: Message) {
-		// Send an outbound message.
+	fn inject_event(&mut self, packet: Packet) {
+		// Send an outbound packet.
 		match self.outbound.take() {
 			Some(ProtocolState::Idle(stream)) => {
-				let Message(message) = message;
-				let stream = protocol::send_message(stream, message).boxed();
+				let Packet(packet) = packet;
+				let stream = protocol::send_message(stream, packet).boxed();
 				self.outbound = Some(ProtocolState::Sending(stream));
 			},
 			Some(ProtocolState::OpenStream) => {
 				self.outbound = Some(ProtocolState::OpenStream);
-				if self.pending_message.is_some() {
-					log::warn!(target: "mixnet", "Dropped message, opening stream");
+				if self.pending_packet.is_some() {
+					log::warn!(target: self.config.log_target, "Dropped packet, opening stream");
 				} else {
-					self.pending_message = Some(message);
+					self.pending_packet = Some(packet);
 				}
 			},
 			Some(ProtocolState::Sending(stream)) => {
 				self.outbound = Some(ProtocolState::Sending(stream));
-				log::warn!(target: "mixnet", "Dropped message, already sending");
+				log::warn!(target: self.config.log_target, "Dropped packet, already sending");
 			},
 			None =>
-				if self.pending_message.is_some() {
-					log::warn!(target: "mixnet", "Dropped message");
+				if self.pending_packet.is_some() {
+					log::warn!(target: self.config.log_target, "Dropped packet");
 				} else {
-					self.pending_message = Some(message);
+					self.pending_packet = Some(packet);
 				},
 		}
 	}
@@ -191,7 +191,7 @@ impl ConnectionHandler for Handler {
 	fn inject_dial_upgrade_error(&mut self, _info: (), error: ConnectionHandlerUpgrErr<Void>) {
 		let error = match error {
 			ConnectionHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
-				log::warn!(target: "mixnet", "Connection upgrade fail on dial.");
+				log::warn!(target: self.config.log_target, "Connection upgrade fail on dial");
 				debug_assert_eq!(self.state, State::Active);
 				self.state = State::Inactive { reported: false };
 				return
@@ -223,18 +223,18 @@ impl ConnectionHandler for Handler {
 			State::Active => {},
 		}
 
-		// Handle inbound messages.
+		// Handle inbound packets.
 		if let Some(fut) = self.inbound.as_mut() {
 			match fut.poll_unpin(cx) {
 				Poll::Pending => {},
 				Poll::Ready(Err(e)) => {
-					log::debug!(target: "mixnet", "Inbound message error: {:?}", e);
+					log::debug!(target: self.config.log_target, "Inbound packet error: {e:?}");
 					self.inbound = None;
 				},
-				Poll::Ready(Ok((stream, msg))) => {
-					// An inbound message.
+				Poll::Ready(Ok((stream, packet))) => {
+					// An inbound packet.
 					self.inbound = Some(protocol::recv_message(stream).boxed());
-					return Poll::Ready(ConnectionHandlerEvent::Custom(Ok(Message(msg))))
+					return Poll::Ready(ConnectionHandlerEvent::Custom(Ok(Packet(packet))))
 				},
 			}
 		}
@@ -242,11 +242,11 @@ impl ConnectionHandler for Handler {
 		loop {
 			// Check for outbound failures.
 			if let Some(error) = self.pending_errors.pop_back() {
-				log::debug!(target: "mixnet", "Protocol failure: {:?}", error);
+				log::debug!(target: self.config.log_target, "Protocol failure: {error:?}");
 				return Poll::Ready(ConnectionHandlerEvent::Close(error))
 			}
 
-			// Continue outbound messages.
+			// Continue outbound packets.
 			match self.outbound.take() {
 				Some(ProtocolState::Idle(stream)) => {
 					self.outbound = Some(ProtocolState::Idle(stream));
@@ -284,10 +284,10 @@ impl ConnectionHandler for Handler {
 	}
 }
 
-type MessageFuture = BoxFuture<'static, Result<(NegotiatedSubstream, Vec<u8>), io::Error>>;
+type PacketFuture = BoxFuture<'static, Result<(NegotiatedSubstream, Vec<u8>), io::Error>>;
 type SendFuture = BoxFuture<'static, Result<NegotiatedSubstream, io::Error>>;
 
-/// The current state w.r.t. outbound messages.
+/// The current state w.r.t. outbound packets.
 enum ProtocolState {
 	OpenStream,
 	Idle(NegotiatedSubstream),
