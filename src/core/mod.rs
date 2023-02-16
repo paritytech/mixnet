@@ -419,13 +419,13 @@ impl Mixnet {
 				session.replay_filter.insert(kx_public(packet));
 
 				// Add to fragment assembler and return any completed message
-				self.fragment_assembler
-					.insert((*payload_data).into(), self.config.log_target)
-					.map(|message| Message::Request {
+				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
+					|message| Message::Request {
 						session_index,
 						data: message.data,
 						surbs: message.surbs,
-					})
+					},
+				)
 			},
 			Action::DeliverReply { surb_id } => {
 				let payload = array_mut_ref![out, 0, PAYLOAD_SIZE];
@@ -450,15 +450,15 @@ impl Mixnet {
 				let payload_data = array_ref![payload, 0, PAYLOAD_DATA_SIZE];
 
 				// Add to fragment assembler and return any completed message
-				self.fragment_assembler
-					.insert((*payload_data).into(), self.config.log_target)
-					.map(|message| {
+				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
+					|message| {
 						if !message.surbs.is_empty() {
 							warn!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
 						Message::Reply { id: message.id, data: message.data }
-					})
+					},
+				)
 			},
 			Action::DeliverCover { cover_id: _ } => None,
 		}

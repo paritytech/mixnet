@@ -176,22 +176,22 @@ impl IncompleteMessage {
 
 	/// Attempt to insert `fragment`, which must be a valid fragment (checked by `check_fragment`).
 	/// Success implies `num_received_fragments` was incremented.
-	fn insert(&mut self, fragment: Box<Fragment>) -> Result<(), IncompleteMessageInsertErr> {
-		debug_assert!(check_fragment(&fragment).is_ok());
+	fn insert(&mut self, fragment: &Fragment) -> Result<(), IncompleteMessageInsertErr> {
+		debug_assert!(check_fragment(fragment).is_ok());
 
-		if num_fragments(&fragment) != self.fragments.len() {
+		if num_fragments(fragment) != self.fragments.len() {
 			return Err(IncompleteMessageInsertErr::InconsistentNumFragments(
-				num_fragments(&fragment),
+				num_fragments(fragment),
 				self.fragments.len(),
 			))
 		}
 
-		let slot = &mut self.fragments[fragment_index(&fragment)];
+		let slot = &mut self.fragments[fragment_index(fragment)];
 		if slot.is_some() {
 			return Err(IncompleteMessageInsertErr::AlreadyHave)
 		}
 
-		*slot = Some(fragment);
+		*slot = Some((*fragment).into());
 		self.num_received_fragments += 1;
 		debug_assert!(self.num_received_fragments <= self.fragments.len());
 		Ok(())
@@ -270,19 +270,19 @@ impl FragmentAssembler {
 
 	/// Attempt to insert `fragment`. If this completes a message, the completed message is
 	/// returned.
-	pub fn insert(&mut self, fragment: Box<Fragment>, log_target: &str) -> Option<GenericMessage> {
-		if let Err(err) = check_fragment(&fragment) {
+	pub fn insert(&mut self, fragment: &Fragment, log_target: &str) -> Option<GenericMessage> {
+		if let Err(err) = check_fragment(fragment) {
 			error!(target: log_target, "Received bad fragment: {err}");
 			return None
 		}
-		let num_fragments = num_fragments(&fragment);
+		let num_fragments = num_fragments(fragment);
 		if num_fragments > self.max_fragments_per_message {
 			return None
 		}
 		if num_fragments == 1 {
-			return Some(GenericMessage::from_fragments(std::iter::once(fragment.as_ref())))
+			return Some(GenericMessage::from_fragments(std::iter::once(fragment)))
 		}
-		match self.incomplete_messages.entry(*message_id(&fragment)) {
+		match self.incomplete_messages.entry(*message_id(fragment)) {
 			Entry::Occupied(mut entry) => {
 				let incomplete_message = entry.get_mut();
 				if let Err(err) = incomplete_message.insert(fragment) {
@@ -429,7 +429,7 @@ mod tests {
 		assert_eq!(blueprints.len(), 1);
 		let blueprint = blueprints.next().unwrap();
 
-		let mut fragment = default_boxed_array();
+		let mut fragment = [0; FRAGMENT_SIZE];
 		blueprint.write_except_surbs(&mut fragment);
 		let mut dummy_surb = [0; SURB_SIZE];
 		rng.fill_bytes(&mut dummy_surb);
@@ -441,7 +441,7 @@ mod tests {
 
 		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
 		assert_eq!(
-			fa.insert(fragment, LOG_TARGET),
+			fa.insert(&fragment, LOG_TARGET),
 			Some(GenericMessage { id, data: vec![42], surbs: vec![dummy_surb] })
 		);
 	}
@@ -457,9 +457,9 @@ mod tests {
 			.collect()
 	}
 
-	fn insert_fragments(
+	fn insert_fragments<'a>(
 		fa: &mut FragmentAssembler,
-		mut fragments: impl Iterator<Item = Box<Fragment>>,
+		mut fragments: impl Iterator<Item = &'a Fragment>,
 	) -> Option<GenericMessage> {
 		let message = fragments.find_map(|fragment| fa.insert(fragment, LOG_TARGET));
 		assert!(fragments.next().is_none());
@@ -479,7 +479,7 @@ mod tests {
 
 		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
 		assert_eq!(
-			insert_fragments(&mut fa, fragments.into_iter()),
+			insert_fragments(&mut fa, fragments.iter().map(AsRef::as_ref)),
 			Some(GenericMessage { id, data, surbs: Vec::new() })
 		);
 	}
@@ -508,17 +508,20 @@ mod tests {
 
 		// One message at a time should work
 		assert_eq!(
-			insert_fragments(&mut fa, first_fragments.iter().cloned()),
+			insert_fragments(&mut fa, first_fragments.iter().map(AsRef::as_ref)),
 			Some(GenericMessage { id: first_id, data: first_data, surbs: Vec::new() })
 		);
 		assert_eq!(
-			insert_fragments(&mut fa, second_fragments.iter().cloned()),
+			insert_fragments(&mut fa, second_fragments.iter().map(AsRef::as_ref)),
 			Some(GenericMessage { id: second_id, data: second_data, surbs: Vec::new() })
 		);
 
 		// Alternating fragments should not work due to eviction
 		assert_eq!(
-			insert_fragments(&mut fa, first_fragments.into_iter().interleave(second_fragments)),
+			insert_fragments(
+				&mut fa,
+				first_fragments.iter().interleave(&second_fragments).map(AsRef::as_ref)
+			),
 			None
 		);
 	}
@@ -539,24 +542,27 @@ mod tests {
 
 		// With a one-fragment limit it should not be possible to reconstruct either message
 		let mut fa = FragmentAssembler::new(2, 1, usize::MAX);
-		assert_eq!(insert_fragments(&mut fa, first_fragments.iter().cloned()), None);
-		assert_eq!(insert_fragments(&mut fa, second_fragments.iter().cloned()), None);
+		assert_eq!(insert_fragments(&mut fa, first_fragments.iter().map(AsRef::as_ref)), None);
+		assert_eq!(insert_fragments(&mut fa, second_fragments.iter().map(AsRef::as_ref)), None);
 
 		let mut fa = FragmentAssembler::new(2, 2, usize::MAX);
 
 		// With a two-fragment limit it should be possible to reconstruct them individually
 		assert_eq!(
-			insert_fragments(&mut fa, first_fragments.iter().cloned()),
+			insert_fragments(&mut fa, first_fragments.iter().map(AsRef::as_ref)),
 			Some(GenericMessage { id: first_id, data: first_data, surbs: Vec::new() })
 		);
 		assert_eq!(
-			insert_fragments(&mut fa, second_fragments.iter().cloned()),
+			insert_fragments(&mut fa, second_fragments.iter().map(AsRef::as_ref)),
 			Some(GenericMessage { id: second_id, data: second_data, surbs: Vec::new() })
 		);
 
 		// But not when interleaved
 		assert_eq!(
-			insert_fragments(&mut fa, first_fragments.into_iter().interleave(second_fragments)),
+			insert_fragments(
+				&mut fa,
+				first_fragments.iter().interleave(&second_fragments).map(AsRef::as_ref)
+			),
 			None
 		);
 	}
