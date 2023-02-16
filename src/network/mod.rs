@@ -209,8 +209,6 @@ pub enum MixnetEvent {
 	Disconnected(PeerId),
 	/// A message has reached us.
 	Message(Message),
-	/// Can ignore.
-	None,
 }
 
 impl NetworkBehaviour for MixnetBehaviour {
