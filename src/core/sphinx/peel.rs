@@ -57,6 +57,8 @@ pub enum PeelErr {
 	KxPublic,
 	#[error("Bad MAC in header")]
 	Mac,
+	#[error("Bad action in header")]
+	Action,
 	#[error("Bad payload tag")]
 	PayloadTag,
 }
@@ -152,10 +154,7 @@ pub fn peel(
 				);
 				Target::PeerId(peer_id)
 			} else {
-				Target::MixnodeIndex(
-					MixnodeIndex::new(raw_action)
-						.expect("Must be <= MAX_MIXNODE_INDEX; all other cases handled"),
-				)
+				Target::MixnodeIndex(MixnodeIndex::new(raw_action).ok_or(PeelErr::Action)?)
 			};
 
 			// Determine the forwarding delay
