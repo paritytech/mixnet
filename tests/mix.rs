@@ -93,7 +93,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	for _ in 0..num_peers {
 		let (peer_id, trans) = mk_transport();
 		let kx_public_store = KxPublicStore::new();
-		let addr = format!("/ip4/127.0.0.1/tcp/0").parse().unwrap();
+		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		mixnodes.push(Mixnode {
 			kx_public: kx_public_store.public_for_session(0).unwrap(),
 			peer_id,
@@ -135,11 +135,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let mut to_notify = (0..num_peers).map(|_| Vec::new()).collect::<Vec<_>>();
 	let mut to_wait = (0..num_peers).map(|_| Vec::new()).collect::<Vec<_>>();
 
-	for p1 in 0..num_peers {
-		for p2 in p1 + 1..num_peers {
+	for (p1, n) in to_notify.iter_mut().enumerate() {
+		for w in to_wait.iter_mut().skip(p1 + 1) {
 			let (tx, rx) = mpsc::channel::<Multiaddr>(1);
-			to_notify[p1].push(tx);
-			to_wait[p2].push(rx);
+			n.push(tx);
+			w.push(rx);
 		}
 	}
 

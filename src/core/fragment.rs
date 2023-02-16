@@ -414,7 +414,7 @@ pub fn fragment_blueprints<'a>(
 
 #[cfg(test)]
 mod tests {
-	use super::{super::util::default_boxed_array, *};
+	use super::*;
 	use itertools::Itertools;
 	use rand::{prelude::SliceRandom, Rng, RngCore};
 
@@ -446,11 +446,11 @@ mod tests {
 		);
 	}
 
-	fn no_surb_fragments(message_id: &MessageId, data: &[u8]) -> Vec<Box<Fragment>> {
+	fn no_surb_fragments(message_id: &MessageId, data: &[u8]) -> Vec<Fragment> {
 		fragment_blueprints(message_id, data, 0)
 			.unwrap()
 			.map(|blueprint| {
-				let mut fragment = default_boxed_array();
+				let mut fragment = [0; FRAGMENT_SIZE];
 				blueprint.write_except_surbs(&mut fragment);
 				fragment
 			})
@@ -479,7 +479,7 @@ mod tests {
 
 		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
 		assert_eq!(
-			insert_fragments(&mut fa, fragments.iter().map(AsRef::as_ref)),
+			insert_fragments(&mut fa, fragments.iter()),
 			Some(GenericMessage { id, data, surbs: Vec::new() })
 		);
 	}
@@ -508,20 +508,17 @@ mod tests {
 
 		// One message at a time should work
 		assert_eq!(
-			insert_fragments(&mut fa, first_fragments.iter().map(AsRef::as_ref)),
+			insert_fragments(&mut fa, first_fragments.iter()),
 			Some(GenericMessage { id: first_id, data: first_data, surbs: Vec::new() })
 		);
 		assert_eq!(
-			insert_fragments(&mut fa, second_fragments.iter().map(AsRef::as_ref)),
+			insert_fragments(&mut fa, second_fragments.iter()),
 			Some(GenericMessage { id: second_id, data: second_data, surbs: Vec::new() })
 		);
 
 		// Alternating fragments should not work due to eviction
 		assert_eq!(
-			insert_fragments(
-				&mut fa,
-				first_fragments.iter().interleave(&second_fragments).map(AsRef::as_ref)
-			),
+			insert_fragments(&mut fa, first_fragments.iter().interleave(&second_fragments)),
 			None
 		);
 	}
@@ -542,27 +539,24 @@ mod tests {
 
 		// With a one-fragment limit it should not be possible to reconstruct either message
 		let mut fa = FragmentAssembler::new(2, 1, usize::MAX);
-		assert_eq!(insert_fragments(&mut fa, first_fragments.iter().map(AsRef::as_ref)), None);
-		assert_eq!(insert_fragments(&mut fa, second_fragments.iter().map(AsRef::as_ref)), None);
+		assert_eq!(insert_fragments(&mut fa, first_fragments.iter()), None);
+		assert_eq!(insert_fragments(&mut fa, second_fragments.iter()), None);
 
 		let mut fa = FragmentAssembler::new(2, 2, usize::MAX);
 
 		// With a two-fragment limit it should be possible to reconstruct them individually
 		assert_eq!(
-			insert_fragments(&mut fa, first_fragments.iter().map(AsRef::as_ref)),
+			insert_fragments(&mut fa, first_fragments.iter()),
 			Some(GenericMessage { id: first_id, data: first_data, surbs: Vec::new() })
 		);
 		assert_eq!(
-			insert_fragments(&mut fa, second_fragments.iter().map(AsRef::as_ref)),
+			insert_fragments(&mut fa, second_fragments.iter()),
 			Some(GenericMessage { id: second_id, data: second_data, surbs: Vec::new() })
 		);
 
 		// But not when interleaved
 		assert_eq!(
-			insert_fragments(
-				&mut fa,
-				first_fragments.iter().interleave(&second_fragments).map(AsRef::as_ref)
-			),
+			insert_fragments(&mut fa, first_fragments.iter().interleave(&second_fragments)),
 			None
 		);
 	}

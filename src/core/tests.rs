@@ -130,20 +130,20 @@ impl Network {
 				);
 			}
 			let ns = PeerNetworkStatus { id: &peer.id, connections: &self.connections };
-			if invalidated.contains(Invalidated::NEXT_FORWARD_PACKET_DEADLINE) {
-				if peer.mixnet.next_forward_packet_deadline().is_some() {
-					if let Some(packet) = peer.mixnet.pop_next_forward_packet() {
-						assert!(ns.is_connected(&packet.peer_id));
-						packets.push(packet);
-					}
+			if invalidated.contains(Invalidated::NEXT_FORWARD_PACKET_DEADLINE) &&
+				peer.mixnet.next_forward_packet_deadline().is_some()
+			{
+				if let Some(packet) = peer.mixnet.pop_next_forward_packet() {
+					assert!(ns.is_connected(&packet.peer_id));
+					packets.push(packet);
 				}
 			}
-			if invalidated.contains(Invalidated::NEXT_AUTHORED_PACKET_DEADLINE) {
-				if peer.mixnet.next_authored_packet_delay().is_some() {
-					if let Some(packet) = peer.mixnet.pop_next_authored_packet(&ns) {
-						assert!(ns.is_connected(&packet.peer_id));
-						packets.push(packet);
-					}
+			if invalidated.contains(Invalidated::NEXT_AUTHORED_PACKET_DEADLINE) &&
+				peer.mixnet.next_authored_packet_delay().is_some()
+			{
+				if let Some(packet) = peer.mixnet.pop_next_authored_packet(&ns) {
+					assert!(ns.is_connected(&packet.peer_id));
+					packets.push(packet);
 				}
 			}
 		}
