@@ -96,7 +96,8 @@ impl Topology {
 						)
 						.iter()
 						.map(|index| {
-							MixnodeIndex::new(index as RawMixnodeIndex)
+							index
+								.try_into()
 								.expect("Topology::new() contract limits size of mixnode set")
 						})
 						.collect();
@@ -107,7 +108,8 @@ impl Topology {
 				|index| {
 					// Local node is a mixnode
 					LocalNode::Mixnode(
-						MixnodeIndex::new(index as RawMixnodeIndex)
+						index
+							.try_into()
 							.expect("Topology::new() contract limits size of mixnode set"),
 					)
 				},
@@ -254,7 +256,7 @@ impl<'topology> RouteGenerator<'topology> {
 		// self.topology.mixnodes.len() - exclude_indices.len() before the loop
 		debug_assert!((chosen as usize) < self.topology.mixnodes.len());
 
-		Ok(MixnodeIndex::new(chosen).expect("Topology::new() contract limits size of mixnode set"))
+		Ok(chosen.try_into().expect("Topology::new() contract limits size of mixnode set"))
 	}
 
 	/// Choose a random mixnode to send a message to and return its index.

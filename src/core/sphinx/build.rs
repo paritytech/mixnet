@@ -302,7 +302,7 @@ pub fn complete_reply_packet(packet: &mut Packet, surb: &Surb) -> Option<Mixnode
 
 	// Return the mixnode index of the first hop from the SURB
 	let raw_first_mixnode_index = RawMixnodeIndex::from_le_bytes(*raw_first_mixnode_index);
-	MixnodeIndex::new(raw_first_mixnode_index)
+	raw_first_mixnode_index.try_into().ok()
 }
 
 /// Build a Sphinx cover packet. `targets` should not include the first hop. At most one target may

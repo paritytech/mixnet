@@ -20,13 +20,7 @@
 
 //! Sphinx packet peeling.
 
-use super::{
-	build::SurbPayloadEncryptionKeys,
-	crypto::*,
-	delay::Delay,
-	packet::*,
-	target::{MixnodeIndex, Target},
-};
+use super::{build::SurbPayloadEncryptionKeys, crypto::*, delay::Delay, packet::*, target::Target};
 use arrayref::{array_mut_ref, array_ref, array_refs};
 use subtle::ConstantTimeEq;
 
@@ -154,7 +148,7 @@ pub fn peel(
 				);
 				Target::PeerId(peer_id)
 			} else {
-				Target::MixnodeIndex(MixnodeIndex::new(raw_action).ok_or(PeelErr::Action)?)
+				Target::MixnodeIndex(raw_action.try_into().map_err(|_| PeelErr::Action)?)
 			};
 
 			// Determine the forwarding delay

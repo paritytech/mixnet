@@ -33,7 +33,7 @@ use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
 
 fn gen_mixnode_index(rng: &mut impl Rng) -> MixnodeIndex {
-	MixnodeIndex::new(rng.gen_range(0, MAX_MIXNODE_INDEX + 1)).unwrap()
+	rng.gen_range(0, MAX_MIXNODE_INDEX + 1).try_into().unwrap()
 }
 
 fn gen_targets(rng: &mut impl Rng, num_hops: usize) -> ArrayVec<Target, { MAX_HOPS - 1 }> {

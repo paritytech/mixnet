@@ -28,16 +28,28 @@ use std::fmt;
 pub struct MixnodeIndex(RawMixnodeIndex);
 
 impl MixnodeIndex {
-	pub fn new(raw_index: RawMixnodeIndex) -> Option<Self> {
-		if raw_index <= MAX_MIXNODE_INDEX {
-			Some(Self(raw_index))
-		} else {
-			None
-		}
-	}
-
 	pub fn get(self) -> RawMixnodeIndex {
 		self.0
+	}
+}
+
+impl TryFrom<usize> for MixnodeIndex {
+	type Error = ();
+
+	fn try_from(index: usize) -> Result<Self, Self::Error> {
+		if index <= MAX_MIXNODE_INDEX as usize {
+			Ok(Self(index as RawMixnodeIndex))
+		} else {
+			Err(())
+		}
+	}
+}
+
+impl TryFrom<RawMixnodeIndex> for MixnodeIndex {
+	type Error = ();
+
+	fn try_from(index: RawMixnodeIndex) -> Result<Self, Self::Error> {
+		(index as usize).try_into()
 	}
 }
 
