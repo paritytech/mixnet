@@ -20,12 +20,19 @@
 
 //! Mixnet packet queues.
 
-use super::boxed_packet::AddressedPacket;
+use super::sphinx::{Packet, PeerId};
 use std::{
 	cmp::Ordering,
 	collections::{BinaryHeap, VecDeque},
 	time::Instant,
 };
+
+pub struct AddressedPacket {
+	/// Where the packet should be sent.
+	pub peer_id: PeerId,
+	/// The packet contents.
+	pub packet: Box<Packet>,
+}
 
 pub struct ForwardPacket {
 	/// When the packet should be sent.

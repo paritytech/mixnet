@@ -37,7 +37,7 @@ const NUM_HASHES: usize = 8;
 pub struct ReplayFilter {
 	hash_key: [u8; 16],
 	/// Allocated on demand.
-	words: Option<Box<[u64]>>,
+	words: Option<Box<[u64; NUM_WORDS]>>,
 }
 
 impl ReplayFilter {
@@ -60,7 +60,9 @@ impl ReplayFilter {
 
 	pub fn insert(&mut self, value: &KxPublic) {
 		let (mut h, inc) = self.hash(value);
-		let words = self.words.get_or_insert_with(|| vec![0; NUM_WORDS].into_boxed_slice());
+		let words = self
+			.words
+			.get_or_insert_with(|| vec![0; NUM_WORDS].try_into().expect("Vec has the right size"));
 		for _ in 0..NUM_HASHES {
 			words[((h as usize) >> 6) % NUM_WORDS] |= 1 << (h & 63);
 			h = h.wrapping_add(inc);

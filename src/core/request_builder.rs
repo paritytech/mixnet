@@ -21,12 +21,13 @@
 //! Mixnet request builder. This module simply plugs together the topology and Sphinx modules.
 
 use super::{
-	boxed_packet::{AddressedPacket, BoxedPacket},
+	packet_queues::AddressedPacket,
 	sphinx::{
 		build_surb, complete_request_packet, mut_payload_data, Delay, MixnodeIndex, PayloadData,
 		Surb, SurbId, SurbPayloadEncryptionKeys,
 	},
 	topology::{LocalNetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
+	util::default_boxed_array,
 };
 use arrayvec::ArrayVec;
 use rand::{CryptoRng, Rng};
@@ -75,12 +76,11 @@ impl<'topology> RequestBuilder<'topology> {
 			self.route_generator.topology().mixnode_index_to_peer_id(first_mixnode_index)?;
 
 		// Build packet
-		let mut boxed_packet = BoxedPacket::default();
-		let packet = boxed_packet.as_mut();
-		write_payload_data(mut_payload_data(packet), rng)?;
-		let delay = complete_request_packet(packet, rng, &targets, &their_kx_publics);
+		let mut packet = default_boxed_array();
+		write_payload_data(mut_payload_data(&mut packet), rng)?;
+		let delay = complete_request_packet(&mut packet, rng, &targets, &their_kx_publics);
 
-		Ok((AddressedPacket { peer_id, packet: boxed_packet }, delay))
+		Ok((AddressedPacket { peer_id, packet }, delay))
 	}
 
 	pub fn build_surb(

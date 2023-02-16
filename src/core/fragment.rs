@@ -20,10 +20,7 @@
 
 //! Mixnet message fragment handling.
 
-use super::{
-	boxed_packet::BoxedArray,
-	sphinx::{Surb, PAYLOAD_DATA_SIZE, SURB_SIZE},
-};
+use super::sphinx::{Surb, PAYLOAD_DATA_SIZE, SURB_SIZE};
 use arrayref::{array_mut_ref, array_refs, mut_array_refs};
 use hashlink::{linked_hash_map::Entry, LinkedHashMap};
 use log::{error, log, warn, Level};
@@ -156,8 +153,6 @@ impl GenericMessage {
 	}
 }
 
-pub type BoxedFragment = BoxedArray<u8, FRAGMENT_SIZE>;
-
 #[derive(Debug, thiserror::Error)]
 enum IncompleteMessageInsertErr {
 	#[error("Inconsistent number of fragments for message ({0} vs {1})")]
@@ -167,7 +162,7 @@ enum IncompleteMessageInsertErr {
 }
 
 struct IncompleteMessage {
-	fragments: Vec<Option<BoxedFragment>>,
+	fragments: Vec<Option<Box<Fragment>>>,
 	/// Count of `Some` in `fragments`.
 	num_received_fragments: usize,
 }
@@ -179,25 +174,24 @@ impl IncompleteMessage {
 		Self { fragments, num_received_fragments: 0 }
 	}
 
-	/// Attempt to insert `boxed_fragment`, which must be a valid fragment (checked by
-	/// `check_fragment`). Success implies `num_received_fragments` was incremented.
-	fn insert(&mut self, boxed_fragment: BoxedFragment) -> Result<(), IncompleteMessageInsertErr> {
-		let fragment = boxed_fragment.as_ref();
-		debug_assert!(check_fragment(fragment).is_ok());
+	/// Attempt to insert `fragment`, which must be a valid fragment (checked by `check_fragment`).
+	/// Success implies `num_received_fragments` was incremented.
+	fn insert(&mut self, fragment: Box<Fragment>) -> Result<(), IncompleteMessageInsertErr> {
+		debug_assert!(check_fragment(&fragment).is_ok());
 
-		if num_fragments(fragment) != self.fragments.len() {
+		if num_fragments(&fragment) != self.fragments.len() {
 			return Err(IncompleteMessageInsertErr::InconsistentNumFragments(
-				num_fragments(fragment),
+				num_fragments(&fragment),
 				self.fragments.len(),
 			))
 		}
 
-		let slot = &mut self.fragments[fragment_index(fragment)];
+		let slot = &mut self.fragments[fragment_index(&fragment)];
 		if slot.is_some() {
 			return Err(IncompleteMessageInsertErr::AlreadyHave)
 		}
 
-		*slot = Some(boxed_fragment);
+		*slot = Some(fragment);
 		self.num_received_fragments += 1;
 		debug_assert!(self.num_received_fragments <= self.fragments.len());
 		Ok(())
@@ -274,29 +268,24 @@ impl FragmentAssembler {
 		}
 	}
 
-	/// Attempt to insert `boxed_fragment`. If this completes a message, the completed message is
+	/// Attempt to insert `fragment`. If this completes a message, the completed message is
 	/// returned.
-	pub fn insert(
-		&mut self,
-		boxed_fragment: BoxedFragment,
-		log_target: &str,
-	) -> Option<GenericMessage> {
-		let fragment = boxed_fragment.as_ref();
-		if let Err(err) = check_fragment(fragment) {
+	pub fn insert(&mut self, fragment: Box<Fragment>, log_target: &str) -> Option<GenericMessage> {
+		if let Err(err) = check_fragment(&fragment) {
 			error!(target: log_target, "Received bad fragment: {err}");
 			return None
 		}
-		let num_fragments = num_fragments(fragment);
+		let num_fragments = num_fragments(&fragment);
 		if num_fragments > self.max_fragments_per_message {
 			return None
 		}
 		if num_fragments == 1 {
-			return Some(GenericMessage::from_fragments(std::iter::once(fragment)))
+			return Some(GenericMessage::from_fragments(std::iter::once(fragment.as_ref())))
 		}
-		match self.incomplete_messages.entry(*message_id(fragment)) {
+		match self.incomplete_messages.entry(*message_id(&fragment)) {
 			Entry::Occupied(mut entry) => {
 				let incomplete_message = entry.get_mut();
-				if let Err(err) = incomplete_message.insert(boxed_fragment) {
+				if let Err(err) = incomplete_message.insert(fragment) {
 					let level = match err {
 						IncompleteMessageInsertErr::AlreadyHave => Level::Trace,
 						_ => Level::Error,
@@ -318,7 +307,7 @@ impl FragmentAssembler {
 			Entry::Vacant(entry) => {
 				let mut incomplete_message = IncompleteMessage::new(num_fragments);
 				// Insert of first fragment cannot fail
-				assert!(incomplete_message.insert(boxed_fragment).is_ok());
+				assert!(incomplete_message.insert(fragment).is_ok());
 				entry.insert(incomplete_message);
 				self.num_incomplete_fragments += 1;
 				self.maybe_evict(log_target);
@@ -425,7 +414,7 @@ pub fn fragment_blueprints<'a>(
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use super::{super::util::default_boxed_array, *};
 	use itertools::Itertools;
 	use rand::{prelude::SliceRandom, Rng, RngCore};
 
@@ -440,30 +429,29 @@ mod tests {
 		assert_eq!(blueprints.len(), 1);
 		let blueprint = blueprints.next().unwrap();
 
+		let mut fragment = default_boxed_array();
+		blueprint.write_except_surbs(&mut fragment);
 		let mut dummy_surb = [0; SURB_SIZE];
 		rng.fill_bytes(&mut dummy_surb);
-		let mut boxed_fragment = BoxedFragment::default();
 		{
-			let fragment = boxed_fragment.as_mut();
-			blueprint.write_except_surbs(fragment);
-			let mut surbs = blueprint.surbs(fragment);
+			let mut surbs = blueprint.surbs(&mut fragment);
 			*surbs.next().unwrap() = dummy_surb;
 			assert!(surbs.next().is_none());
 		}
 
 		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
 		assert_eq!(
-			fa.insert(boxed_fragment, LOG_TARGET),
+			fa.insert(fragment, LOG_TARGET),
 			Some(GenericMessage { id, data: vec![42], surbs: vec![dummy_surb] })
 		);
 	}
 
-	fn no_surb_fragments(message_id: &MessageId, data: &[u8]) -> Vec<BoxedFragment> {
+	fn no_surb_fragments(message_id: &MessageId, data: &[u8]) -> Vec<Box<Fragment>> {
 		fragment_blueprints(message_id, data, 0)
 			.unwrap()
 			.map(|blueprint| {
-				let mut fragment = BoxedFragment::default();
-				blueprint.write_except_surbs(fragment.as_mut());
+				let mut fragment = default_boxed_array();
+				blueprint.write_except_surbs(&mut fragment);
 				fragment
 			})
 			.collect()
@@ -471,7 +459,7 @@ mod tests {
 
 	fn insert_fragments(
 		fa: &mut FragmentAssembler,
-		mut fragments: impl Iterator<Item = BoxedFragment>,
+		mut fragments: impl Iterator<Item = Box<Fragment>>,
 	) -> Option<GenericMessage> {
 		let message = fragments.find_map(|fragment| fa.insert(fragment, LOG_TARGET));
 		assert!(fragments.next().is_none());

@@ -155,7 +155,7 @@ impl Network {
 				.enumerate()
 				.find(|(_, peer)| peer.id == packet.peer_id)
 				.unwrap();
-			if let Some(message) = peer.mixnet.handle_packet(packet.packet.as_ref()) {
+			if let Some(message) = peer.mixnet.handle_packet(&packet.packet) {
 				handle_message(peer_index, peer, message);
 			}
 		}

@@ -23,7 +23,6 @@
 // Get a bunch of these from [mut_]array_refs
 #![allow(clippy::ptr_offset_with_cast)]
 
-mod boxed_packet;
 mod config;
 mod cover;
 mod fragment;
@@ -36,21 +35,21 @@ mod sphinx;
 mod surb_keystore;
 mod tests;
 mod topology;
+mod util;
 
 pub use self::{
-	boxed_packet::AddressedPacket,
 	config::Config,
 	fragment::{MessageId, MESSAGE_ID_SIZE},
 	kx_store::KxPublicStore,
+	packet_queues::AddressedPacket,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		KxPublic, MixnodeIndex, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_MIXNODE_INDEX,
-		PEER_ID_SIZE, SURB_SIZE,
+		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
+		MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{LocalNetworkStatus, Mixnode, TopologyErr},
 };
 use self::{
-	boxed_packet::BoxedPacket,
 	cover::{gen_cover_packet, CoverKind},
 	fragment::{fragment_blueprints, FragmentAssembler},
 	kx_store::KxStore,
@@ -60,11 +59,13 @@ use self::{
 	sessions::{Session, SessionSlot, Sessions},
 	sphinx::{
 		complete_reply_packet, decrypt_reply_payload, kx_public, mut_payload_data, peel, Action,
-		Delay, Packet, PeelErr,
+		Delay, PeelErr, PAYLOAD_DATA_SIZE, PAYLOAD_SIZE,
 	},
 	surb_keystore::SurbKeystore,
 	topology::Topology,
+	util::default_boxed_array,
 };
+use arrayref::{array_mut_ref, array_ref};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use either::Either;
@@ -330,7 +331,7 @@ impl Mixnet {
 	pub fn handle_packet(&mut self, packet: &Packet) -> Option<Message> {
 		self.kx_store.add_pending_session_secrets();
 
-		let mut alloced_out = None;
+		let mut out = [0; PACKET_SIZE];
 		let res = self.sessions.enumerate_mut().find_map(|(rel_session_index, session)| {
 			if session.replay_filter.contains(kx_public(packet)) {
 				return Some(Err(Either::Left(
@@ -343,22 +344,16 @@ impl Mixnet {
 			let kx_shared_secret =
 				self.kx_store.session_exchange(session_index, kx_public(packet))?;
 
-			// Allocate space for the output if we haven't already
-			let mut out: BoxedPacket = alloced_out.take().unwrap_or_default();
-
-			match peel(out.as_mut(), packet, &kx_shared_secret) {
+			match peel(&mut out, packet, &kx_shared_secret) {
 				// Bad MAC possibly means we used the wrong secret; try other session
-				Err(PeelErr::Mac) => {
-					alloced_out = Some(out);
-					None
-				},
+				Err(PeelErr::Mac) => None,
 				// Any other error means the packet is bad; just discard it
 				Err(err) => Some(Err(Either::Right(err))),
-				Ok(action) => Some(Ok((action, out, session_index, session))),
+				Ok(action) => Some(Ok((action, session_index, session))),
 			}
 		});
 
-		let (action, out, session_index, session) = match res {
+		let (action, session_index, session) = match res {
 			None => {
 				error!(
 					target: self.config.log_target,
@@ -396,7 +391,7 @@ impl Mixnet {
 							Instant::now() + delay.to_duration(self.config.mean_forwarding_delay);
 						let forward_packet = ForwardPacket {
 							deadline,
-							packet: AddressedPacket { peer_id, packet: out },
+							packet: AddressedPacket { peer_id, packet: out.into() },
 						};
 						if self.forward_packet_queue.insert(forward_packet) {
 							self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
@@ -411,6 +406,8 @@ impl Mixnet {
 				None
 			},
 			Action::DeliverRequest => {
+				let payload_data = array_ref![out, 0, PAYLOAD_DATA_SIZE];
+
 				if !session.topology.is_mixnode() {
 					error!(target: self.config.log_target,
 						"Received request packet despite not being a mixnode in the session; discarding");
@@ -422,21 +419,21 @@ impl Mixnet {
 				session.replay_filter.insert(kx_public(packet));
 
 				// Add to fragment assembler and return any completed message
-				self.fragment_assembler.insert(out.truncate(), self.config.log_target).map(
-					|message| Message::Request {
+				self.fragment_assembler
+					.insert((*payload_data).into(), self.config.log_target)
+					.map(|message| Message::Request {
 						session_index,
 						data: message.data,
 						surbs: message.surbs,
-					},
-				)
+					})
 			},
 			Action::DeliverReply { surb_id } => {
+				let payload = array_mut_ref![out, 0, PAYLOAD_SIZE];
+
 				// Note that we do not insert anything into the replay filter here. The SURB ID
 				// lookup will fail for replayed SURBs, so explicit replay prevention is not
 				// necessary. The main reason for avoiding the replay filter here is so that it
 				// does not need to be allocated at all for sessions where we are not a mixnode.
-
-				let mut payload = out.truncate();
 
 				// Lookup payload encryption keys and decrypt payload
 				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
@@ -444,23 +441,24 @@ impl Mixnet {
 						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
 					return None
 				};
-				let res = decrypt_reply_payload(payload.as_mut(), entry.keys());
+				let res = decrypt_reply_payload(payload, entry.keys());
 				entry.remove();
 				if let Err(err) = res {
 					error!(target: self.config.log_target, "Failed to decrypt reply payload: {err}");
 					return None
 				}
+				let payload_data = array_ref![payload, 0, PAYLOAD_DATA_SIZE];
 
 				// Add to fragment assembler and return any completed message
-				self.fragment_assembler.insert(payload.truncate(), self.config.log_target).map(
-					|message| {
+				self.fragment_assembler
+					.insert((*payload_data).into(), self.config.log_target)
+					.map(|message| {
 						if !message.surbs.is_empty() {
 							warn!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
 						Message::Reply { id: message.id, data: message.data }
-					},
-				)
+					})
 			},
 			Action::DeliverCover { cover_id: _ } => None,
 		}
@@ -668,19 +666,18 @@ impl Mixnet {
 
 		// Generate the packets and push them into the queue
 		for fragment_blueprint in fragment_blueprints {
-			let mut boxed_packet = BoxedPacket::default();
-			let packet = boxed_packet.as_mut();
-			fragment_blueprint.write_except_surbs(mut_payload_data(packet));
-			let mixnode_index =
-				complete_reply_packet(packet, &surbs.pop().expect("Checked number of SURBs above"))
-					.ok_or(PostErr::BadSurb)?;
+			let mut packet = default_boxed_array();
+			fragment_blueprint.write_except_surbs(mut_payload_data(&mut packet));
+			let mixnode_index = complete_reply_packet(
+				&mut packet,
+				&surbs.pop().expect("Checked number of SURBs above"),
+			)
+			.ok_or(PostErr::BadSurb)?;
 			let peer_id = session
 				.topology
 				.mixnode_index_to_peer_id(mixnode_index)
 				.map_err(PostErr::Topology)?;
-			session
-				.authored_packet_queue
-				.push(AddressedPacket { peer_id, packet: boxed_packet });
+			session.authored_packet_queue.push(AddressedPacket { peer_id, packet });
 		}
 
 		Ok(())

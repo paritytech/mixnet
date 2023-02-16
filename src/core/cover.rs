@@ -21,10 +21,11 @@
 //! Mixnet cover packet generation.
 
 use super::{
-	boxed_packet::{AddressedPacket, BoxedPacket},
 	config::Config,
+	packet_queues::AddressedPacket,
 	sphinx::build_cover_packet,
 	topology::{LocalNetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
+	util::default_boxed_array,
 };
 use arrayvec::ArrayVec;
 use log::error;
@@ -65,8 +66,8 @@ pub fn gen_cover_packet(
 		let peer_id = topology.mixnode_index_to_peer_id(first_mixnode_index)?;
 
 		// Build packet
-		let mut packet = BoxedPacket::default();
-		build_cover_packet(packet.as_mut(), rng, &targets, &their_kx_publics, None);
+		let mut packet = default_boxed_array();
+		build_cover_packet(&mut packet, rng, &targets, &their_kx_publics, None);
 
 		Ok(AddressedPacket { peer_id, packet })
 	};

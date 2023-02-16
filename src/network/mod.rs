@@ -335,7 +335,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 						.first()
 						.expect("Peers removed from connected map when last connection ID removed"),
 				),
-				event: Packet(packet.packet.into_vec()),
+				event: Packet((packet.packet as Box<[_]>).into()),
 			})
 		}
 	}
