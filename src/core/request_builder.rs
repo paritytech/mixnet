@@ -26,7 +26,7 @@ use super::{
 		build_surb, complete_request_packet, mut_payload_data, Delay, MixnodeIndex, PayloadData,
 		Surb, SurbId, SurbPayloadEncryptionKeys,
 	},
-	topology::{LocalNetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
+	topology::{NetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
 	util::default_boxed_array,
 };
 use arrayvec::ArrayVec;
@@ -41,10 +41,10 @@ impl<'topology> RequestBuilder<'topology> {
 	pub fn new(
 		rng: &mut (impl Rng + CryptoRng),
 		topology: &'topology Topology,
-		lns: &dyn LocalNetworkStatus,
+		ns: &dyn NetworkStatus,
 		destination_index: Option<MixnodeIndex>,
 	) -> Result<Self, TopologyErr> {
-		let route_generator = RouteGenerator::new(topology, lns);
+		let route_generator = RouteGenerator::new(topology, ns);
 		let destination_index = match destination_index {
 			Some(index) => index,
 			None => route_generator.choose_destination_index(rng)?,

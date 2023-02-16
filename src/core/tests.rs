@@ -23,7 +23,7 @@
 #![cfg(test)]
 
 use super::{
-	Config, Invalidated, KxPublicStore, LocalNetworkStatus, Message, Mixnet, Mixnode, PeerId,
+	Config, Invalidated, KxPublicStore, Message, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
 use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
@@ -56,8 +56,8 @@ struct PeerNetworkStatus<'id, 'connections> {
 	connections: &'connections HashMap<PeerId, HashSet<PeerId>>,
 }
 
-impl<'id, 'connections> LocalNetworkStatus for PeerNetworkStatus<'id, 'connections> {
-	fn peer_id(&self) -> PeerId {
+impl<'id, 'connections> NetworkStatus for PeerNetworkStatus<'id, 'connections> {
+	fn local_peer_id(&self) -> PeerId {
 		*self.id
 	}
 

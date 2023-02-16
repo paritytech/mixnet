@@ -47,7 +47,7 @@ pub use self::{
 		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
 		MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
-	topology::{LocalNetworkStatus, Mixnode, TopologyErr},
+	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
 use self::{
 	cover::{gen_cover_packet, CoverKind},
@@ -498,10 +498,7 @@ impl Mixnet {
 	/// generate a cover packet, or there are no active sessions (though in the no active sessions
 	/// case `next_authored_packet_delay` should return `None` and so this function should not
 	/// really be called).
-	pub fn pop_next_authored_packet(
-		&mut self,
-		lns: &dyn LocalNetworkStatus,
-	) -> Option<AddressedPacket> {
+	pub fn pop_next_authored_packet(&mut self, ns: &dyn NetworkStatus) -> Option<AddressedPacket> {
 		// This function should be called according to a Poisson process. Randomly choosing between
 		// sessions and cover kinds here is equivalent to there being multiple independent Poisson
 		// processes; see https://www.randomservices.org/random/poisson/Splitting.html
@@ -542,7 +539,7 @@ impl Mixnet {
 
 		// Choose randomly between drop and loop cover packet
 		if rng.gen_bool(self.config.loop_cover_proportion) {
-			gen_cover_packet(&mut rng, &session.topology, lns, CoverKind::Loop, &self.config)
+			gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Loop, &self.config)
 		} else {
 			self.session_status
 				.phase
@@ -550,13 +547,7 @@ impl Mixnet {
 				.then(|| session.authored_packet_queue.pop())
 				.flatten()
 				.or_else(|| {
-					gen_cover_packet(
-						&mut rng,
-						&session.topology,
-						lns,
-						CoverKind::Drop,
-						&self.config,
-					)
+					gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Drop, &self.config)
 				})
 		}
 	}
@@ -572,7 +563,7 @@ impl Mixnet {
 		destination: &mut Option<MixnodeId>,
 		data: &[u8],
 		num_surbs: usize,
-		lns: &dyn LocalNetworkStatus,
+		ns: &dyn NetworkStatus,
 	) -> Result<Duration, PostErr> {
 		let mut rng = rand::thread_rng();
 
@@ -604,7 +595,7 @@ impl Mixnet {
 		let request_builder = RequestBuilder::new(
 			&mut rng,
 			&session.topology,
-			lns,
+			ns,
 			destination.map(|destination| destination.mixnode_index),
 		)
 		.map_err(PostErr::Topology)?;

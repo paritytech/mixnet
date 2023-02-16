@@ -30,9 +30,9 @@ use self::{
 	maybe_inf_delay::MaybeInfDelay,
 };
 use super::core::{
-	Config, Invalidated, KxPublic, KxPublicStore, LocalNetworkStatus, Message, MessageId, Mixnet,
-	Mixnode as InternalMixnode, MixnodeId, PeerId as InternalPeerId, PostErr, RelSessionIndex,
-	SessionIndex, SessionStatus, Surb,
+	Config, Invalidated, KxPublic, KxPublicStore, Message, MessageId, Mixnet,
+	Mixnode as InternalMixnode, MixnodeId, NetworkStatus, PeerId as InternalPeerId, PostErr,
+	RelSessionIndex, SessionIndex, SessionStatus, Surb,
 };
 use futures::FutureExt;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -77,8 +77,8 @@ struct Peers {
 	connected: HashMap<InternalPeerId, Vec<ConnectionId>>,
 }
 
-impl LocalNetworkStatus for Peers {
-	fn peer_id(&self) -> InternalPeerId {
+impl NetworkStatus for Peers {
+	fn local_peer_id(&self) -> InternalPeerId {
 		self.local_id
 	}
 

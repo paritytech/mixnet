@@ -24,7 +24,7 @@ use super::{
 	config::Config,
 	packet_queues::AddressedPacket,
 	sphinx::build_cover_packet,
-	topology::{LocalNetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
+	topology::{NetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
 	util::default_boxed_array,
 };
 use arrayvec::ArrayVec;
@@ -39,7 +39,7 @@ pub enum CoverKind {
 pub fn gen_cover_packet(
 	rng: &mut (impl Rng + CryptoRng),
 	topology: &Topology,
-	lns: &dyn LocalNetworkStatus,
+	ns: &dyn NetworkStatus,
 	kind: CoverKind,
 	config: &Config,
 ) -> Option<AddressedPacket> {
@@ -49,7 +49,7 @@ pub fn gen_cover_packet(
 
 	let mut gen = || -> Result<AddressedPacket, TopologyErr> {
 		// Generate route
-		let route_generator = RouteGenerator::new(topology, lns);
+		let route_generator = RouteGenerator::new(topology, ns);
 		let route_kind = match kind {
 			CoverKind::Drop => RouteKind::ToMixnode(route_generator.choose_destination_index(rng)?),
 			CoverKind::Loop => RouteKind::Loop,

@@ -148,9 +148,9 @@ impl Topology {
 	}
 }
 
-pub trait LocalNetworkStatus {
+pub trait NetworkStatus {
 	/// Returns the peer ID of the local node.
-	fn peer_id(&self) -> PeerId;
+	fn local_peer_id(&self) -> PeerId;
 	/// Returns true iff the local node is currently connected to the specified node.
 	fn is_connected(&self, peer_id: &PeerId) -> bool;
 }
@@ -202,7 +202,7 @@ pub struct RouteGenerator<'topology> {
 }
 
 impl<'topology> RouteGenerator<'topology> {
-	pub fn new(topology: &'topology Topology, lns: &dyn LocalNetworkStatus) -> Self {
+	pub fn new(topology: &'topology Topology, ns: &dyn NetworkStatus) -> Self {
 		let connected_gateway_indices = match &topology.local_node {
 			LocalNode::Mixnode(_) => ArrayVec::new(),
 			// If we're not a mixnode, we should have attempted to connect to a number of "gateway"
@@ -213,13 +213,13 @@ impl<'topology> RouteGenerator<'topology> {
 				.copied()
 				.filter(|gateway_index| {
 					let mixnode = &topology.mixnodes[gateway_index.get() as usize];
-					lns.is_connected(&mixnode.peer_id)
+					ns.is_connected(&mixnode.peer_id)
 				})
 				.take(MAX_CONNECTED_GATEWAY_INDICES)
 				.collect(),
 		};
 
-		Self { topology, local_peer_id: lns.peer_id(), connected_gateway_indices }
+		Self { topology, local_peer_id: ns.local_peer_id(), connected_gateway_indices }
 	}
 
 	pub fn topology(&self) -> &'topology Topology {
