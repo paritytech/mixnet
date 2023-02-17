@@ -42,10 +42,9 @@ use curve25519_dalek::{
 use lioness::LionessDefault;
 use rand::{CryptoRng, Rng};
 
-// These should all be 16 bytes long
-const KX_BLINDING_FACTOR_PERSONA: &[u8] = b"sphinx-blind-fac";
-const SMALL_DERIVED_SECRETS_PERSONA: &[u8] = b"sphinx-small-d-s";
-const PAYLOAD_ENCRYPTION_KEY_PERSONA: &[u8] = b"sphinx-pl-en-key";
+const KX_BLINDING_FACTOR_PERSONA: &[u8; 16] = b"sphinx-blind-fac";
+const SMALL_DERIVED_SECRETS_PERSONA: &[u8; 16] = b"sphinx-small-d-s";
+const PAYLOAD_ENCRYPTION_KEY_PERSONA: &[u8; 16] = b"sphinx-pl-en-key";
 
 ////////////////////////////////////////////////////////////////////////////////
 // Key exchange
@@ -141,7 +140,7 @@ pub fn gen_kx_public_and_shared_secrets(
 // Additional secret derivation
 ////////////////////////////////////////////////////////////////////////////////
 
-fn derive_secret(derived: &mut [u8], kx_shared_secret: &KxSharedSecret, persona: &[u8]) {
+fn derive_secret(derived: &mut [u8], kx_shared_secret: &KxSharedSecret, persona: &[u8; 16]) {
 	for (i, chunk) in derived.chunks_mut(64).enumerate() {
 		// This is the construction libsodium uses for crypto_kdf_derive_from_key; see
 		// https://doc.libsodium.org/key_derivation/
