@@ -79,7 +79,7 @@ fn build_header(
 
 	// Header padding for length invariance, generated from the header encryption keystreams. This
 	// is only needed for computing the MACs.
-	let mut pad = [0; ENCRYPTED_HEADER_SIZE];
+	let mut pad = [0; ENCRYPTED_HEADER_SIZE - RAW_ACTION_SIZE];
 
 	// Loop over hops forward (excluding the last hop)
 	for (target, kx_shared_secret) in targets.iter().zip(kx_shared_secrets.iter()) {
