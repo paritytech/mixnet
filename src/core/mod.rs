@@ -524,7 +524,8 @@ impl Mixnet {
 					.into_inner()
 					.expect("Input is array of length 2");
 				let [session_0, session_1] = sessions;
-				if rng.gen_bool(periods[0] / (periods[0] + periods[1])) {
+				// Rate is 1/period, and (1/a)/((1/a)+(1/b)) = b/(a+b)
+				if rng.gen_bool(periods[1] / (periods[0] + periods[1])) {
 					session_0
 				} else {
 					session_1
