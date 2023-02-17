@@ -54,7 +54,7 @@ fn gen_their_kx_secrets_and_publics(
 ) -> (Vec<Scalar>, Vec<KxPublic>) {
 	(0..num_hops)
 		.map(|_i| {
-			let secret = gen_kx_secret(&mut *rng);
+			let secret = gen_kx_secret(rng);
 			let public = derive_kx_public(&secret);
 			(secret, public)
 		})

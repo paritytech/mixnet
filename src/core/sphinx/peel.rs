@@ -93,7 +93,7 @@ pub fn peel(
 
 	// Decrypt the header and generate padding for length invariance. Try to get the decrypted
 	// header in the right place in the output. The most likely case is that we will be forwarding
-	// the packet to another node, so assume this. We could save some work in the deliver case by
+	// the packet to a mixnode, so assume this. We could save some work in the deliver case by
 	// decrypting just the first few bytes to start with to see if we need to decrypt the rest.
 	// This would complicate things and as the forward case is much more common it might ultimately
 	// not make things any faster, so don't bother for now.
