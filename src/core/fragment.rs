@@ -169,9 +169,7 @@ struct IncompleteMessage {
 
 impl IncompleteMessage {
 	fn new(num_fragments: usize) -> Self {
-		let mut fragments = Vec::with_capacity(num_fragments);
-		fragments.resize_with(num_fragments, Default::default);
-		Self { fragments, num_received_fragments: 0 }
+		Self { fragments: vec![None; num_fragments], num_received_fragments: 0 }
 	}
 
 	/// Attempt to insert `fragment`, which must be a valid fragment (checked by `check_fragment`).
