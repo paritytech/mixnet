@@ -20,6 +20,9 @@
 
 //! Mixnet core tests.
 
+#[path = "util.rs"]
+mod util;
+
 use mixnet::core::{
 	Config, Invalidated, KxPublicStore, Message, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
@@ -30,6 +33,7 @@ use std::{
 	collections::{HashMap, HashSet},
 	sync::Arc,
 };
+use util::log_target;
 
 fn multiaddr_from_peer_id(id: &PeerId) -> Multiaddr {
 	multiaddr!(P2p(Multihash::wrap(0, id).unwrap()))
@@ -71,12 +75,12 @@ struct Network {
 }
 
 impl Network {
-	fn new(rng: &mut impl Rng, config: Config, num_peers: usize) -> Self {
+	fn new(rng: &mut impl Rng, mut config: impl FnMut(usize) -> Config, num_peers: usize) -> Self {
 		let peers = (0..num_peers)
-			.map(|_| {
+			.map(|peer_index| {
 				let id = rng.gen();
 				let kx_public_store = Arc::new(KxPublicStore::new());
-				let mixnet = Mixnet::new(config.clone(), kx_public_store.clone());
+				let mixnet = Mixnet::new(config(peer_index), kx_public_store.clone());
 				Peer { id, kx_public_store, mixnet }
 			})
 			.collect();
@@ -171,10 +175,19 @@ impl Network {
 
 #[test]
 fn basic_operation() {
+	let _ = env_logger::try_init();
+
 	let mut rng = rand::thread_rng();
 
-	let mut network =
-		Network::new(&mut rng, Config { gen_cover_packets: false, ..Default::default() }, 30);
+	let mut network = Network::new(
+		&mut rng,
+		|peer_index| Config {
+			log_target: log_target(peer_index),
+			gen_cover_packets: false,
+			..Default::default()
+		},
+		30,
+	);
 	network.set_session_status(SessionStatus {
 		current_index: 1,
 		phase: SessionPhase::DisconnectFromPrev,

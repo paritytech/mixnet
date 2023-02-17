@@ -18,6 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#[path = "util.rs"]
+mod util;
+
 use futures::{channel::mpsc, future::Either, prelude::*};
 use libp2p_core::{
 	identity,
@@ -36,13 +39,9 @@ use mixnet::{
 	},
 	network::{MixnetBehaviour, MixnetEvent, Mixnode},
 };
-use once_cell::sync::Lazy;
 use rand::RngCore;
-use std::{
-	collections::HashMap,
-	sync::{Arc, Mutex},
-	time::Duration,
-};
+use std::{sync::Arc, time::Duration};
+use util::log_target;
 
 #[macro_export]
 macro_rules! log_unwrap {
@@ -68,16 +67,6 @@ macro_rules! log_unwrap_opt {
 			Some(r) => r,
 		}
 	};
-}
-
-fn log_target(peer_index: usize) -> &'static str {
-	static LOG_TARGETS: Lazy<Mutex<HashMap<usize, &'static str>>> =
-		Lazy::new(|| Mutex::new(HashMap::new()));
-	LOG_TARGETS
-		.lock()
-		.unwrap()
-		.entry(peer_index)
-		.or_insert_with(|| Box::leak(format!("mixnet[{peer_index}]").into_boxed_str()))
 }
 
 fn test_messages(num_peers: usize, message_count: usize, message_size: usize, with_surb: bool) {
