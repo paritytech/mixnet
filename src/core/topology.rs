@@ -43,7 +43,7 @@ enum LocalNode {
 	/// The local node is a mixnode, with the specified index.
 	Mixnode(MixnodeIndex),
 	/// The local node is not a mixnode. It should attempt to connect to the specified gateway
-	/// mixnodes. The gateway indices are sorted.
+	/// mixnodes.
 	NonMixnode(Vec<MixnodeIndex>),
 }
 
@@ -88,8 +88,8 @@ impl Topology {
 			.map_or_else(
 				|| {
 					// Local node is not a mixnode. Pick some gateway mixnodes to connect to.
-					LocalNode::NonMixnode({
-						let mut gateway_indices: Vec<_> = rand::seq::index::sample(
+					LocalNode::NonMixnode(
+						rand::seq::index::sample(
 							rng,
 							mixnodes.len(),
 							min(num_gateway_mixnodes as usize, mixnodes.len()),
@@ -100,10 +100,8 @@ impl Topology {
 								.try_into()
 								.expect("Topology::new() contract limits size of mixnode set")
 						})
-						.collect();
-						gateway_indices.sort();
-						gateway_indices
-					})
+						.collect(),
+					)
 				},
 				|index| {
 					// Local node is a mixnode
