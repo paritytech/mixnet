@@ -29,20 +29,19 @@ use libp2p_mplex as mplex;
 use libp2p_noise as noise;
 use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{async_io::Transport as TcpTransport, Config as TcpConfig};
-use once_cell::sync::Lazy;
-use rand::RngCore;
-use std::{
-	collections::HashMap,
-	sync::{Arc, Mutex},
-	time::Duration,
-};
-
 use mixnet::{
 	core::{
 		Config, KxPublicStore, Message, MixnodeId, RelSessionIndex, SessionPhase, SessionStatus,
 		MESSAGE_ID_SIZE,
 	},
 	network::{MixnetBehaviour, MixnetEvent, Mixnode},
+};
+use once_cell::sync::Lazy;
+use rand::RngCore;
+use std::{
+	collections::HashMap,
+	sync::{Arc, Mutex},
+	time::Duration,
 };
 
 #[macro_export]

@@ -20,9 +20,7 @@
 
 //! Mixnet core tests.
 
-#![cfg(test)]
-
-use super::{
+use mixnet::core::{
 	Config, Invalidated, KxPublicStore, Message, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };

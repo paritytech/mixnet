@@ -33,7 +33,6 @@ mod request_builder;
 mod sessions;
 mod sphinx;
 mod surb_keystore;
-mod tests;
 mod topology;
 mod util;
 
