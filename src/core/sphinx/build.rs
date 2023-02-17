@@ -49,11 +49,12 @@ fn build_header(
 	header: &mut Header,
 	kx_shared_secrets: &mut ArrayVec<KxSharedSecret, MAX_HOPS>,
 	rng: &mut (impl Rng + CryptoRng),
-	targets: &ArrayVec<Target, { MAX_HOPS - 1 }>,
-	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
+	targets: &[Target],
+	their_kx_publics: &[KxPublic],
 	kind: PacketKind,
 ) -> Delay {
 	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
+	debug_assert!(their_kx_publics.len() <= MAX_HOPS);
 
 	let (kx_public, mac_plus_encrypted) =
 		mut_array_refs![header, KX_PUBLIC_SIZE, MAC_SIZE + ENCRYPTED_HEADER_SIZE];
@@ -202,10 +203,11 @@ pub fn mut_payload_data(packet: &mut Packet) -> &mut PayloadData {
 pub fn complete_request_packet(
 	packet: &mut Packet,
 	rng: &mut (impl Rng + CryptoRng),
-	targets: &ArrayVec<Target, { MAX_HOPS - 1 }>,
-	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
+	targets: &[Target],
+	their_kx_publics: &[KxPublic],
 ) -> Delay {
 	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
+	debug_assert!(their_kx_publics.len() <= MAX_HOPS);
 
 	let (header, payload) = mut_array_refs![packet, HEADER_SIZE, PAYLOAD_SIZE];
 
@@ -247,11 +249,12 @@ pub fn build_surb(
 	payload_encryption_keys: &mut SurbPayloadEncryptionKeys,
 	rng: &mut (impl Rng + CryptoRng),
 	first_mixnode_index: MixnodeIndex,
-	targets: &ArrayVec<Target, { MAX_HOPS - 1 }>,
-	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
+	targets: &[Target],
+	their_kx_publics: &[KxPublic],
 	id: &SurbId,
 ) -> Delay {
 	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
+	debug_assert!(their_kx_publics.len() <= MAX_HOPS);
 
 	let (raw_first_mixnode_index, header, first_payload_encryption_key) =
 		mut_array_refs![surb, RAW_MIXNODE_INDEX_SIZE, HEADER_SIZE, PAYLOAD_ENCRYPTION_KEY_SIZE];
@@ -311,11 +314,12 @@ pub fn complete_reply_packet(packet: &mut Packet, surb: &Surb) -> Option<Mixnode
 pub fn build_cover_packet(
 	packet: &mut Packet,
 	rng: &mut (impl Rng + CryptoRng),
-	targets: &ArrayVec<Target, { MAX_HOPS - 1 }>,
-	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
+	targets: &[Target],
+	their_kx_publics: &[KxPublic],
 	id: Option<&CoverId>,
 ) -> Delay {
 	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
+	debug_assert!(their_kx_publics.len() <= MAX_HOPS);
 
 	let (header, payload) = mut_array_refs![packet, HEADER_SIZE, PAYLOAD_SIZE];
 

@@ -113,7 +113,7 @@ pub fn gen_kx_public_and_shared_secrets(
 	kx_public: &mut KxPublic,
 	kx_shared_secrets: &mut ArrayVec<KxSharedSecret, MAX_HOPS>,
 	rng: &mut (impl Rng + CryptoRng),
-	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
+	their_kx_publics: &[KxPublic],
 ) {
 	let mut kx_secret = gen_kx_secret(rng);
 	*kx_public = derive_kx_public(&kx_secret);

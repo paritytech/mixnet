@@ -28,7 +28,6 @@ use super::{
 	*,
 };
 use arrayref::array_mut_ref;
-use arrayvec::ArrayVec;
 use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
 
@@ -36,7 +35,7 @@ fn gen_mixnode_index(rng: &mut impl Rng) -> MixnodeIndex {
 	rng.gen_range(0, MAX_MIXNODE_INDEX + 1).try_into().unwrap()
 }
 
-fn gen_targets(rng: &mut impl Rng, num_hops: usize) -> ArrayVec<Target, { MAX_HOPS - 1 }> {
+fn gen_targets(rng: &mut impl Rng, num_hops: usize) -> Vec<Target> {
 	let peer_id_i = rng.gen_range(0, num_hops - 1);
 	(0..num_hops - 1)
 		.map(|i| {
@@ -52,7 +51,7 @@ fn gen_targets(rng: &mut impl Rng, num_hops: usize) -> ArrayVec<Target, { MAX_HO
 fn gen_their_kx_secrets_and_publics(
 	rng: &mut (impl Rng + CryptoRng),
 	num_hops: usize,
-) -> (Vec<Scalar>, ArrayVec<KxPublic, MAX_HOPS>) {
+) -> (Vec<Scalar>, Vec<KxPublic>) {
 	(0..num_hops)
 		.map(|_i| {
 			let secret = gen_kx_secret(&mut *rng);
@@ -114,7 +113,7 @@ fn basic_operation() {
 fn bad_mac() {
 	let mut rng = rand::thread_rng();
 
-	let targets = ArrayVec::new();
+	let targets = [];
 	let (their_kx_secrets, their_kx_publics) = gen_their_kx_secrets_and_publics(&mut rng, 1);
 
 	let mut packet = [0; PACKET_SIZE];
@@ -138,7 +137,7 @@ fn bad_mac() {
 fn bad_payload_tag() {
 	let mut rng = rand::thread_rng();
 
-	let targets = ArrayVec::new();
+	let targets = [];
 	let (their_kx_secrets, their_kx_publics) = gen_their_kx_secrets_and_publics(&mut rng, 1);
 	let payload_data = gen_payload_data(&mut rng);
 
@@ -173,7 +172,7 @@ fn surb() {
 	let payload_data = gen_payload_data(&mut rng);
 
 	let mut surb = [0; SURB_SIZE];
-	let mut payload_encryption_keys = ArrayVec::new();
+	let mut payload_encryption_keys = SurbPayloadEncryptionKeys::new();
 	let expected_total_delay = build_surb(
 		&mut surb,
 		&mut payload_encryption_keys,
