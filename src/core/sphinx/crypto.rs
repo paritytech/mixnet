@@ -26,7 +26,7 @@ use arrayvec::ArrayVec;
 use blake2::{
 	digest::{
 		consts::{U16, U32, U64},
-		generic_array::GenericArray,
+		generic_array::{sequence::Concat, GenericArray},
 		FixedOutput, Mac as DigestMac,
 	},
 	Blake2bMac,
@@ -74,13 +74,10 @@ pub fn derive_kx_public(kx_secret: &Scalar) -> KxPublic {
 }
 
 fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> Scalar {
-	let mut h = Blake2bMac::<U32>::new_with_salt_and_personal(
-		kx_shared_secret,
-		b"",
-		KX_BLINDING_FACTOR_PERSONA,
-	)
-	.expect("Key, salt, and persona sizes are fixed and small enough");
-	h.update(kx_public);
+	let kx_public: &GenericArray<_, _> = kx_public.into();
+	let key = kx_public.concat((*kx_shared_secret).into());
+	let h = Blake2bMac::<U32>::new_with_salt_and_personal(&key, b"", KX_BLINDING_FACTOR_PERSONA)
+		.expect("Key, salt, and persona sizes are fixed and small enough");
 	clamp_scalar(h.finalize().into_bytes().into())
 }
 
