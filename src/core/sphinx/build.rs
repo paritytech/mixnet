@@ -53,7 +53,7 @@ fn build_header(
 	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
 	kind: PacketKind,
 ) -> Delay {
-	debug_assert!((targets.len() + 1) == their_kx_publics.len());
+	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
 
 	let (kx_public, mac_plus_encrypted) =
 		mut_array_refs![header, KX_PUBLIC_SIZE, MAC_SIZE + ENCRYPTED_HEADER_SIZE];
@@ -205,7 +205,7 @@ pub fn complete_request_packet(
 	targets: &ArrayVec<Target, { MAX_HOPS - 1 }>,
 	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
 ) -> Delay {
-	debug_assert!((targets.len() + 1) == their_kx_publics.len());
+	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
 
 	let (header, payload) = mut_array_refs![packet, HEADER_SIZE, PAYLOAD_SIZE];
 
@@ -251,7 +251,7 @@ pub fn build_surb(
 	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
 	id: &SurbId,
 ) -> Delay {
-	debug_assert!((targets.len() + 1) == their_kx_publics.len());
+	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
 
 	let (raw_first_mixnode_index, header, first_payload_encryption_key) =
 		mut_array_refs![surb, RAW_MIXNODE_INDEX_SIZE, HEADER_SIZE, PAYLOAD_ENCRYPTION_KEY_SIZE];
@@ -315,7 +315,7 @@ pub fn build_cover_packet(
 	their_kx_publics: &ArrayVec<KxPublic, MAX_HOPS>,
 	id: Option<&CoverId>,
 ) -> Delay {
-	debug_assert!((targets.len() + 1) == their_kx_publics.len());
+	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
 
 	let (header, payload) = mut_array_refs![packet, HEADER_SIZE, PAYLOAD_SIZE];
 
