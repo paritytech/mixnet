@@ -27,6 +27,7 @@ use std::{
 	time::Instant,
 };
 
+/// A packet plus the ID of the peer it should be sent to.
 pub struct AddressedPacket {
 	/// Where the packet should be sent.
 	pub peer_id: PeerId,
@@ -84,7 +85,7 @@ impl ForwardPacketQueue {
 
 	/// Insert a packet into the queue. Returns true iff the deadline of the item at the head of
 	/// the queue changed. Should only be called if there is space in the queue (see
-	/// `remaining_capacity`).
+	/// [`remaining_capacity`](Self::remaining_capacity)).
 	pub fn insert(&mut self, packet: ForwardPacket) -> bool {
 		debug_assert!(self.queue.len() < self.capacity);
 		let prev_deadline = self.next_deadline();
@@ -114,7 +115,7 @@ impl AuthoredPacketQueue {
 	}
 
 	/// Push a packet onto the queue. Should only be called if there is space in the queue (see
-	/// `remaining_capacity`).
+	/// [`remaining_capacity`](Self::remaining_capacity)).
 	pub fn push(&mut self, packet: AddressedPacket) {
 		debug_assert!(self.queue.len() < self.capacity);
 		self.queue.push_back(packet);

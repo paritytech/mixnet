@@ -67,7 +67,7 @@ fn check_payload_tag(tag: &PayloadTag) -> Result<(), PeelErr> {
 }
 
 /// Attempt to peel a layer off `packet` using `kx_shared_secret`. `kx_shared_secret` should be
-/// derived from `kx_public(packet)` and this node's secret key.
+/// derived from [`kx_public(packet)`](kx_public) and this node's secret key.
 pub fn peel(
 	out: &mut Packet,
 	packet: &Packet,

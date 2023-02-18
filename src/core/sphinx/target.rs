@@ -24,10 +24,12 @@ use super::packet::{PeerId, RawMixnodeIndex, MAX_MIXNODE_INDEX};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-/// The contained index is always <= `MAX_MIXNODE_INDEX`.
+/// The index of a mixnode in a session's mixnode list. The index is always <=
+/// [`MAX_MIXNODE_INDEX`].
 pub struct MixnodeIndex(RawMixnodeIndex);
 
 impl MixnodeIndex {
+	/// Get the raw index out. This will always be <= [`MAX_MIXNODE_INDEX`].
 	pub fn get(self) -> RawMixnodeIndex {
 		self.0
 	}

@@ -37,13 +37,13 @@ mod topology;
 mod util;
 
 pub use self::{
-	config::Config,
+	config::{Config, SessionConfig},
 	fragment::{MessageId, MESSAGE_ID_SIZE},
 	kx_store::KxPublicStore,
 	packet_queues::AddressedPacket,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
+		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS,
 		MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{Mixnode, NetworkStatus, TopologyErr},
@@ -79,35 +79,62 @@ use std::{
 };
 
 #[derive(Clone, Copy)]
+/// A session index and the index of a mixnode in the session.
 pub struct MixnodeId {
+	/// The session index.
 	pub session_index: SessionIndex,
 	/// Index of the mixnode in the list for the session with index `session_index`.
 	pub mixnode_index: MixnodeIndex,
 }
 
 #[derive(Debug, PartialEq, Eq)]
+/// A message received over the mixnet.
 pub enum Message {
-	Request { session_index: SessionIndex, data: Vec<u8>, surbs: Vec<Surb> },
-	Reply { id: MessageId, data: Vec<u8> },
+	/// A request from another node.
+	Request {
+		/// Index of the session this message was received in. This session index should be used
+		/// when sending replies.
+		session_index: SessionIndex,
+		/// The message contents.
+		data: Vec<u8>,
+		/// SURBs that were attached to the message. These can be used to send replies.
+		surbs: Vec<Surb>,
+	},
+	/// A reply to a previously sent request.
+	Reply {
+		/// Message identifier, explicitly provided by the reply sender.
+		id: MessageId,
+		/// The message contents.
+		data: Vec<u8>,
+	},
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Request/reply posting error.
 pub enum PostErr {
 	#[error("Message would need to be split into too many fragments")]
+	/// Message contents too large or too many SURBs.
 	TooManyFragments,
 	#[error("Bad session index: {0}")]
+	/// Bad session index. Most likely the session is no longer active.
 	BadSessionIndex(SessionIndex),
 	#[error("Requests and replies currently blocked for session {0}")]
+	/// Requests and replies currently blocked for the session.
 	RequestsAndRepliesBlocked(SessionIndex),
 	#[error("Mixnodes not yet known for session {0}")]
+	/// Mixnodes not yet known for the session.
 	SessionEmpty(SessionIndex),
 	#[error("Mixnet disabled for session {0}")]
+	/// Mixnet disabled for the session.
 	SessionDisabled(SessionIndex),
 	#[error("There is not enough space in the authored packet queue")]
+	/// Not enough space in the authored packet queue.
 	NotEnoughSpaceInQueue,
 	#[error("Topology error: {0}")]
+	/// Topology error.
 	Topology(TopologyErr),
 	#[error("Bad SURB")]
+	/// Bad SURB.
 	BadSurb,
 }
 
@@ -134,19 +161,20 @@ fn post_session(
 bitflags! {
 	/// Flags to indicate which previously queried things are now invalid.
 	pub struct Invalidated: u32 {
-		/// The reserved peers returned by `reserved_peer_addresses()`.
+		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`].
 		const RESERVED_PEERS = 0b001;
-		/// The deadline returned by `next_forward_packet_deadline()`.
+		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`].
 		const NEXT_FORWARD_PACKET_DEADLINE = 0b010;
-		/// The effective deadline returned by `next_authored_packet_delay()`. The delay (and thus
-		/// the effective deadline) is randomly generated according to an exponential distribution
-		/// each time the function is called, but the last returned deadline remains valid until
-		/// this bit indicates otherwise. Due to the memoryless nature of exponential
+		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`]. The delay
+		/// (and thus the effective deadline) is randomly generated according to an exponential
+		/// distribution each time the function is called, but the last returned deadline remains
+		/// valid until this bit indicates otherwise. Due to the memoryless nature of exponential
 		/// distributions, it is harmless for this bit to be set spuriously.
 		const NEXT_AUTHORED_PACKET_DEADLINE = 0b100;
 	}
 }
 
+/// Network-agnostic mixnet core.
 pub struct Mixnet {
 	config: Config,
 
@@ -171,6 +199,7 @@ pub struct Mixnet {
 }
 
 impl Mixnet {
+	/// Create a new `Mixnet`.
 	pub fn new(config: Config, kx_public_store: Arc<KxPublicStore>) -> Self {
 		let forward_packet_queue = ForwardPacketQueue::new(config.forward_packet_queue_capacity);
 
@@ -201,7 +230,7 @@ impl Mixnet {
 	}
 
 	/// Sets the current session index and phase. The current and previous mixnodes may need to be
-	/// provided after calling this; see `maybe_set_mixnodes`.
+	/// provided after calling this; see [`maybe_set_mixnodes`](Self::maybe_set_mixnodes).
 	pub fn set_session_status(&mut self, session_status: SessionStatus) {
 		if self.session_status == session_status {
 			return
@@ -319,6 +348,7 @@ impl Mixnet {
 		Ok(())
 	}
 
+	/// Returns the addresses of the peers we should try to maintain connections to.
 	pub fn reserved_peer_addresses(&self) -> HashSet<Multiaddr> {
 		self.sessions
 			.iter()
@@ -327,6 +357,8 @@ impl Mixnet {
 			.collect()
 	}
 
+	/// Handle an incoming packet. If the packet completes a message, the message is returned.
+	/// Otherwise, [`None`] is returned.
 	pub fn handle_packet(&mut self, packet: &Packet) -> Option<Message> {
 		self.kx_store.add_pending_session_secrets();
 
@@ -463,17 +495,21 @@ impl Mixnet {
 		}
 	}
 
+	/// Returns the next instant at which
+	/// [`pop_next_forward_packet`](Self::pop_next_forward_packet) should be called.
 	pub fn next_forward_packet_deadline(&self) -> Option<Instant> {
 		self.forward_packet_queue.next_deadline()
 	}
 
-	/// Pop and return the packet at the head of the forward packet queue. Returns `None` if the
+	/// Pop and return the packet at the head of the forward packet queue. Returns [`None`] if the
 	/// queue is empty.
 	pub fn pop_next_forward_packet(&mut self) -> Option<AddressedPacket> {
 		self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
 		self.forward_packet_queue.pop().map(|packet| packet.packet)
 	}
 
+	/// Returns the delay after which [`pop_next_authored_packet`](Self::pop_next_authored_packet)
+	/// should be called.
 	pub fn next_authored_packet_delay(&self) -> Option<Duration> {
 		// Send packets at the maximum rate of any active session; pop_next_authored_packet will
 		// choose between the sessions randomly based on their rates
@@ -493,10 +529,10 @@ impl Mixnet {
 	}
 
 	/// Either generate and return a cover packet or pop and return the packet at the head of one
-	/// of the authored packet queues. May return `None` if cover packets are disabled, we fail to
-	/// generate a cover packet, or there are no active sessions (though in the no active sessions
-	/// case `next_authored_packet_delay` should return `None` and so this function should not
-	/// really be called).
+	/// of the authored packet queues. May return [`None`] if cover packets are disabled, we fail
+	/// to generate a cover packet, or there are no active sessions (though in the no active
+	/// sessions case [`next_authored_packet_delay`](Self::next_authored_packet_delay) should
+	/// return [`None`] and so this function should not really be called).
 	pub fn pop_next_authored_packet(&mut self, ns: &dyn NetworkStatus) -> Option<AddressedPacket> {
 		// This function should be called according to a Poisson process. Randomly choosing between
 		// sessions and cover kinds here is equivalent to there being multiple independent Poisson
@@ -552,7 +588,7 @@ impl Mixnet {
 		}
 	}
 
-	/// Post a request message. If `destination` is `None`, a destination mixnode is chosen at
+	/// Post a request message. If `destination` is [`None`], a destination mixnode is chosen at
 	/// random and (on success) the session and mixnode indices are written back to `destination`.
 	/// The message is split into fragments and each fragment is sent over a different path to the
 	/// destination. Returns the maximum total forwarding delay for any fragment/SURB pair; this
@@ -674,6 +710,7 @@ impl Mixnet {
 		Ok(())
 	}
 
+	/// Clear the invalidated flags. Returns the flags that were cleared.
 	pub fn take_invalidated(&mut self) -> Invalidated {
 		let invalidated = self.invalidated;
 		self.invalidated = Invalidated::empty();

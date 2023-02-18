@@ -75,7 +75,7 @@ impl SurbKeystore {
 		}
 	}
 
-	/// Returns the entry for a SURB, or `None` if the ID is not recognised.
+	/// Returns the entry for a SURB, or [`None`] if the ID is not recognised.
 	pub fn entry(&mut self, id: &SurbId) -> Option<Entry> {
 		match self.surb_keys.entry(*id) {
 			linked_hash_map::Entry::Occupied(entry) => Some(Entry(entry)),

@@ -190,16 +190,16 @@ fn build_header(
 }
 
 /// Returns a mutable reference to the payload data in `packet`. This is only really useful for
-/// filling in the payload data prior to calling `complete_request_packet` or
-/// `complete_reply_packet`.
+/// filling in the payload data prior to calling [`complete_request_packet`] or
+/// [`complete_reply_packet`].
 pub fn mut_payload_data(packet: &mut Packet) -> &mut PayloadData {
 	array_mut_ref![packet, HEADER_SIZE, PAYLOAD_DATA_SIZE]
 }
 
 /// Complete a Sphinx request packet. The unencrypted payload data should be written to
-/// `mut_payload_data(packet)` before calling this function. `targets` should not include the first
-/// hop. At most one target may be a peer ID; all others should be mixnode indices. Returns the
-/// total forwarding delay across all hops.
+/// [`mut_payload_data(packet)`](mut_payload_data) before calling this function. `targets` should
+/// not include the first hop. At most one target may be a peer ID; all others should be mixnode
+/// indices. Returns the total forwarding delay across all hops.
 pub fn complete_request_packet(
 	packet: &mut Packet,
 	rng: &mut (impl Rng + CryptoRng),
@@ -233,7 +233,9 @@ pub fn complete_request_packet(
 	total_delay
 }
 
+/// Size in bytes of a [`Surb`].
 pub const SURB_SIZE: usize = RAW_MIXNODE_INDEX_SIZE + HEADER_SIZE + PAYLOAD_ENCRYPTION_KEY_SIZE;
+/// A "single-use reply block". This should be treated as an opaque type.
 pub type Surb = [u8; SURB_SIZE];
 
 pub type SurbPayloadEncryptionKeys = ArrayVec<PayloadEncryptionKey, MAX_HOPS>;
@@ -285,9 +287,9 @@ pub fn build_surb(
 }
 
 /// Complete a Sphinx reply packet. The unencrypted payload data should be written to
-/// `mut_payload_data(packet)` before calling this function. `surb` should be a SURB built by the
-/// receiving node using `build_surb`. The mixnode index of the first hop is returned. Will only
-/// return `None` if the SURB is malformed.
+/// [`mut_payload_data(packet)`](mut_payload_data) before calling this function. `surb` should be a
+/// SURB built by the receiving node using [`build_surb`]. The mixnode index of the first hop is
+/// returned. Will only return [`None`] if the SURB is malformed.
 pub fn complete_reply_packet(packet: &mut Packet, surb: &Surb) -> Option<MixnodeIndex> {
 	let (header, payload) = mut_array_refs![packet, HEADER_SIZE, PAYLOAD_SIZE];
 	let (raw_first_mixnode_index, surb_header, first_payload_encryption_key) =

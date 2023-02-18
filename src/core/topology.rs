@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Mixnet topology. A new `Topology` is created for every session.
+//! Mixnet topology. A new [`Topology`] is created for every session.
 
 use super::sphinx::{
 	KxPublic, MixnodeIndex, PeerId, RawMixnodeIndex, Target, MAX_HOPS, MAX_MIXNODE_INDEX,
@@ -30,6 +30,7 @@ use rand::{seq::SliceRandom, CryptoRng, Rng};
 use std::cmp::{max, min};
 
 #[derive(Clone)]
+/// Key-exchange public key, peer ID, and external addresses for a mixnode.
 pub struct Mixnode {
 	/// Key-exchange public key for the mixnode.
 	pub kx_public: KxPublic,
@@ -48,12 +49,16 @@ enum LocalNode {
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Topology error.
 pub enum TopologyErr {
 	#[error("Bad mixnode index ({0})")]
+	/// An out-of-range mixnode index was encountered.
 	BadMixnodeIndex(MixnodeIndex),
 	#[error("Too few mixnodes; this should have been caught earlier")]
+	/// There aren't enough mixnodes.
 	TooFewMixnodes,
 	#[error("The local node has not managed to connect to any gateway mixnodes")]
+	/// The local node has not managed to connect to any gateway mixnodes.
 	NoConnectedGatewayMixnodes,
 }
 
@@ -64,7 +69,7 @@ pub struct Topology {
 }
 
 impl Topology {
-	/// `mixnodes` must be no longer than `MAX_MIXNODE_INDEX + 1`.
+	/// `mixnodes` must be no longer than [`MAX_MIXNODE_INDEX + 1`](MAX_MIXNODE_INDEX).
 	pub fn new(
 		rng: &mut impl Rng,
 		mixnodes: Vec<Mixnode>,
@@ -148,10 +153,11 @@ impl Topology {
 	}
 }
 
+/// A trait for querying the peer ID and connectivity of the local node.
 pub trait NetworkStatus {
 	/// Returns the peer ID of the local node.
 	fn local_peer_id(&self) -> PeerId;
-	/// Returns true iff the local node is currently connected to the specified node.
+	/// Returns true iff the local node is currently connected to the specified peer.
 	fn is_connected(&self, peer_id: &PeerId) -> bool;
 }
 

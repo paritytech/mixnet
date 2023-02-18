@@ -20,10 +20,10 @@
 
 //! Keystore for Sphinx key-exchange keys.
 //!
-//! A store is split into two parts: `KxPublicStore` and `KxStore`. `KxPublicStore` provides access
-//! to the public keys and is intended to be shared among multiple threads. `KxStore` provides
-//! access to the secret keys via a key-exchange function and is intended to be used by a single
-//! thread.
+//! A store is split into two parts: [`KxPublicStore`] and [`KxStore`]. [`KxPublicStore`] provides
+//! access to the public keys and is intended to be shared among multiple threads. [`KxStore`]
+//! provides access to the secret keys via a key-exchange function and is intended to be used by a
+//! single thread.
 
 use super::{
 	sessions::SessionIndex,
@@ -53,9 +53,11 @@ struct KxPublicStoreInner {
 	pending_session_secrets: Vec<SessionSecret>,
 }
 
+/// Provides access to public keys. Intended to be shared among multiple threads.
 pub struct KxPublicStore(Mutex<KxPublicStoreInner>);
 
 impl KxPublicStore {
+	/// Create a new `KxPublicStore`.
 	pub fn new() -> Self {
 		Self(Mutex::new(KxPublicStoreInner {
 			discarded_sessions_before: 0,
@@ -64,7 +66,8 @@ impl KxPublicStore {
 		}))
 	}
 
-	/// Returns `None` if the key pair was discarded due to age.
+	/// Returns the public key for the specified session, or [`None`] if the key pair was discarded
+	/// due to age.
 	pub fn public_for_session(&self, index: SessionIndex) -> Option<KxPublic> {
 		let mut inner = self.0.lock().unwrap();
 
@@ -78,7 +81,7 @@ impl KxPublicStore {
 			}
 		}
 
-		// We box the secret to avoid leaving copies of it in memory when the `SessionSecret` is
+		// We box the secret to avoid leaving copies of it in memory when the SessionSecret is
 		// moved. Note that we will likely leave some copies on the stack here; I'm not aware of
 		// any good way of avoiding this.
 		let secret = Box::new(StaticSecret::new(OsRng));
@@ -134,7 +137,8 @@ impl KxStore {
 		}
 	}
 
-	/// Make secrets created for `public_for_session` queries available to `session_exchange`.
+	/// Make secrets created for [`public_for_session`](KxPublicStore::public_for_session) queries
+	/// available to [`session_exchange`](Self::session_exchange).
 	pub fn add_pending_session_secrets(&mut self) {
 		self.session_secrets.extend(self.public.take_pending_session_secrets());
 	}

@@ -52,9 +52,9 @@ impl Delay {
 		Self(delay.min(10.0))
 	}
 
-	/// Convert the raw delay value into a `Duration`. `mean` is the desired mean delay; for delays
-	/// calculated by senders to match the delays calculated by mixnodes, senders and mixnodes must
-	/// agree on this.
+	/// Convert the raw delay value into a [`Duration`]. `mean` is the desired mean delay; for
+	/// delays calculated by senders to match the delays calculated by mixnodes, senders and
+	/// mixnodes must agree on this.
 	pub fn to_duration(self, mean: Duration) -> Duration {
 		mean.mul_f64(self.0)
 	}

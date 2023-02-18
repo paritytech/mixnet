@@ -22,31 +22,39 @@
 //!
 //! Packets consist of the following, in order:
 //!
-//! - `Header`:
-//!   - Key-exchange public key (`KxPublic`, alpha in the Sphinx paper).
-//!   - `Mac` (gamma in the Sphinx paper).
-//!   - `EncryptedHeader` (beta in the Sphinx paper).
-//! - `Payload` (delta in the Sphinx paper):
-//!   - `PayloadData`.
-//!   - `PayloadTag` (for detecting tampering).
+//! - [`Header`]:
+//!   - Key-exchange public key ([`KxPublic`], alpha in the Sphinx paper).
+//!   - [`Mac`] (gamma in the Sphinx paper).
+//!   - [`EncryptedHeader`] (beta in the Sphinx paper).
+//! - [`Payload`] (delta in the Sphinx paper):
+//!   - [`PayloadData`].
+//!   - [`PayloadTag`] (for detecting tampering).
 //!
 //! For each hop, the encrypted header contains, in order:
 //!
-//! - A `RawAction`. Always a deliver action for the last hop and a forward action for earlier hops.
-//! - If the `RawAction` is `RAW_ACTION_FORWARD_TO_PEER_ID`, a `PeerId`.
-//! - If the `RawAction` is a forward action, a `Mac` for the next hop.
-//! - If the `RawAction` is `RAW_ACTION_DELIVER_REPLY`, a `SurbId`.
-//! - If the `RawAction` is `RAW_ACTION_DELIVER_COVER_WITH_ID`, a `CoverId`.
+//! - A [`RawAction`]. Always a deliver action for the last hop and a forward action for earlier
+//!   hops.
+//! - If the [`RawAction`] is [`RAW_ACTION_FORWARD_TO_PEER_ID`], a [`PeerId`].
+//! - If the [`RawAction`] is a forward action, a [`Mac`] for the next hop.
+//! - If the [`RawAction`] is [`RAW_ACTION_DELIVER_REPLY`], a [`SurbId`].
+//! - If the [`RawAction`] is [`RAW_ACTION_DELIVER_COVER_WITH_ID`], a [`CoverId`].
 
+/// Size in bytes of a [`KxPublic`].
 pub const KX_PUBLIC_SIZE: usize = 32;
+/// Key-exchange public key.
 pub type KxPublic = [u8; KX_PUBLIC_SIZE];
 
 pub const MAC_SIZE: usize = 16;
 pub type Mac = [u8; MAC_SIZE];
 
+/// Maximum number of hops a packet can traverse. Sending a packet directly to the final
+/// destination node would count as one hop. Strictly speaking it is possible to construct packets
+/// that will traverse slightly more hops than this, but not using this crate.
 pub const MAX_HOPS: usize = 6;
 pub const RAW_MIXNODE_INDEX_SIZE: usize = 2;
+/// Raw mixnode index type, not guaranteed to be <= [`MAX_MIXNODE_INDEX`].
 pub type RawMixnodeIndex = u16;
+/// Maximum valid mixnode index.
 pub const MAX_MIXNODE_INDEX: RawMixnodeIndex = 0xfeff;
 pub const RAW_ACTION_SIZE: usize = RAW_MIXNODE_INDEX_SIZE; // A mixnode index means forward to that mixnode
 pub type RawAction = RawMixnodeIndex;
@@ -55,7 +63,10 @@ pub const RAW_ACTION_DELIVER_REQUEST: RawAction = 0xff01;
 pub const RAW_ACTION_DELIVER_REPLY: RawAction = 0xff02;
 pub const RAW_ACTION_DELIVER_COVER: RawAction = 0xff03;
 pub const RAW_ACTION_DELIVER_COVER_WITH_ID: RawAction = 0xff04;
+/// Size in bytes of a [`PeerId`].
 pub const PEER_ID_SIZE: usize = 32;
+/// Globally unique identifier for a network peer. The [`core`](crate::core) module treats this as
+/// an opaque type.
 pub type PeerId = [u8; PEER_ID_SIZE];
 /// Maximum amount of padding that might need to be appended to the header for length invariance at
 /// each hop.
@@ -81,5 +92,7 @@ pub const HEADER_SIZE: usize = KX_PUBLIC_SIZE + MAC_SIZE + ENCRYPTED_HEADER_SIZE
 pub type Header = [u8; HEADER_SIZE];
 pub const PAYLOAD_SIZE: usize = PAYLOAD_DATA_SIZE + PAYLOAD_TAG_SIZE;
 pub type Payload = [u8; PAYLOAD_SIZE];
+/// Size in bytes of a [`Packet`].
 pub const PACKET_SIZE: usize = HEADER_SIZE + PAYLOAD_SIZE;
+/// Type for packets sent between nodes. Note that all packets are the same size.
 pub type Packet = [u8; PACKET_SIZE];

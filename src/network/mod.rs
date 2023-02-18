@@ -67,8 +67,11 @@ type Result = std::result::Result<Packet, Failure>;
 #[derive(Clone)]
 /// Just like `InternalMixnode` but with a libp2p peer ID instead of a mixnet peer ID.
 pub struct Mixnode {
+	/// Key-exchange public key for the mixnode.
 	pub kx_public: KxPublic,
+	/// Peer ID for the mixnode.
 	pub peer_id: PeerId,
+	/// External addresses for the mixnode.
 	pub external_addresses: Vec<Multiaddr>,
 }
 

@@ -31,20 +31,24 @@ pub struct Session {
 	pub topology: Topology,
 	/// Queue of packets authored by us, to be dispatched in place of drop cover traffic.
 	pub authored_packet_queue: AuthoredPacketQueue,
-	/// See `SessionConfig`.
+	/// See [`SessionConfig`](super::config::SessionConfig::mean_authored_packet_period).
 	pub mean_authored_packet_period: Duration,
 	/// Filter applied to incoming packets to prevent replay. This is per-session because the
 	/// key-exchange keys are rotated every session. Note that while this always exists, for
 	/// sessions where we are not a mixnode, it should never contain anything, and so should not
-	/// cost anything (`ReplayFilter` lazily allocates internally).
+	/// cost anything ([`ReplayFilter`] lazily allocates internally).
 	pub replay_filter: ReplayFilter,
 }
 
+/// Absolute session index.
 pub type SessionIndex = u32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+/// Relative session index.
 pub enum RelSessionIndex {
+	/// The current session.
 	Current,
+	/// The previous session.
 	Prev,
 }
 
@@ -61,7 +65,7 @@ impl Add<SessionIndex> for RelSessionIndex {
 
 pub enum SessionSlot {
 	Empty,
-	/// Like `Empty`, but we should not try to create a `Session` struct.
+	/// Like [`Empty`](Self::Empty), but we should not try to create a [`Session`] struct.
 	Disabled,
 	Full(Session),
 }
@@ -147,6 +151,7 @@ impl IndexMut<RelSessionIndex> for Sessions {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Each session should progress through these phases in order.
 pub enum SessionPhase {
 	/// Connect to the mixnode set for the current session, but only attempt to forward traffic to
 	/// it.
@@ -165,6 +170,7 @@ pub enum SessionPhase {
 }
 
 impl SessionPhase {
+	/// Is the previous session still needed?
 	pub fn need_prev(self) -> bool {
 		self < Self::DisconnectFromPrev
 	}
@@ -197,6 +203,7 @@ impl SessionPhase {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+/// The index and phase of the current session.
 pub struct SessionStatus {
 	/// Index of the current session.
 	pub current_index: SessionIndex,

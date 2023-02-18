@@ -26,7 +26,10 @@ use hashlink::{linked_hash_map::Entry, LinkedHashMap};
 use log::{error, log, warn, Level};
 use std::cmp::{max, min};
 
+/// Size in bytes of a [`MessageId`].
 pub const MESSAGE_ID_SIZE: usize = 16;
+/// Message identifier. Should be randomly generated. Attached to fragments to enable reassembly.
+/// May also be used to identify replies.
 pub type MessageId = [u8; MESSAGE_ID_SIZE];
 const FRAGMENT_INDEX_SIZE: usize = 2;
 type FragmentIndex = u16;
@@ -127,7 +130,7 @@ pub struct GenericMessage {
 
 impl GenericMessage {
 	/// Construct a message from a list of fragments. The fragments must all be valid (checked by
-	/// `check_fragment`) and in the correct order.
+	/// [`check_fragment`]) and in the correct order.
 	fn from_fragments<'a>(fragments: impl Iterator<Item = &'a Fragment> + Clone) -> Self {
 		let id = *message_id(fragments.clone().next().expect("At least one fragment"));
 
@@ -163,7 +166,7 @@ enum IncompleteMessageInsertErr {
 
 struct IncompleteMessage {
 	fragments: Vec<Option<Box<Fragment>>>,
-	/// Count of `Some` in `fragments`.
+	/// Count of [`Some`] in `fragments`.
 	num_received_fragments: usize,
 }
 
@@ -172,8 +175,9 @@ impl IncompleteMessage {
 		Self { fragments: vec![None; num_fragments], num_received_fragments: 0 }
 	}
 
-	/// Attempt to insert `fragment`, which must be a valid fragment (checked by `check_fragment`).
-	/// Success implies `num_received_fragments` was incremented.
+	/// Attempt to insert `fragment`, which must be a valid fragment (checked by
+	/// [`check_fragment`]). Success implies
+	/// [`num_received_fragments`](Self::num_received_fragments) was incremented.
 	fn insert(&mut self, fragment: &Fragment) -> Result<(), IncompleteMessageInsertErr> {
 		debug_assert!(check_fragment(fragment).is_ok());
 
@@ -195,8 +199,8 @@ impl IncompleteMessage {
 		Ok(())
 	}
 
-	/// Returns `None` if we don't have all the fragments yet. Otherwise, returns an iterator over
-	/// the completed list of fragments.
+	/// Returns [`None`] if we don't have all the fragments yet. Otherwise, returns an iterator
+	/// over the completed list of fragments.
 	fn complete_fragments(&self) -> Option<impl Iterator<Item = &Fragment> + Clone> {
 		(self.num_received_fragments == self.fragments.len()).then(|| {
 			self.fragments
@@ -371,7 +375,7 @@ fn div_ceil(x: usize, y: usize) -> usize {
 }
 
 /// Generate fragment blueprints containing the provided message ID and data and the specified
-/// number of SURBs. Returns `None` if more fragments would be required than are possible to
+/// number of SURBs. Returns [`None`] if more fragments would be required than are possible to
 /// encode. Note that the actual number of fragments supported by the receiver is likely to be
 /// significantly less than this.
 pub fn fragment_blueprints<'a>(

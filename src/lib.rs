@@ -18,5 +18,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+//! A mixnet loosely based on
+//! [Loopix](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/piotrowska).
+
+#![deny(missing_docs)]
+
 pub mod core;
 pub mod network;
