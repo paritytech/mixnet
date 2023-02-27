@@ -18,25 +18,15 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Sphinx packet building and "peeling".
+use once_cell::sync::Lazy;
+use std::{collections::HashMap, sync::Mutex};
 
-mod build;
-mod crypto;
-mod delay;
-mod packet;
-mod peel;
-mod target;
-mod tests;
-
-pub use self::{
-	build::*,
-	crypto::KxSharedSecret,
-	delay::Delay,
-	packet::{
-		CoverId, KxPublic, Packet, Payload, PayloadData, PeerId, RawMixnodeIndex, SurbId,
-		COVER_ID_SIZE, KX_PUBLIC_SIZE, MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PAYLOAD_DATA_SIZE,
-		PAYLOAD_SIZE, PEER_ID_SIZE, SURB_ID_SIZE,
-	},
-	peel::*,
-	target::{MixnodeIndex, Target},
-};
+pub fn log_target(peer_index: usize) -> &'static str {
+	static LOG_TARGETS: Lazy<Mutex<HashMap<usize, &'static str>>> =
+		Lazy::new(|| Mutex::new(HashMap::new()));
+	LOG_TARGETS
+		.lock()
+		.unwrap()
+		.entry(peer_index)
+		.or_insert_with(|| Box::leak(format!("mixnet({peer_index})").into_boxed_str()))
+}

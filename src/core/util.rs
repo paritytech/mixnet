@@ -18,25 +18,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Sphinx packet building and "peeling".
+//! Misc utilities.
 
-mod build;
-mod crypto;
-mod delay;
-mod packet;
-mod peel;
-mod target;
-mod tests;
-
-pub use self::{
-	build::*,
-	crypto::KxSharedSecret,
-	delay::Delay,
-	packet::{
-		CoverId, KxPublic, Packet, Payload, PayloadData, PeerId, RawMixnodeIndex, SurbId,
-		COVER_ID_SIZE, KX_PUBLIC_SIZE, MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PAYLOAD_DATA_SIZE,
-		PAYLOAD_SIZE, PEER_ID_SIZE, SURB_ID_SIZE,
-	},
-	peel::*,
-	target::{MixnodeIndex, Target},
-};
+pub fn default_boxed_array<T: Default + Clone, const N: usize>() -> Box<[T; N]> {
+	vec![Default::default(); N].try_into().ok().expect("Vec is the right size")
+}

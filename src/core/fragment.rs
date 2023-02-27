@@ -18,416 +18,548 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Mix message fragment management
+//! Mixnet message fragment handling.
 
-use super::{error::Error, TimedHashMap};
-use crate::{core::sphinx::SURB_REPLY_SIZE, MessageType};
-use rand::Rng;
-use static_assertions::const_assert;
-use std::{
-	collections::{hash_map::Entry, HashMap},
-	time::Instant,
-};
+use super::sphinx::{Surb, PAYLOAD_DATA_SIZE, SURB_SIZE};
+use arrayref::{array_mut_ref, array_refs, mut_array_refs};
+use hashlink::{linked_hash_map::Entry, LinkedHashMap};
+use log::{error, log, warn, Level};
+use std::cmp::{max, min};
 
-type MessageHash = [u8; 32];
+/// Size in bytes of a [`MessageId`].
+pub const MESSAGE_ID_SIZE: usize = 16;
+/// Message identifier. Should be randomly generated. Attached to fragments to enable reassembly.
+/// May also be used to identify replies.
+pub type MessageId = [u8; MESSAGE_ID_SIZE];
+const FRAGMENT_INDEX_SIZE: usize = 2;
+type FragmentIndex = u16;
+const FRAGMENT_DATA_SIZE_SIZE: usize = 2;
+type FragmentDataSize = u16;
+const FRAGMENT_NUM_SURBS_SIZE: usize = 1;
+type FragmentNumSurbs = u8;
+const FRAGMENT_HEADER_SIZE: usize = MESSAGE_ID_SIZE +
+	FRAGMENT_INDEX_SIZE + // Last fragment index (number of fragments - 1)
+	FRAGMENT_INDEX_SIZE + // Index of this fragment
+	FRAGMENT_DATA_SIZE_SIZE + // Number of data bytes in this fragment
+	FRAGMENT_NUM_SURBS_SIZE; // Number of SURBs in this fragment
 
-/// Target fragment size. Includes the header and the payload.
-pub const FRAGMENT_PACKET_SIZE: usize = 2048;
-const FRAGMENT_HEADER_SIZE: usize = 4 + 32;
-const FIRST_FRAGMENT_HEADER_SIZE: usize = FRAGMENT_HEADER_SIZE + 32 + 4;
-const_assert!(SURB_REPLY_SIZE < FRAGMENT_PACKET_SIZE - FIRST_FRAGMENT_HEADER_SIZE);
-const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_PACKET_SIZE - FRAGMENT_HEADER_SIZE;
-const MAX_MESSAGE_SIZE: usize = 256 * 1024;
+pub const FRAGMENT_SIZE: usize = PAYLOAD_DATA_SIZE;
+pub type Fragment = [u8; FRAGMENT_SIZE];
+const FRAGMENT_PAYLOAD_SIZE: usize = FRAGMENT_SIZE - FRAGMENT_HEADER_SIZE;
+type FragmentPayload = [u8; FRAGMENT_PAYLOAD_SIZE];
+const MAX_SURBS_PER_FRAGMENT: usize = FRAGMENT_PAYLOAD_SIZE / SURB_SIZE;
 
-const FRAGMENT_EXPIRATION_MS: u64 = 10000;
-
-const COVER_TAG: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-
-// `hash` is using tag as iv to avoid collision.
-// Avoiding collision is not needed in all case.
-// In the case we do not need to count the number
-// of time an identical message was received, it
-// would not be needed.
-fn hash(iv: &[u8], data: &[u8]) -> MessageHash {
-	use blake2::digest::{FixedOutput, Update};
-	type Blake2b256 = blake2::Blake2bMac<blake2::digest::typenum::U32>;
-	let mut ctx = Blake2b256::new_with_salt_and_personal(iv, &[], &[])
-		.expect("Salt length (32) is a valid key length (<= 64)");
-	ctx.update(data);
-	let hash = ctx.finalize_fixed();
-	let mut r = MessageHash::default();
-	r.copy_from_slice(&hash);
-	r
+#[allow(clippy::type_complexity)]
+fn split_fragment(
+	fragment: &Fragment,
+) -> (
+	&MessageId,
+	&[u8; FRAGMENT_INDEX_SIZE],
+	&[u8; FRAGMENT_INDEX_SIZE],
+	&[u8; FRAGMENT_DATA_SIZE_SIZE],
+	&[u8; FRAGMENT_NUM_SURBS_SIZE],
+	&FragmentPayload,
+) {
+	array_refs![
+		fragment,
+		MESSAGE_ID_SIZE,
+		FRAGMENT_INDEX_SIZE,
+		FRAGMENT_INDEX_SIZE,
+		FRAGMENT_DATA_SIZE_SIZE,
+		FRAGMENT_NUM_SURBS_SIZE,
+		FRAGMENT_PAYLOAD_SIZE
+	]
 }
 
-/// Fragment.
-#[derive(Eq, PartialEq, Clone, Debug)]
-pub struct Fragment {
-	buf: Vec<u8>,
-	index: u32,
+fn message_id(fragment: &Fragment) -> &MessageId {
+	split_fragment(fragment).0
 }
 
-impl Fragment {
-	/// Create a single fragment filled with random data.
-	pub fn create_cover_fragment(rng: &mut impl Rng) -> Fragment {
-		let mut buf = vec![0; FRAGMENT_PACKET_SIZE];
-		buf[0..4].copy_from_slice(&COVER_TAG[..]);
-		rng.fill_bytes(&mut buf[4..]);
-		Fragment { buf, index: 0 }
-	}
-
-	pub fn create(
-		index: u32,
-		hash: MessageHash,
-		iv: &[u8],
-		message_len: u32,
-		chunk: &[u8],
-	) -> Fragment {
-		let mut buf = Vec::with_capacity(FRAGMENT_PACKET_SIZE);
-		buf.extend_from_slice(&index.to_be_bytes());
-		buf.extend_from_slice(&hash);
-		if index == 0 {
-			buf.extend_from_slice(iv);
-			buf.extend_from_slice(&message_len.to_be_bytes());
-		}
-
-		// chunk size must match (need to be padded).
-		buf.extend_from_slice(chunk);
-
-		Fragment { buf, index }
-	}
-
-	fn hash(&self) -> MessageHash {
-		let mut hash: MessageHash = Default::default();
-		hash.copy_from_slice(&self.buf[4..36]);
-		hash
-	}
-
-	fn from_encoded(fragment: Vec<u8>, kind: &MessageType) -> Result<Option<Self>, Error> {
-		let with_surb = kind.with_surb();
-		if !with_surb && fragment.len() != FRAGMENT_PACKET_SIZE {
-			return Err(Error::BadFragment)
-		}
-		if fragment[..4] == COVER_TAG {
-			return Ok(None)
-		}
-
-		let mut index: [u8; 4] = Default::default();
-		index.copy_from_slice(&fragment[..4]);
-		let index = u32::from_be_bytes(index);
-
-		if with_surb {
-			if fragment.len() != FRAGMENT_PACKET_SIZE - SURB_REPLY_SIZE {
-				return Err(Error::BadFragment)
-			}
-			if index != 0 {
-				return Err(Error::BadFragment)
-			}
-		}
-
-		Ok(Some(Fragment { buf: fragment, index }))
-	}
-
-	pub fn iv(&self) -> Option<Box<[u8; 32]>> {
-		if self.index == 0 {
-			let mut iv = [0u8; 32];
-			iv.copy_from_slice(&self.buf[36..68]);
-			Some(Box::new(iv))
-		} else {
-			None
-		}
-	}
-
-	pub fn message_len(&self) -> Option<u32> {
-		if self.index == 0 {
-			let mut len: [u8; 4] = Default::default();
-			len.copy_from_slice(&self.buf[68..72]);
-			Some(u32::from_be_bytes(len))
-		} else {
-			None
-		}
-	}
-
-	pub fn data(&self) -> &[u8] {
-		let offset =
-			if self.index == 0 { FIRST_FRAGMENT_HEADER_SIZE } else { FRAGMENT_HEADER_SIZE };
-		&self.buf[offset..]
-	}
-
-	pub fn into_vec(self) -> Vec<u8> {
-		self.buf
-	}
+fn num_fragments(fragment: &Fragment) -> usize {
+	(FragmentIndex::from_le_bytes(*split_fragment(fragment).1) as usize) + 1
 }
 
-struct IncompleteMessage {
-	target_len: Option<u32>,
-	target_iv: Option<Box<[u8; 32]>>,
-	target_hash: MessageHash,
-	fragments: HashMap<u32, Fragment>,
-	complete_type: MessageType,
+fn fragment_index(fragment: &Fragment) -> usize {
+	FragmentIndex::from_le_bytes(*split_fragment(fragment).2) as usize
 }
 
-impl IncompleteMessage {
-	fn current_len(&self) -> usize {
-		let surb_len = if self.complete_type.with_surb() { SURB_REPLY_SIZE } else { 0 };
-		(self.fragments.len() * FRAGMENT_PAYLOAD_SIZE) - surb_len
-	}
+fn fragment_data_size(fragment: &Fragment) -> usize {
+	FragmentDataSize::from_le_bytes(*split_fragment(fragment).3) as usize
+}
 
-	fn is_complete(&self) -> bool {
-		self.target_len
-			.map(|target_len| self.current_len() >= target_len as usize)
-			.unwrap_or(false)
-	}
+fn fragment_num_surbs(fragment: &Fragment) -> usize {
+	FragmentNumSurbs::from_le_bytes(*split_fragment(fragment).4) as usize
+}
 
-	fn num_fragments(&self) -> usize {
-		self.fragments.len()
-	}
+fn fragment_payload(fragment: &Fragment) -> &FragmentPayload {
+	split_fragment(fragment).5
+}
 
-	fn total_expected_fragments(&self) -> Option<usize> {
-		self.target_len.map(|target_len| {
-			let surb_len = if self.complete_type.with_surb() { SURB_REPLY_SIZE } else { 0 };
-			(target_len as usize + surb_len) / FRAGMENT_PAYLOAD_SIZE + 1
+#[derive(Debug, thiserror::Error)]
+enum CheckFragmentErr {
+	#[error("Out-of-range index ({index}, max {max})")]
+	Index { index: usize, max: usize },
+	#[error("Bad payload size ({size}, max {max})")]
+	PayloadSize { size: usize, max: usize },
+}
+
+fn check_fragment(fragment: &Fragment) -> Result<(), CheckFragmentErr> {
+	if fragment_index(fragment) >= num_fragments(fragment) {
+		return Err(CheckFragmentErr::Index {
+			index: fragment_index(fragment),
+			max: num_fragments(fragment) - 1,
 		})
 	}
 
-	fn reconstruct(mut self) -> Result<(Vec<u8>, MessageType), Error> {
-		let mut index = 0;
-		let target_len = if let Some(len) = self.target_len {
-			len as usize
-		} else {
-			return Err(Error::BadFragment)
-		};
-		let mut result = Vec::with_capacity(target_len);
-		while result.len() < target_len {
-			let fragment = match self.fragments.remove(&index) {
-				Some(fragment) => fragment,
-				None => return Err(Error::BadFragment),
-			};
-			result.extend_from_slice(fragment.data());
-			index += 1;
-		}
-		if result.len() < target_len {
-			return Err(Error::BadFragment)
-		}
-		// check padding
-		if !result[target_len..].iter().all(|c| c == &0) {
-			return Err(Error::BadFragment)
-		}
-		result.resize(target_len, 0u8);
+	let data_size = fragment_data_size(fragment);
+	let num_surbs = fragment_num_surbs(fragment);
+	let payload_size = data_size + (num_surbs * SURB_SIZE);
+	if payload_size > FRAGMENT_PAYLOAD_SIZE {
+		return Err(CheckFragmentErr::PayloadSize { size: payload_size, max: FRAGMENT_PAYLOAD_SIZE })
+	}
 
-		if let Some(iv) = self.target_iv {
-			let hash = hash(&iv[..], &result);
-			if hash == self.target_hash {
-				return Ok((result, self.complete_type))
+	Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct GenericMessage {
+	pub id: MessageId,
+	pub data: Vec<u8>,
+	pub surbs: Vec<Surb>,
+}
+
+impl GenericMessage {
+	/// Construct a message from a list of fragments. The fragments must all be valid (checked by
+	/// [`check_fragment`]) and in the correct order.
+	fn from_fragments<'a>(fragments: impl Iterator<Item = &'a Fragment> + Clone) -> Self {
+		let id = *message_id(fragments.clone().next().expect("At least one fragment"));
+
+		let mut data = Vec::with_capacity(fragments.clone().map(fragment_data_size).sum());
+		let mut surbs = Vec::with_capacity(fragments.clone().map(fragment_num_surbs).sum());
+		for fragment in fragments {
+			debug_assert!(check_fragment(fragment).is_ok());
+			let payload = fragment_payload(fragment);
+			data.extend_from_slice(&payload[..fragment_data_size(fragment)]);
+			surbs.extend(
+				payload
+					// TODO Use array_rchunks if/when this is stabilised
+					.rchunks_exact(SURB_SIZE)
+					.map(|surb| {
+						TryInto::<&Surb>::try_into(surb)
+							.expect("All slices returned by rchunks_exact have length SURB_SIZE")
+					})
+					.take(fragment_num_surbs(fragment)),
+			);
+		}
+
+		Self { id, data, surbs }
+	}
+}
+
+#[derive(Debug, thiserror::Error)]
+enum IncompleteMessageInsertErr {
+	#[error("Inconsistent number of fragments for message ({0} vs {1})")]
+	InconsistentNumFragments(usize, usize),
+	#[error("Already have this fragment")]
+	AlreadyHave,
+}
+
+struct IncompleteMessage {
+	fragments: Vec<Option<Box<Fragment>>>,
+	/// Count of [`Some`] in `fragments`.
+	num_received_fragments: usize,
+}
+
+impl IncompleteMessage {
+	fn new(num_fragments: usize) -> Self {
+		Self { fragments: vec![None; num_fragments], num_received_fragments: 0 }
+	}
+
+	/// Attempt to insert `fragment`, which must be a valid fragment (checked by
+	/// [`check_fragment`]). Success implies
+	/// [`num_received_fragments`](Self::num_received_fragments) was incremented.
+	fn insert(&mut self, fragment: &Fragment) -> Result<(), IncompleteMessageInsertErr> {
+		debug_assert!(check_fragment(fragment).is_ok());
+
+		if num_fragments(fragment) != self.fragments.len() {
+			return Err(IncompleteMessageInsertErr::InconsistentNumFragments(
+				num_fragments(fragment),
+				self.fragments.len(),
+			))
+		}
+
+		let slot = &mut self.fragments[fragment_index(fragment)];
+		if slot.is_some() {
+			return Err(IncompleteMessageInsertErr::AlreadyHave)
+		}
+
+		*slot = Some((*fragment).into());
+		self.num_received_fragments += 1;
+		debug_assert!(self.num_received_fragments <= self.fragments.len());
+		Ok(())
+	}
+
+	/// Returns [`None`] if we don't have all the fragments yet. Otherwise, returns an iterator
+	/// over the completed list of fragments.
+	fn complete_fragments(&self) -> Option<impl Iterator<Item = &Fragment> + Clone> {
+		(self.num_received_fragments == self.fragments.len()).then(|| {
+			self.fragments
+				.iter()
+				.map(|fragment| fragment.as_ref().expect("All fragments received").as_ref())
+		})
+	}
+}
+
+pub struct FragmentAssembler {
+	/// Incomplete messages, in LRU order: least recently used at the front, most recently at the
+	/// back. All messages have at least one received fragment.
+	incomplete_messages: LinkedHashMap<MessageId, IncompleteMessage>,
+	/// Total number of received fragments across all messages in `incomplete_messages`.
+	num_incomplete_fragments: usize,
+
+	/// Maximum number of incomplete messages to keep in `incomplete_messages`.
+	max_incomplete_messages: usize,
+	/// Maximum number of received fragments to keep across all messages in `incomplete_messages`.
+	max_incomplete_fragments: usize,
+	/// Maximum number of fragments per message. Fragments of messages with more than this many
+	/// fragments are dropped on receipt.
+	max_fragments_per_message: usize,
+}
+
+impl FragmentAssembler {
+	pub fn new(
+		max_incomplete_messages: usize,
+		max_incomplete_fragments: usize,
+		max_fragments_per_message: usize,
+	) -> Self {
+		Self {
+			incomplete_messages: LinkedHashMap::with_capacity(
+				// Plus one because we only evict _after_ going over the limit
+				max_incomplete_messages.saturating_add(1),
+			),
+			num_incomplete_fragments: 0,
+			max_incomplete_messages,
+			max_incomplete_fragments,
+			max_fragments_per_message,
+		}
+	}
+
+	fn need_eviction(&self) -> bool {
+		(self.incomplete_messages.len() > self.max_incomplete_messages) ||
+			(self.num_incomplete_fragments > self.max_incomplete_fragments)
+	}
+
+	/// Evict a message if we're over the messages or fragments limit. This should be called after
+	/// each fragment insertion.
+	fn maybe_evict(&mut self, log_target: &str) {
+		if self.need_eviction() {
+			warn!(target: log_target, "Too many incomplete messages; evicting LRU");
+			let incomplete_message = self
+				.incomplete_messages
+				.pop_front()
+				.expect("Over messages or fragments limit, there must be at least one message")
+				.1;
+			debug_assert!(
+				self.num_incomplete_fragments >= incomplete_message.num_received_fragments
+			);
+			self.num_incomplete_fragments -= incomplete_message.num_received_fragments;
+			// Called after each fragment insertion, so could only have been one message or
+			// fragment over the limit. Each message has at least one received fragment, so having
+			// popped a message we should now be within both limits.
+			debug_assert!(!self.need_eviction());
+		}
+	}
+
+	/// Attempt to insert `fragment`. If this completes a message, the completed message is
+	/// returned.
+	pub fn insert(&mut self, fragment: &Fragment, log_target: &str) -> Option<GenericMessage> {
+		if let Err(err) = check_fragment(fragment) {
+			error!(target: log_target, "Received bad fragment: {err}");
+			return None
+		}
+		let num_fragments = num_fragments(fragment);
+		if num_fragments > self.max_fragments_per_message {
+			return None
+		}
+		if num_fragments == 1 {
+			return Some(GenericMessage::from_fragments(std::iter::once(fragment)))
+		}
+		match self.incomplete_messages.entry(*message_id(fragment)) {
+			Entry::Occupied(mut entry) => {
+				let incomplete_message = entry.get_mut();
+				if let Err(err) = incomplete_message.insert(fragment) {
+					let level = match err {
+						IncompleteMessageInsertErr::AlreadyHave => Level::Trace,
+						_ => Level::Error,
+					};
+					log!(target: log_target, level, "Fragment insert failed: {err}");
+					return None
+				}
+				self.num_incomplete_fragments += 1;
+				let message =
+					incomplete_message.complete_fragments().map(GenericMessage::from_fragments);
+				if message.is_some() {
+					self.num_incomplete_fragments -= entry.remove().num_received_fragments;
+				} else {
+					entry.to_back();
+					self.maybe_evict(log_target);
+				}
+				message
+			},
+			Entry::Vacant(entry) => {
+				let mut incomplete_message = IncompleteMessage::new(num_fragments);
+				// Insert of first fragment cannot fail
+				assert!(incomplete_message.insert(fragment).is_ok());
+				entry.insert(incomplete_message);
+				self.num_incomplete_fragments += 1;
+				self.maybe_evict(log_target);
+				None
+			},
+		}
+	}
+}
+
+pub struct FragmentBlueprint<'a> {
+	message_id: MessageId,
+	last_index: FragmentIndex,
+	index: FragmentIndex,
+	data: &'a [u8],
+	num_surbs: FragmentNumSurbs,
+}
+
+impl<'a> FragmentBlueprint<'a> {
+	pub fn write_except_surbs(&self, fragment: &mut Fragment) {
+		let (message_id, last_index, index, data_size, num_surbs, payload) = mut_array_refs![
+			fragment,
+			MESSAGE_ID_SIZE,
+			FRAGMENT_INDEX_SIZE,
+			FRAGMENT_INDEX_SIZE,
+			FRAGMENT_DATA_SIZE_SIZE,
+			FRAGMENT_NUM_SURBS_SIZE,
+			FRAGMENT_PAYLOAD_SIZE
+		];
+
+		// Write header
+		*message_id = self.message_id;
+		*last_index = self.last_index.to_le_bytes();
+		*index = self.index.to_le_bytes();
+		*data_size = (self.data.len() as FragmentDataSize).to_le_bytes();
+		*num_surbs = self.num_surbs.to_le_bytes();
+
+		// Write payload
+		payload[..self.data.len()].copy_from_slice(self.data);
+	}
+
+	pub fn surbs<'fragment>(
+		&self,
+		fragment: &'fragment mut Fragment,
+	) -> impl Iterator<Item = &'fragment mut Surb> {
+		array_mut_ref![fragment, FRAGMENT_HEADER_SIZE, FRAGMENT_PAYLOAD_SIZE]
+			// TODO Use array_rchunks_mut if/when this is stabilised
+			.rchunks_exact_mut(SURB_SIZE)
+			.map(|surb| {
+				TryInto::<&mut Surb>::try_into(surb)
+					.expect("All slices returned by rchunks_exact_mut have length SURB_SIZE")
+			})
+			.take(self.num_surbs as usize)
+	}
+}
+
+// TODO Use usize::div_ceil when this is stabilised
+fn div_ceil(x: usize, y: usize) -> usize {
+	if x == 0 {
+		0
+	} else {
+		((x - 1) / y) + 1
+	}
+}
+
+/// Generate fragment blueprints containing the provided message ID and data and the specified
+/// number of SURBs. Returns [`None`] if more fragments would be required than are possible to
+/// encode. Note that the actual number of fragments supported by the receiver is likely to be
+/// significantly less than this.
+pub fn fragment_blueprints<'a>(
+	message_id: &MessageId,
+	mut data: &'a [u8],
+	mut num_surbs: usize,
+) -> Option<impl ExactSizeIterator<Item = FragmentBlueprint<'a>>> {
+	let message_id = *message_id;
+
+	// Figure out how many fragments we need
+	let num_fragments_for_surbs = div_ceil(num_surbs, MAX_SURBS_PER_FRAGMENT);
+	let surb_fragments_unused_size = num_fragments_for_surbs.saturating_mul(FRAGMENT_PAYLOAD_SIZE) -
+		num_surbs.saturating_mul(SURB_SIZE);
+	let remaining_data_size = data.len().saturating_sub(surb_fragments_unused_size);
+	let num_fragments_for_remaining_data = div_ceil(remaining_data_size, FRAGMENT_PAYLOAD_SIZE);
+	let num_fragments =
+		max(num_fragments_for_surbs.saturating_add(num_fragments_for_remaining_data), 1);
+
+	let last_index = num_fragments - 1;
+	(last_index <= (FragmentIndex::MAX as usize)).then(|| {
+		(0..num_fragments).map(move |index| {
+			let fragment_num_surbs = min(num_surbs, MAX_SURBS_PER_FRAGMENT);
+			num_surbs -= fragment_num_surbs;
+			let fragment_unused_size = FRAGMENT_PAYLOAD_SIZE - (fragment_num_surbs * SURB_SIZE);
+			let fragment_data_size = min(data.len(), fragment_unused_size);
+			let (fragment_data, remaining_data) = data.split_at(fragment_data_size);
+			data = remaining_data;
+			FragmentBlueprint {
+				message_id,
+				last_index: last_index as FragmentIndex,
+				index: index as FragmentIndex,
+				data: fragment_data,
+				num_surbs: fragment_num_surbs as FragmentNumSurbs,
 			}
-		}
-		Err(Error::BadFragment)
-	}
-}
-
-/// Manages partial message fragments.
-pub struct MessageCollection {
-	messages: TimedHashMap<MessageHash, IncompleteMessage>,
-}
-
-impl MessageCollection {
-	pub fn new() -> Self {
-		Self { messages: TimedHashMap::new(FRAGMENT_EXPIRATION_MS) }
-	}
-
-	/// Insert a new new message fragment in the collection. If the fragment completes some message,
-	/// full message is returned.
-	pub fn insert_fragment(
-		&mut self,
-		fragment: Vec<u8>,
-		kind: MessageType,
-	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
-		let fragment = if let Some(fragment) = Fragment::from_encoded(fragment, &kind)? {
-			fragment
-		} else {
-			// Discard cover message
-			return Ok(None)
-		};
-
-		let expires_ix = self.messages.next_inserted_entry();
-
-		match self.messages.entry(fragment.hash()) {
-			Entry::Occupied(mut e) => {
-				let index = fragment.index;
-				if index == 0 {
-					e.get_mut().0.target_len = fragment.message_len();
-					e.get_mut().0.target_iv = fragment.iv();
-				}
-				if kind != MessageType::StandAlone {
-					e.get_mut().0.complete_type = kind;
-				}
-				e.get_mut().0.fragments.insert(index, fragment);
-				log::trace!(target: "mixnet", "Inserted additional fragment {} ({}/{:?})", index, e.get().0.num_fragments(), e.get().0.total_expected_fragments());
-				if e.get().0.is_complete() {
-					log::trace!(target: "mixnet", "Fragment complete");
-					let e = e.remove();
-					let e = self.messages.removed_entry(e);
-					return Ok(Some(e.reconstruct()?))
-				}
-			},
-			Entry::Vacant(e) => {
-				let index = fragment.index;
-				let mut message = IncompleteMessage {
-					target_hash: fragment.hash(),
-					target_len: fragment.message_len(),
-					target_iv: fragment.iv(),
-					fragments: Default::default(),
-					complete_type: kind,
-				};
-				let hash = fragment.hash();
-				message.fragments.insert(index, fragment);
-				log::trace!(target: "mixnet", "Inserted new fragment {} ({}/{:?})", index, 1, message.total_expected_fragments());
-				if message.is_complete() {
-					log::trace!(target: "mixnet", "Fragment complete");
-					return Ok(Some(message.reconstruct()?))
-				}
-				e.insert((message, expires_ix));
-				self.messages.inserted_entry(hash, Instant::now());
-			},
-		}
-		Ok(None)
-	}
-
-	/// Perform periodic maintenance. Messages that sit in the collection for too long are expunged.
-	pub fn cleanup(&mut self, now: Instant) {
-		let removed = self.messages.cleanup(now);
-		if removed > 0 {
-			log::trace!(target: "mixnet", "Fragment cleanup. Removed {} fragments", removed)
-		}
-	}
-}
-
-/// Utility function to split message body into equal-sized chunks. Each chunk contains a header
-/// that allows for message reconstruction.
-pub fn create_fragments(
-	rng: &mut impl Rng,
-	mut message: Vec<u8>,
-	with_surb: bool,
-) -> Result<Vec<Fragment>, Error> {
-	let surb_len = if with_surb { SURB_REPLY_SIZE } else { 0 };
-	let additional_first_header = FIRST_FRAGMENT_HEADER_SIZE - FRAGMENT_HEADER_SIZE;
-	if message.len() > MAX_MESSAGE_SIZE {
-		return Err(Error::MessageTooLarge)
-	}
-	let len_no_header = message.len() + surb_len + additional_first_header;
-	let mut iv = [0u8; 32];
-	rng.fill_bytes(&mut iv);
-	let hash = hash(&iv[..], &message);
-	let message_len = message.len();
-	let pad =
-		(FRAGMENT_PAYLOAD_SIZE - len_no_header % FRAGMENT_PAYLOAD_SIZE) % FRAGMENT_PAYLOAD_SIZE;
-	message.resize(message.len() + pad, 0);
-	let nb_chunks = (message.len() + surb_len + additional_first_header) / FRAGMENT_PAYLOAD_SIZE;
-	debug_assert!(
-		(message.len() + surb_len + additional_first_header) % FRAGMENT_PAYLOAD_SIZE == 0
-	);
-	let mut offset = 0;
-	let mut fragments = Vec::with_capacity(nb_chunks);
-	for n in 0..nb_chunks {
-		let additional_header = if n == 0 { additional_first_header } else { 0 };
-		let fragment_len = if with_surb && n == 0 {
-			FRAGMENT_PAYLOAD_SIZE - SURB_REPLY_SIZE - additional_header
-		} else {
-			FRAGMENT_PAYLOAD_SIZE - additional_header
-		};
-		let chunk = &message[offset..offset + fragment_len];
-		offset += fragment_len;
-		let fragment = Fragment::create(n as u32, hash, iv.as_slice(), message_len as u32, chunk);
-		fragments.push(fragment);
-	}
-	Ok(fragments)
+		})
+	})
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
 	use super::*;
-	use crate::core::sphinx::{SurbPayload, SURB_REPLY_SIZE};
-	use rand::{prelude::SliceRandom, RngCore};
+	use itertools::Itertools;
+	use rand::{prelude::SliceRandom, Rng, RngCore};
+
+	const LOG_TARGET: &str = "mixnet";
 
 	#[test]
 	fn create_and_insert_small() {
 		let mut rng = rand::thread_rng();
-		let mut fragments = MessageCollection::new();
 
-		let small_fragment = create_fragments(&mut rng, vec![42], true).unwrap();
-		assert_eq!(small_fragment.len(), 1);
-		let small_fragment = small_fragment[0].clone().into_vec();
-		assert_eq!(small_fragment.len(), FRAGMENT_PACKET_SIZE - SURB_REPLY_SIZE);
+		let id = rng.gen();
+		let mut blueprints = fragment_blueprints(&id, &[42], 1).unwrap();
+		assert_eq!(blueprints.len(), 1);
+		let blueprint = blueprints.next().unwrap();
 
-		let dummy_surb = Box::new(SurbPayload::from(vec![0; SURB_REPLY_SIZE]));
-		assert_eq!(
-			fragments
-				.insert_fragment(small_fragment, MessageType::WithSurb(dummy_surb.clone()))
-				.unwrap(),
-			Some((vec![42], MessageType::WithSurb(dummy_surb)))
-		);
-
-		let mut large = Vec::new();
-		large.resize(60000, 0u8);
-		rng.fill_bytes(&mut large);
-		let mut large_fragments = create_fragments(&mut rng, large.clone(), false).unwrap();
-		assert_eq!(large_fragments.len(), 30);
-
-		large_fragments.shuffle(&mut rng);
-		for fragment in large_fragments.iter().skip(1) {
-			assert_eq!(
-				fragments
-					.insert_fragment(fragment.clone().into_vec(), MessageType::StandAlone)
-					.unwrap(),
-				None
-			);
+		let mut fragment = [0; FRAGMENT_SIZE];
+		blueprint.write_except_surbs(&mut fragment);
+		let mut dummy_surb = [0; SURB_SIZE];
+		rng.fill_bytes(&mut dummy_surb);
+		{
+			let mut surbs = blueprint.surbs(&mut fragment);
+			*surbs.next().unwrap() = dummy_surb;
+			assert!(surbs.next().is_none());
 		}
-		assert_eq!(
-			fragments
-				.insert_fragment(large_fragments[0].clone().into_vec(), MessageType::StandAlone)
-				.unwrap(),
-			Some((large, MessageType::StandAlone))
-		);
 
-		let mut too_large = Vec::new();
-		too_large.resize(MAX_MESSAGE_SIZE + 1, 0u8);
-		assert_eq!((create_fragments(&mut rng, too_large, false)), Err(Error::MessageTooLarge));
-	}
-
-	#[test]
-	fn insert_invalid() {
-		let mut fragments = MessageCollection::new();
+		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
 		assert_eq!(
-			fragments.insert_fragment(vec![], MessageType::StandAlone),
-			Err(Error::BadFragment)
-		);
-		assert_eq!(
-			fragments.insert_fragment(vec![42], MessageType::StandAlone),
-			Err(Error::BadFragment)
-		);
-		let empty_packet = [0u8; FRAGMENT_PACKET_SIZE].to_vec();
-		assert_eq!(
-			fragments.insert_fragment(empty_packet, MessageType::StandAlone),
-			Err(Error::BadFragment)
+			fa.insert(&fragment, LOG_TARGET),
+			Some(GenericMessage { id, data: vec![42], surbs: vec![dummy_surb] })
 		);
 	}
 
+	fn no_surb_fragments(message_id: &MessageId, data: &[u8]) -> Vec<Fragment> {
+		fragment_blueprints(message_id, data, 0)
+			.unwrap()
+			.map(|blueprint| {
+				let mut fragment = [0; FRAGMENT_SIZE];
+				blueprint.write_except_surbs(&mut fragment);
+				fragment
+			})
+			.collect()
+	}
+
+	fn insert_fragments<'a>(
+		fa: &mut FragmentAssembler,
+		mut fragments: impl Iterator<Item = &'a Fragment>,
+	) -> Option<GenericMessage> {
+		let message = fragments.find_map(|fragment| fa.insert(fragment, LOG_TARGET));
+		assert!(fragments.next().is_none());
+		message
+	}
+
 	#[test]
-	fn cleanup() {
+	fn create_and_insert_large() {
 		let mut rng = rand::thread_rng();
-		let mut fragments = MessageCollection::new();
-		fragments.messages.expiration = std::time::Duration::from_millis(0);
-		let mut message = Vec::new();
-		message.resize(FRAGMENT_PACKET_SIZE * 2, 0u8);
-		let message_fragments = create_fragments(&mut rng, message, false).unwrap();
+
+		let id = rng.gen();
+		let mut data = vec![0; 60000];
+		rng.fill_bytes(&mut data);
+		let mut fragments = no_surb_fragments(&id, &data);
+		assert_eq!(fragments.len(), 30);
+		fragments.shuffle(&mut rng);
+
+		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
 		assert_eq!(
-			fragments
-				.insert_fragment(message_fragments[0].clone().into_vec(), MessageType::StandAlone)
-				.unwrap(),
+			insert_fragments(&mut fa, fragments.iter()),
+			Some(GenericMessage { id, data, surbs: Vec::new() })
+		);
+	}
+
+	#[test]
+	fn create_too_large() {
+		let too_large = vec![0; (((FragmentIndex::MAX as usize) + 1) * FRAGMENT_PAYLOAD_SIZE) + 1];
+		assert!(fragment_blueprints(&[0; MESSAGE_ID_SIZE], &too_large, 0).is_none());
+	}
+
+	#[test]
+	fn message_limit_eviction() {
+		let mut rng = rand::thread_rng();
+
+		let first_id = rng.gen();
+		let mut first_data = vec![0; 3000];
+		rng.fill_bytes(&mut first_data);
+		let first_fragments = no_surb_fragments(&first_id, &first_data);
+
+		let second_id = rng.gen();
+		let mut second_data = vec![0; 3000];
+		rng.fill_bytes(&mut second_data);
+		let second_fragments = no_surb_fragments(&second_id, &second_data);
+
+		let mut fa = FragmentAssembler::new(1, usize::MAX, usize::MAX);
+
+		// One message at a time should work
+		assert_eq!(
+			insert_fragments(&mut fa, first_fragments.iter()),
+			Some(GenericMessage { id: first_id, data: first_data, surbs: Vec::new() })
+		);
+		assert_eq!(
+			insert_fragments(&mut fa, second_fragments.iter()),
+			Some(GenericMessage { id: second_id, data: second_data, surbs: Vec::new() })
+		);
+
+		// Alternating fragments should not work due to eviction
+		assert_eq!(
+			insert_fragments(&mut fa, first_fragments.iter().interleave(&second_fragments)),
 			None
 		);
-		assert_eq!(1, fragments.messages.messages.len());
-		fragments.cleanup(Instant::now());
-		assert_eq!(0, fragments.messages.messages.len());
+	}
+
+	#[test]
+	fn fragment_limit_eviction() {
+		let mut rng = rand::thread_rng();
+
+		let first_id = rng.gen();
+		let mut first_data = vec![0; 5000];
+		rng.fill_bytes(&mut first_data);
+		let first_fragments = no_surb_fragments(&first_id, &first_data);
+
+		let second_id = rng.gen();
+		let mut second_data = vec![0; 5000];
+		rng.fill_bytes(&mut second_data);
+		let second_fragments = no_surb_fragments(&second_id, &second_data);
+
+		// With a one-fragment limit it should not be possible to reconstruct either message
+		let mut fa = FragmentAssembler::new(2, 1, usize::MAX);
+		assert_eq!(insert_fragments(&mut fa, first_fragments.iter()), None);
+		assert_eq!(insert_fragments(&mut fa, second_fragments.iter()), None);
+
+		let mut fa = FragmentAssembler::new(2, 2, usize::MAX);
+
+		// With a two-fragment limit it should be possible to reconstruct them individually
+		assert_eq!(
+			insert_fragments(&mut fa, first_fragments.iter()),
+			Some(GenericMessage { id: first_id, data: first_data, surbs: Vec::new() })
+		);
+		assert_eq!(
+			insert_fragments(&mut fa, second_fragments.iter()),
+			Some(GenericMessage { id: second_id, data: second_data, surbs: Vec::new() })
+		);
+
+		// But not when interleaved
+		assert_eq!(
+			insert_fragments(&mut fa, first_fragments.iter().interleave(&second_fragments)),
+			None
+		);
 	}
 }

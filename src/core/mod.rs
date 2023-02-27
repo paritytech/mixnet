@@ -18,654 +18,702 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-// Mixnet core logic. This module tries to be network agnostic.
+//! Mixnet core logic. This module tries to be network agnostic.
+
+// Get a bunch of these from [mut_]array_refs
+#![allow(clippy::ptr_offset_with_cast)]
 
 mod config;
-mod error;
+mod cover;
 mod fragment;
+mod kx_store;
+mod packet_queues;
+mod replay_filter;
+mod request_builder;
+mod sessions;
 mod sphinx;
+mod surb_keystore;
 mod topology;
+mod util;
 
-pub use crate::core::{config::Config, sphinx::SurbPayload};
-use crate::{
-	core::{
-		fragment::MessageCollection,
-		sphinx::{SentSurbInfo, SprpKey},
+pub use self::{
+	config::{Config, SessionConfig},
+	fragment::{MessageId, MESSAGE_ID_SIZE},
+	kx_store::KxPublicStore,
+	packet_queues::AddressedPacket,
+	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
+	sphinx::{
+		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS,
+		MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
-	MessageType, MixPeerId, NetworkPeerId, SendOptions,
+	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
-pub use error::Error;
-use futures::FutureExt;
-use futures_timer::Delay;
-use rand::{CryptoRng, Rng};
-use rand_distr::Distribution;
-pub use sphinx::Error as SphinxError;
-use sphinx::Unwrapped;
+use self::{
+	cover::{gen_cover_packet, CoverKind},
+	fragment::{fragment_blueprints, FragmentAssembler},
+	kx_store::KxStore,
+	packet_queues::{AuthoredPacketQueue, ForwardPacket, ForwardPacketQueue},
+	replay_filter::ReplayFilter,
+	request_builder::RequestBuilder,
+	sessions::{Session, SessionSlot, Sessions},
+	sphinx::{
+		complete_reply_packet, decrypt_reply_payload, kx_public, mut_payload_data, peel, Action,
+		Delay, PeelErr, PAYLOAD_DATA_SIZE, PAYLOAD_SIZE,
+	},
+	surb_keystore::SurbKeystore,
+	topology::Topology,
+	util::default_boxed_array,
+};
+use arrayref::{array_mut_ref, array_ref};
+use arrayvec::ArrayVec;
+use bitflags::bitflags;
+use either::Either;
+use log::{error, warn};
+use multiaddr::Multiaddr;
+use rand::{Rng, RngCore};
 use std::{
-	cmp::Ordering,
-	collections::{BinaryHeap, HashMap, VecDeque},
-	num::Wrapping,
+	cmp::{max, min},
+	collections::HashSet,
 	sync::Arc,
-	task::{Context, Poll},
 	time::{Duration, Instant},
 };
 
-pub use topology::SessionTopology;
-
-pub type Surb = Box<SurbPayload>;
-
-/// Mixnet peer network address.
-pub type MixPeerAddress = libp2p_core::Multiaddr;
-/// Mixnet peer DH static public key.
-pub type MixPublicKey = sphinx::PublicKey;
-/// Mixnet peer DH static secret key.
-pub type MixSecretKey = sphinx::StaticSecret;
-
-/// Length of `MixPublicKey`
-pub const PUBLIC_KEY_LEN: usize = 32;
-
-const MAX_QUEUED_PACKETS: usize = 8192;
-/// Size of a mixnet packet.
-pub const PACKET_SIZE: usize = sphinx::OVERHEAD_SIZE + fragment::FRAGMENT_PACKET_SIZE;
-
-/// Associated information to a packet or header.
-pub struct HeaderInfo {
-	sprp_keys: Vec<SprpKey>,
-	surb_id: Option<ReplayTag>,
+#[derive(Clone, Copy)]
+/// A session index and the index of a mixnode in the session.
+pub struct MixnodeId {
+	/// The session index.
+	pub session_index: SessionIndex,
+	/// Index of the mixnode in the list for the session with index `session_index`.
+	pub mixnode_index: MixnodeIndex,
 }
 
-/// Sphinx packet struct, goal of this struct
-/// is only to ensure the packet size is right.
-#[derive(PartialEq, Eq, Debug)]
-pub struct Packet(pub Vec<u8>);
+#[derive(Debug, PartialEq, Eq)]
+/// A message received over the mixnet.
+pub enum Message {
+	/// A request from another node.
+	Request {
+		/// Index of the session this message was received in. This session index should be used
+		/// when sending replies.
+		session_index: SessionIndex,
+		/// The message contents.
+		data: Vec<u8>,
+		/// SURBs that were attached to the message. These can be used to send replies.
+		surbs: Vec<Surb>,
+	},
+	/// A reply to a previously sent request.
+	Reply {
+		/// Message identifier, explicitly provided by the reply sender.
+		id: MessageId,
+		/// The message contents.
+		data: Vec<u8>,
+	},
+}
 
-impl Packet {
-	fn new(header: &[u8], payload: &[u8]) -> Self {
-		let mut packet = Vec::with_capacity(PACKET_SIZE);
-		debug_assert!(header.len() == sphinx::HEADER_SIZE);
-		packet.extend_from_slice(header);
-		packet.extend_from_slice(payload);
-		Self::from_vec(packet)
+#[derive(Debug, thiserror::Error)]
+/// Request/reply posting error.
+pub enum PostErr {
+	#[error("Message would need to be split into too many fragments")]
+	/// Message contents too large or too many SURBs.
+	TooManyFragments,
+	#[error("Bad session index: {0}")]
+	/// Bad session index. Most likely the session is no longer active.
+	BadSessionIndex(SessionIndex),
+	#[error("Requests and replies currently blocked for session {0}")]
+	/// Requests and replies currently blocked for the session.
+	RequestsAndRepliesBlocked(SessionIndex),
+	#[error("Mixnodes not yet known for session {0}")]
+	/// Mixnodes not yet known for the session.
+	SessionEmpty(SessionIndex),
+	#[error("Mixnet disabled for session {0}")]
+	/// Mixnet disabled for the session.
+	SessionDisabled(SessionIndex),
+	#[error("There is not enough space in the authored packet queue")]
+	/// Not enough space in the authored packet queue.
+	NotEnoughSpaceInQueue,
+	#[error("Topology error: {0}")]
+	/// Topology error.
+	Topology(TopologyErr),
+	#[error("Bad SURB")]
+	/// Bad SURB.
+	BadSurb,
+}
+
+fn post_session(
+	sessions: &mut Sessions,
+	status: SessionStatus,
+	index: SessionIndex,
+) -> Result<&mut Session, PostErr> {
+	let rel_index = match status.current_index.wrapping_sub(index) {
+		0 => RelSessionIndex::Current,
+		1 => RelSessionIndex::Prev,
+		_ => return Err(PostErr::BadSessionIndex(index)),
+	};
+	if !status.phase.allow_requests_and_replies(rel_index) {
+		return Err(PostErr::RequestsAndRepliesBlocked(index))
 	}
-
-	pub fn from_vec(data: Vec<u8>) -> Self {
-		debug_assert!(data.len() == PACKET_SIZE);
-		Packet(data)
-	}
-
-	fn into_vec(self) -> Vec<u8> {
-		self.0
-	}
-
-	fn as_mut(&mut self) -> &mut [u8] {
-		self.0.as_mut()
-	}
-}
-
-pub type SessionIndex = u32;
-
-// TODO: public key store mod
-pub struct PublicKeyStore;
-
-pub enum MixEvent {
-	SendMessage((MixPeerId, Vec<u8>)),
-}
-
-pub fn to_mix_peer_id(id: &NetworkPeerId) -> Result<MixPeerId, Error> {
-	let hash = id.as_ref();
-	match libp2p_core::multihash::Code::try_from(hash.code()) {
-		Ok(libp2p_core::multihash::Code::Identity) => {
-			let decoded = libp2p_core::identity::PublicKey::from_protobuf_encoding(hash.digest())
-				.map_err(|_e| Error::InvalidId(*id))?;
-			let public = match decoded {
-				libp2p_core::identity::PublicKey::Ed25519(key) => key.encode(),
-			};
-			Ok(public)
-		},
-		_ => Err(Error::InvalidId(*id)),
-	}
-}
-
-pub fn to_network_peer_id(id: MixPeerId) -> Result<NetworkPeerId, Error> {
-	let encoded = libp2p_core::identity::ed25519::PublicKey::decode(&id)
-		.map_err(|_e| Error::InvalidSphinxId(id.clone()))?;
-	let key = libp2p_core::identity::PublicKey::Ed25519(encoded);
-	Ok(NetworkPeerId::from_public_key(&key))
-}
-
-fn exp_delay<R: Rng + CryptoRng + ?Sized>(rng: &mut R, target: Duration) -> Duration {
-	let exp = rand_distr::Exp::new(1.0 / target.as_nanos() as f64).unwrap();
-	let delay = Duration::from_nanos(exp.sample(rng).round() as u64);
-	log::trace!(target: "mixnet", "delay {:?} for {:?}", delay, target);
-	delay
-}
-
-/// Construct a Montgomery curve25519 private key from an Ed25519 secret key.
-pub fn secret_from_ed25519(seed: &[u8]) -> MixSecretKey {
-	// An Ed25519 public key is derived off the left half of the SHA512 of the
-	// secret scalar, hence a matching conversion of the secret key must do
-	// the same to yield a Curve25519 keypair with the same public key.
-	// let ed25519_sk = ed25519::SecretKey::from(ed);
-	let mut curve25519_sk = [0; 32];
-	let hash = <sha2::Sha512 as sha2::Digest>::digest(seed);
-	curve25519_sk.copy_from_slice(&hash[..32]);
-	curve25519_sk.into()
-}
-
-/// Construct a Montgomery curve25519 public key from an Ed25519 public key.
-pub fn public_from_ed25519(ed25519_pk: &libp2p_core::identity::ed25519::PublicKey) -> MixPublicKey {
-	curve25519_dalek::edwards::CompressedEdwardsY(ed25519_pk.encode())
-		.decompress()
-		.expect("An Ed25519 public key is a valid point by construction.")
-		.to_montgomery()
-		.to_bytes()
-		.into()
-}
-
-#[derive(PartialEq, Eq)]
-/// A real traffic message that we need to forward.
-struct QueuedPacket {
-	deadline: Instant,
-	pub data: Packet,
-	recipient: MixPeerId,
-}
-
-impl std::cmp::PartialOrd for QueuedPacket {
-	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		Some(self.deadline.cmp(&other.deadline).reverse())
+	match &mut sessions[rel_index] {
+		SessionSlot::Empty => Err(PostErr::SessionEmpty(index)),
+		SessionSlot::Disabled => Err(PostErr::SessionDisabled(index)),
+		SessionSlot::Full(session) => Ok(session),
 	}
 }
 
-impl std::cmp::Ord for QueuedPacket {
-	fn cmp(&self, other: &Self) -> Ordering {
-		self.deadline.cmp(&other.deadline).reverse()
+bitflags! {
+	/// Flags to indicate which previously queried things are now invalid.
+	pub struct Invalidated: u32 {
+		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`].
+		const RESERVED_PEERS = 0b001;
+		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`].
+		const NEXT_FORWARD_PACKET_DEADLINE = 0b010;
+		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`]. The delay
+		/// (and thus the effective deadline) is randomly generated according to an exponential
+		/// distribution each time the function is called, but the last returned deadline remains
+		/// valid until this bit indicates otherwise. Due to the memoryless nature of exponential
+		/// distributions, it is harmless for this bit to be set spuriously.
+		const NEXT_AUTHORED_PACKET_DEADLINE = 0b100;
 	}
 }
 
-/// Mixnet core. Mixes messages, tracks fragments and delays.
+/// Network-agnostic mixnet core.
 pub struct Mixnet {
-	topology: SessionTopology,
-	num_hops: usize,
-	secret: MixSecretKey,
-	local_id: MixPeerId,
-	connected_peers: HashMap<MixPeerId, MixPublicKey>,
-	// Incomplete incoming message fragments.
-	fragments: MessageCollection,
-	// Real messages queue, sorted by deadline.
-	packet_queue: BinaryHeap<QueuedPacket>,
-	// Message waiting for surb.
-	pending_surbs: SurbsCollection,
-	// Received message filter.
-	replay_filter: ReplayFilter,
-	// Timer for the next poll for messages.
-	next_message: Delay,
-	// Average delay at which we poll for real or cover messages.
-	average_traffic_delay: Duration,
-	// Average delay for each packet at each hop.
-	average_hop_delay: Duration,
-}
+	config: Config,
 
-/// Message id, use as surb key and replay protection.
-/// This is the result of hashing the secret.
-#[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub struct ReplayTag(pub [u8; crate::core::sphinx::HASH_OUTPUT_SIZE]);
+	/// Index and phase of current session.
+	session_status: SessionStatus,
+	/// Keystore for the per-session key-exchange keys.
+	kx_store: KxStore,
+	/// Current and previous sessions.
+	sessions: Sessions,
 
-pub struct SurbsCollection {
-	pending: TimedHashMap<ReplayTag, SentSurbInfo>,
-}
+	/// Queue of packets to be forwarded, after some delay.
+	forward_packet_queue: ForwardPacketQueue,
 
-impl SurbsCollection {
-	pub fn new(config: &Config) -> Self {
-		SurbsCollection { pending: TimedHashMap::new(config.surb_ttl_ms) }
-	}
+	/// Keystore for SURB payload encryption keys.
+	surb_keystore: SurbKeystore,
+	/// Reassembles fragments into messages. Note that for simplicity there is just one assembler
+	/// for everything (requests and replies across all sessions).
+	fragment_assembler: FragmentAssembler,
 
-	pub fn insert(&mut self, surb_id: ReplayTag, surb: SentSurbInfo, now: Instant) {
-		self.pending.insert(surb_id, surb, now);
-	}
-
-	fn cleanup(&mut self, now: Instant) {
-		self.pending.cleanup(now);
-	}
-}
-
-/// Filter packet that have already be seen filter.
-/// Warning, this is a weak security, and does not avoid
-/// spaming the network. Just allow avoiding decoding payload
-/// or replying to existing payload.
-/// TODO lru the filters over a ttl which should be similar to key rotation.
-/// TODO also lru over a max number of elements.
-/// TODO eventually bloom filter and disk backend.
-pub struct ReplayFilter {
-	seen: TimedHashMap<ReplayTag, ()>,
-}
-
-impl ReplayFilter {
-	pub fn new(config: &Config) -> Self {
-		ReplayFilter { seen: TimedHashMap::new(config.replay_ttl_ms) }
-	}
-
-	pub fn insert(&mut self, tag: ReplayTag, now: Instant) {
-		self.seen.insert(tag, (), now);
-	}
-
-	pub fn contains(&mut self, tag: &ReplayTag) -> bool {
-		self.seen.contains(tag)
-	}
-
-	fn cleanup(&mut self, now: Instant) {
-		self.seen.cleanup(now);
-	}
-}
-
-// TODO this could be optimize, but here simple size inefficient implementation
-struct TimedHashMap<K, V> {
-	messages: HashMap<K, (V, Wrapping<usize>)>,
-	expiration: Duration,
-	exp_deque: VecDeque<(Instant, Option<K>)>,
-	exp_deque_offset: Wrapping<usize>,
-}
-
-type Entry<'a, K, V> = std::collections::hash_map::Entry<'a, K, (V, Wrapping<usize>)>;
-
-impl<K, V> TimedHashMap<K, V>
-where
-	K: Eq + std::hash::Hash + Clone,
-{
-	pub fn new(expiration_ms: u64) -> Self {
-		Self {
-			messages: Default::default(),
-			expiration: Duration::from_millis(expiration_ms),
-			exp_deque: VecDeque::new(),
-			exp_deque_offset: Wrapping(0),
-		}
-	}
-
-	pub fn insert(&mut self, key: K, value: V, now: Instant) {
-		let ix = self.next_inserted_entry();
-		self.messages.insert(key.clone(), (value, ix));
-		self.inserted_entry(key, now)
-	}
-
-	pub fn remove(&mut self, key: &K) -> Option<V> {
-		if let Some((value, ix)) = self.messages.remove(key) {
-			self.removed(ix);
-			Some(value)
-		} else {
-			None
-		}
-	}
-
-	pub fn contains(&mut self, key: &K) -> bool {
-		self.messages.contains_key(key)
-	}
-
-	pub fn entry(&mut self, key: K) -> Entry<K, V> {
-		self.messages.entry(key)
-	}
-
-	pub fn removed_entry(&mut self, e: (V, Wrapping<usize>)) -> V {
-		self.removed(e.1);
-		e.0
-	}
-
-	fn removed(&mut self, ix: Wrapping<usize>) {
-		let ix = ix - self.exp_deque_offset;
-		self.exp_deque[ix.0].1 = None;
-		if ix + Wrapping(1) == Wrapping(self.exp_deque.len()) {
-			loop {
-				if let Some(last) = self.exp_deque.back() {
-					if last.1.is_none() {
-						self.exp_deque.pop_back();
-						continue
-					}
-				}
-				break
-			}
-		}
-		if ix == Wrapping(0) {
-			loop {
-				if let Some(first) = self.exp_deque.front() {
-					if first.1.is_none() {
-						self.exp_deque.pop_front();
-						self.exp_deque_offset += Wrapping(1);
-						continue
-					}
-				}
-				break
-			}
-		}
-	}
-
-	pub fn next_inserted_entry(&self) -> Wrapping<usize> {
-		self.exp_deque_offset + Wrapping(self.exp_deque.len())
-	}
-
-	pub fn inserted_entry(&mut self, k: K, now: Instant) {
-		let expires = now + self.expiration;
-		self.exp_deque.push_back((expires, Some(k)));
-	}
-
-	pub fn cleanup(&mut self, now: Instant) -> usize {
-		let count = self.messages.len();
-		while let Some(first) = self.exp_deque.front() {
-			if first.0 > now {
-				break
-			}
-			if let Some(first) = first.1.as_ref() {
-				self.messages.remove(first);
-			}
-			self.exp_deque.pop_front();
-			self.exp_deque_offset += Wrapping(1);
-		}
-		count - self.messages.len()
-	}
-}
-
-pub fn generate_new_keys() -> (MixPublicKey, MixSecretKey) {
-	let mut secret = [0u8; 32];
-	use rand::RngCore;
-	rand::thread_rng().fill_bytes(&mut secret);
-	let secret_key: MixSecretKey = secret.into();
-	let public_key = MixPublicKey::from(&secret_key);
-	(public_key, secret_key)
+	/// Flags to indicate which previously queried things are now invalid.
+	invalidated: Invalidated,
 }
 
 impl Mixnet {
-	/// Create a new instance with given config.
-	pub fn new(config: Config, _keystore: Arc<PublicKeyStore>) -> Self {
-		Mixnet {
-			pending_surbs: SurbsCollection::new(&config),
-			replay_filter: ReplayFilter::new(&config),
-			topology: Default::default(),
-			num_hops: config.num_hops as usize,
-			secret: config.secret_key,
-			local_id: config.local_id,
-			connected_peers: Default::default(),
-			fragments: MessageCollection::new(),
-			packet_queue: Default::default(),
-			next_message: Delay::new(Duration::from_millis(0)),
-			average_hop_delay: Duration::from_millis(config.average_message_delay_ms as u64),
-			average_traffic_delay: Duration::from_nanos(
-				(PACKET_SIZE * 8) as u64 * 1_000_000_000 / config.target_bits_per_second as u64,
-			),
-		}
-	}
+	/// Create a new `Mixnet`.
+	pub fn new(config: Config, kx_public_store: Arc<KxPublicStore>) -> Self {
+		let forward_packet_queue = ForwardPacketQueue::new(config.forward_packet_queue_capacity);
 
-	pub fn gateways(&self) -> Vec<MixPeerAddress> {
-		let mut rng = rand::thread_rng();
-		self.topology.gateways(&mut rng)
-	}
-
-	pub fn set_session_topolgy(&mut self, _index: SessionIndex, topology: SessionTopology) {
-		self.topology = topology;
-	}
-
-	pub fn start_session(&mut self, _index: SessionIndex) {
-		unimplemented!()
-	}
-
-	fn queue_packet(
-		&mut self,
-		recipient: MixPeerId,
-		data: Vec<u8>, // TODO switch to Packet or Message (TODO merge both)
-		delay: Duration,
-	) -> Result<(), Error> {
-		if self.packet_queue.len() >= MAX_QUEUED_PACKETS {
-			return Err(Error::QueueFull)
-		}
-		let deadline = Instant::now() + delay;
-		self.packet_queue
-			.push(QueuedPacket { deadline, data: Packet::from_vec(data), recipient }); // TODO use right error
-		Ok(())
-	}
-
-	/// Send a new message to the network. Message is split int multiple fragments and each fragment
-	/// is sent over and individual path to the recipient. If no recipient is specified, a random
-	/// recipient is selected.
-	pub fn register_message(
-		&mut self,
-		peer_id: Option<MixPeerId>,
-		message: Vec<u8>,
-		send_options: SendOptions,
-	) -> Result<(), Error> {
-		let mut rng = rand::thread_rng();
-
-		let maybe_peer_id = if let Some(id) = peer_id {
-			Some(id)
-		} else {
-			self.topology.random_recipient(&mut rng)
-		};
-
-		let peer_id =
-			if let Some(id) = maybe_peer_id { id } else { return Err(Error::NoPath(None)) };
-
-		let chunks = fragment::create_fragments(&mut rng, message, send_options.with_surb)?;
-		let paths = self.random_paths(
-			&self.local_id.clone(),
-			&peer_id,
-			&send_options.num_hop,
-			chunks.len(),
-		)?;
-
-		let mut surb = if send_options.with_surb {
-			let Some(peer_id) =
-				paths.last().and_then(|path| path.last()).map(|peer_id| &peer_id.0) else {
-					return Err(Error::NoPath(None))
-				};
-			let paths = self
-				.random_paths(peer_id, &self.local_id.clone(), &send_options.num_hop, 1)?
-				.remove(0);
-			let first_node = paths[0].0;
-			let paths: Vec<_> = paths
-				.into_iter()
-				.map(|(id, public_key)| sphinx::PathHop { id, public_key })
-				.collect();
-			Some((first_node, paths))
-		} else {
-			None
-		};
-
-		let mut packets = Vec::with_capacity(chunks.len());
-		for (n, chunk) in chunks.into_iter().enumerate() {
-			let (first_id, _) = paths[n].first().unwrap().clone();
-			let hops: Vec<_> = paths[n]
-				.iter()
-				.map(|(id, key)| sphinx::PathHop { id: *id, public_key: (*key).into() })
-				.collect();
-			let chunk_surb = if n == 0 { surb.take() } else { None };
-			let (packet, surb_keys) =
-				sphinx::new_packet(&mut rng, hops, chunk.into_vec(), chunk_surb)
-					.map_err(|e| Error::SphinxError(e))?;
-			if let Some(HeaderInfo { sprp_keys: keys, surb_id: Some(surb_id) }) = surb_keys {
-				let persistance = SentSurbInfo { keys, recipient: *paths[n].last().unwrap() };
-				self.pending_surbs
-					.insert(surb_id, persistance.into(), std::time::Instant::now());
-			}
-
-			packets.push((first_id, packet));
-		}
-
-		for (peer_id, packet) in packets {
-			let delay = exp_delay(&mut rng, self.average_hop_delay);
-			self.queue_packet(peer_id, packet.into_vec(), delay)?;
-		}
-		Ok(())
-	}
-
-	pub fn register_surb_reply(&mut self, message: Vec<u8>, surb: Surb) -> Result<(), Error> {
-		let SurbPayload { first_node, first_key, header } = *surb;
-		let mut rng = rand::thread_rng();
-
-		let mut chunks = fragment::create_fragments(&mut rng, message, false)?;
-		if chunks.len() != 1 {
-			return Err(Error::MessageTooLarge) // TODO change error
-		}
-
-		let packet = sphinx::new_surb_packet(first_key, chunks.remove(0).into_vec(), header)
-			.map_err(Error::SphinxError)?;
-		let dest = first_node;
-		// TODO no delay?
-		let delay = exp_delay(&mut rng, self.average_hop_delay);
-		self.queue_packet(dest, packet.into_vec(), delay)?;
-		Ok(())
-	}
-
-	/// Handle new packet coming from the network. Removes one layer of Sphinx encryption and either
-	/// adds the result to the queue for forwarding, or accepts the fragment addressed to us. If the
-	/// fragment completes the message, full message is returned.
-	pub fn import_message(
-		&mut self,
-		peer_id: MixPeerId,
-		message: Packet,
-	) -> Result<Option<(Vec<u8>, MessageType)>, Error> {
-		let next_delay =
-			|| exp_delay(&mut rand::thread_rng(), self.average_hop_delay).as_millis() as u32;
-		let result = sphinx::unwrap_packet(
-			&self.secret,
-			message,
-			&mut self.pending_surbs,
-			&mut self.replay_filter,
-			next_delay,
+		let surb_keystore = SurbKeystore::new(config.surb_keystore_capacity);
+		let fragment_assembler = FragmentAssembler::new(
+			config.max_incomplete_messages,
+			config.max_incomplete_fragments,
+			config.max_fragments_per_message,
 		);
-		match result {
-			Err(e) => {
-				log::debug!(target: "mixnet", "Error unpacking message received from {:?}: {:?}", peer_id, e);
-				return Ok(None)
+
+		Self {
+			config,
+
+			session_status: SessionStatus {
+				current_index: 0,
+				phase: SessionPhase::ConnectToCurrent, // Doesn't really matter
 			},
-			Ok(Unwrapped::Payload(payload)) => {
-				if let Some(m) = self.fragments.insert_fragment(payload, MessageType::StandAlone)? {
-					log::debug!(target: "mixnet", "Imported message from {:?} ({} bytes)", peer_id, m.0.len());
-					return Ok(Some(m))
-				} else {
-					log::trace!(target: "mixnet", "Inserted fragment message from {:?}", peer_id);
-				}
-			},
-			Ok(Unwrapped::Forward((next_id, delay, packet))) => {
-				// See if we can forward the message
-				log::debug!(target: "mixnet", "Forward message from {:?} to {:?}", peer_id, next_id);
-				self.queue_packet(next_id, packet.into_vec(), Duration::from_nanos(delay as u64))?;
-			},
-			Ok(Unwrapped::SurbReply(payload, recipient)) => {
-				if let Some(m) =
-					self.fragments.insert_fragment(payload, MessageType::FromSurb(recipient))?
-				{
-					log::debug!(target: "mixnet", "Imported surb from {:?} ({} bytes)", peer_id, m.0.len());
-					return Ok(Some(m))
-				} else {
-					log::error!(target: "mixnet", "Surb fragment from {:?}", peer_id);
-				}
-			},
-			Ok(Unwrapped::PayloadWithSurb(encoded_surb, payload)) => {
-				debug_assert!(encoded_surb.len() == crate::core::sphinx::SURB_REPLY_SIZE);
-				if let Some(m) = self.fragments.insert_fragment(
-					payload,
-					MessageType::WithSurb(Box::new(encoded_surb.into())),
-				)? {
-					log::debug!(target: "mixnet", "Imported message from {:?} ({} bytes)", peer_id, m.0.len());
-					return Ok(Some(m))
-				} else {
-					log::warn!(target: "mixnet", "Inserted fragment message from {:?}, stored surb envelope.", peer_id);
-				}
-			},
+			sessions: Default::default(),
+			kx_store: KxStore::new(kx_public_store),
+
+			forward_packet_queue,
+
+			surb_keystore,
+			fragment_assembler,
+
+			invalidated: Invalidated::empty(),
 		}
-		Ok(None)
 	}
 
-	/// Should be called when a new peer is connected.
-	pub fn add_connected_peer(&mut self, id: MixPeerId, public_key: MixPublicKey) {
-		self.connected_peers.insert(id, public_key);
-	}
+	/// Sets the current session index and phase. The current and previous mixnodes may need to be
+	/// provided after calling this; see [`maybe_set_mixnodes`](Self::maybe_set_mixnodes).
+	pub fn set_session_status(&mut self, session_status: SessionStatus) {
+		if self.session_status == session_status {
+			return
+		}
 
-	/// Should be called when a peer is disconnected.
-	pub fn remove_connected_peer(&mut self, id: &MixPeerId) {
-		self.connected_peers.remove(id);
-	}
-
-	fn cover_message(&mut self) -> Option<(MixPeerId, Packet)> {
-		let mut rng = rand::thread_rng();
-		let message = fragment::Fragment::create_cover_fragment(&mut rng);
-		let (id, key) = self.random_cover_path()?;
-
-		let hop = sphinx::PathHop { id, public_key: key.into() };
-		let (packet, _no_surb) =
-			sphinx::new_packet(&mut rng, vec![hop], message.into_vec(), None).ok()?;
-		Some((id, packet))
-	}
-
-	fn random_paths(
-		&self,
-		start: &MixPeerId,
-		recipient: &MixPeerId,
-		num_hops: &Option<usize>,
-		count: usize,
-	) -> Result<Vec<Vec<(MixPeerId, MixPublicKey)>>, Error> {
-		let mut rng = rand::thread_rng();
-		let mut result = Vec::new();
-		for _ in 0..count {
-			match self.topology.random_path_to(
-				&mut rng,
-				&start,
-				recipient,
-				num_hops.unwrap_or(self.num_hops),
-			) {
-				Some(path) => result.push(path),
-				None => return Err(Error::NoPath(Some(recipient.clone()))),
+		// Shift sessions in self.sessions when current session changes
+		if self.session_status.current_index != session_status.current_index {
+			if session_status.current_index.saturating_sub(self.session_status.current_index) == 1 {
+				self.sessions.advance_by_one();
+			} else {
+				if self.sessions.current.is_full() {
+					warn!(
+						target: self.config.log_target,
+						"Unexpected session index {}; previous session index was {}",
+						session_status.current_index,
+						self.session_status.current_index
+					);
+				}
+				self.sessions = Default::default();
 			}
 		}
-		Ok(result)
+
+		// Discard sessions which are no longer needed
+		if !session_status.phase.need_prev() {
+			self.sessions.prev = SessionSlot::Disabled;
+		}
+		let min_needed_rel_session_index = if session_status.phase.need_prev() {
+			RelSessionIndex::Prev
+		} else {
+			RelSessionIndex::Current
+		};
+		self.kx_store
+			.discard_sessions_before(min_needed_rel_session_index + session_status.current_index);
+
+		// For simplicity just mark these as invalid whenever anything changes. This should happen
+		// at most once a minute or so.
+		self.invalidated |=
+			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+
+		self.session_status = session_status;
 	}
 
-	fn random_cover_path(&self) -> Option<(MixPeerId, MixPublicKey)> {
-		// Select a random connected peer
-		let neighbors = self.neighbors();
-
-		if neighbors.is_empty() {
-			return None
+	/// Sets the mixnodes for the specified session, if they are needed.
+	pub fn maybe_set_mixnodes<E>(
+		&mut self,
+		rel_session_index: RelSessionIndex,
+		mixnodes: impl FnOnce() -> Result<Vec<Mixnode>, E>,
+	) -> Result<(), E> {
+		// Create the Session only if the slot is empty. If the slot is disabled, don't even try.
+		let session = &mut self.sessions[rel_session_index];
+		if !session.is_empty() {
+			return Ok(())
 		}
 
 		let mut rng = rand::thread_rng();
-		let n: usize = rng.gen_range(0..neighbors.len());
-		Some(neighbors[n].clone())
+
+		// Build Topology struct
+		let session_index = rel_session_index + self.session_status.current_index;
+		let mut mixnodes = mixnodes()?;
+		if mixnodes.len() < self.config.min_mixnodes {
+			error!(
+				target: self.config.log_target,
+				"Insufficient mixnodes registered for session {session_index} \
+				({} mixnodes registered, need {}); \
+				mixnet will not be available during this session",
+				mixnodes.len(),
+				self.config.min_mixnodes
+			);
+			*session = SessionSlot::Disabled;
+			return Ok(())
+		}
+		let max_mixnodes = (MAX_MIXNODE_INDEX + 1) as usize;
+		if mixnodes.len() > max_mixnodes {
+			warn!(
+				target: self.config.log_target,
+				"Too many mixnodes ({}, max {max_mixnodes}); ignoring excess",
+				mixnodes.len()
+			);
+			mixnodes.truncate(max_mixnodes);
+		}
+		let Some(local_kx_public) = self.kx_store.public().public_for_session(session_index) else {
+			error!(target: self.config.log_target,
+				"Key-exchange keys for session {session_index} discarded already; \
+				mixnet will not be available");
+			*session = SessionSlot::Disabled;
+			return Ok(())
+		};
+		let topology =
+			Topology::new(&mut rng, mixnodes, &local_kx_public, self.config.num_gateway_mixnodes);
+
+		// Determine session config
+		let config = if topology.is_mixnode() {
+			&self.config.mixnode_session
+		} else {
+			match &self.config.non_mixnode_session {
+				Some(config) => config,
+				None => {
+					*session = SessionSlot::Disabled;
+					return Ok(())
+				},
+			}
+		};
+
+		// Build Session struct
+		*session = SessionSlot::Full(Session {
+			topology,
+			authored_packet_queue: AuthoredPacketQueue::new(config.authored_packet_queue_capacity),
+			mean_authored_packet_period: config.mean_authored_packet_period,
+			replay_filter: ReplayFilter::new(&mut rng),
+		});
+
+		self.invalidated |=
+			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+
+		Ok(())
 	}
 
-	fn cleanup(&mut self, now: Instant) {
-		self.fragments.cleanup(now);
-		self.pending_surbs.cleanup(now);
-		self.replay_filter.cleanup(now);
-	}
-
-	fn neighbors(&self) -> Vec<(MixPeerId, MixPublicKey)> {
-		self.connected_peers
+	/// Returns the addresses of the peers we should try to maintain connections to.
+	pub fn reserved_peer_addresses(&self) -> HashSet<Multiaddr> {
+		self.sessions
 			.iter()
-			.map(|(id, key)| (id.clone(), key.clone()))
-			.collect::<Vec<_>>()
+			.flat_map(|session| session.topology.reserved_peer_addresses())
+			.cloned()
+			.collect()
 	}
 
-	// Poll for new messages to send over the wire.
-	pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<MixEvent> {
-		if Poll::Ready(()) == self.next_message.poll_unpin(cx) {
-			cx.waker().wake_by_ref();
-			let now = Instant::now();
-			self.cleanup(now);
-			let mut rng = rand::thread_rng();
-			let next_delay = exp_delay(&mut rng, self.average_traffic_delay);
-			self.next_message.reset(next_delay);
-			let deadline = self.packet_queue.peek().map_or(false, |p| p.deadline <= now);
-			if deadline {
-				if let Some(packet) = self.packet_queue.pop() {
-					log::trace!(target: "mixnet", "Outbound message for {:?}", packet.recipient);
-					return Poll::Ready(MixEvent::SendMessage((
-						packet.recipient,
-						packet.data.into_vec(),
-					)))
+	/// Handle an incoming packet. If the packet completes a message, the message is returned.
+	/// Otherwise, [`None`] is returned.
+	pub fn handle_packet(&mut self, packet: &Packet) -> Option<Message> {
+		self.kx_store.add_pending_session_secrets();
+
+		let mut out = [0; PACKET_SIZE];
+		let res = self.sessions.enumerate_mut().find_map(|(rel_session_index, session)| {
+			if session.replay_filter.contains(kx_public(packet)) {
+				return Some(Err(Either::Left(
+					"Packet key-exchange public key found in replay filter",
+				)))
+			}
+
+			let session_index = rel_session_index + self.session_status.current_index;
+			// If secret key for session not found, try other session
+			let kx_shared_secret =
+				self.kx_store.session_exchange(session_index, kx_public(packet))?;
+
+			match peel(&mut out, packet, &kx_shared_secret) {
+				// Bad MAC possibly means we used the wrong secret; try other session
+				Err(PeelErr::Mac) => None,
+				// Any other error means the packet is bad; just discard it
+				Err(err) => Some(Err(Either::Right(err))),
+				Ok(action) => Some(Ok((action, session_index, session))),
+			}
+		});
+
+		let (action, session_index, session) = match res {
+			None => {
+				error!(
+					target: self.config.log_target,
+					"Failed to peel packet; either bad MAC or unknown secret"
+				);
+				return None
+			},
+			Some(Err(err)) => {
+				error!(target: self.config.log_target, "Failed to peel packet: {err}");
+				return None
+			},
+			Some(Ok(x)) => x,
+		};
+
+		match action {
+			Action::ForwardTo { target, delay } => {
+				if !session.topology.is_mixnode() {
+					error!(target: self.config.log_target,
+						"Received packet to forward despite not being a mixnode in the session; discarding");
+					return None
 				}
-			}
-			// No packet to produce, generate cover traffic
-			if let Some((recipient, data)) = self.cover_message() {
-				log::trace!(target: "mixnet", "Cover message for {:?}", recipient);
-				return Poll::Ready(MixEvent::SendMessage((recipient, data.into_vec())))
-			}
+
+				if self.forward_packet_queue.remaining_capacity() == 0 {
+					warn!(target: self.config.log_target, "Dropped forward packet; forward queue full");
+					return None
+				}
+
+				// After the is_mixnode check to avoid inserting anything into the replay filters
+				// for sessions where we are not a mixnode
+				session.replay_filter.insert(kx_public(packet));
+
+				match session.topology.target_to_peer_id(&target) {
+					Ok(peer_id) => {
+						let deadline =
+							Instant::now() + delay.to_duration(self.config.mean_forwarding_delay);
+						let forward_packet = ForwardPacket {
+							deadline,
+							packet: AddressedPacket { peer_id, packet: out.into() },
+						};
+						if self.forward_packet_queue.insert(forward_packet) {
+							self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
+						}
+					},
+					Err(err) => error!(
+						target: self.config.log_target,
+						"Failed to map target {target:?} to peer ID: {err}"
+					),
+				}
+
+				None
+			},
+			Action::DeliverRequest => {
+				let payload_data = array_ref![out, 0, PAYLOAD_DATA_SIZE];
+
+				if !session.topology.is_mixnode() {
+					error!(target: self.config.log_target,
+						"Received request packet despite not being a mixnode in the session; discarding");
+					return None
+				}
+
+				// After the is_mixnode check to avoid inserting anything into the replay filters
+				// for sessions where we are not a mixnode
+				session.replay_filter.insert(kx_public(packet));
+
+				// Add to fragment assembler and return any completed message
+				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
+					|message| Message::Request {
+						session_index,
+						data: message.data,
+						surbs: message.surbs,
+					},
+				)
+			},
+			Action::DeliverReply { surb_id } => {
+				let payload = array_mut_ref![out, 0, PAYLOAD_SIZE];
+
+				// Note that we do not insert anything into the replay filter here. The SURB ID
+				// lookup will fail for replayed SURBs, so explicit replay prevention is not
+				// necessary. The main reason for avoiding the replay filter here is so that it
+				// does not need to be allocated at all for sessions where we are not a mixnode.
+
+				// Lookup payload encryption keys and decrypt payload
+				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
+					error!(target: self.config.log_target,
+						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
+					return None
+				};
+				let res = decrypt_reply_payload(payload, entry.keys());
+				entry.remove();
+				if let Err(err) = res {
+					error!(target: self.config.log_target, "Failed to decrypt reply payload: {err}");
+					return None
+				}
+				let payload_data = array_ref![payload, 0, PAYLOAD_DATA_SIZE];
+
+				// Add to fragment assembler and return any completed message
+				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
+					|message| {
+						if !message.surbs.is_empty() {
+							warn!(target: self.config.log_target,
+								"Reply message included SURBs; discarding them");
+						}
+						Message::Reply { id: message.id, data: message.data }
+					},
+				)
+			},
+			Action::DeliverCover { cover_id: _ } => None,
 		}
-		Poll::Pending
+	}
+
+	/// Returns the next instant at which
+	/// [`pop_next_forward_packet`](Self::pop_next_forward_packet) should be called.
+	pub fn next_forward_packet_deadline(&self) -> Option<Instant> {
+		self.forward_packet_queue.next_deadline()
+	}
+
+	/// Pop and return the packet at the head of the forward packet queue. Returns [`None`] if the
+	/// queue is empty.
+	pub fn pop_next_forward_packet(&mut self) -> Option<AddressedPacket> {
+		self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
+		self.forward_packet_queue.pop().map(|packet| packet.packet)
+	}
+
+	/// Returns the delay after which [`pop_next_authored_packet`](Self::pop_next_authored_packet)
+	/// should be called.
+	pub fn next_authored_packet_delay(&self) -> Option<Duration> {
+		// Send packets at the maximum rate of any active session; pop_next_authored_packet will
+		// choose between the sessions randomly based on their rates
+		self.sessions
+			.enumerate()
+			.filter(|(rel_session_index, _)| {
+				self.session_status.phase.gen_cover_packets(*rel_session_index)
+			})
+			.map(|(_, session)| session.mean_authored_packet_period)
+			.min()
+			.map(|mean| {
+				let delay: f64 = rand::thread_rng().sample(rand_distr::Exp1);
+				// Cap at 10x the mean; this is about the 99.995th percentile. This avoids
+				// potential panics in mul_f64() due to overflow.
+				mean.mul_f64(delay.min(10.0))
+			})
+	}
+
+	/// Either generate and return a cover packet or pop and return the packet at the head of one
+	/// of the authored packet queues. May return [`None`] if cover packets are disabled, we fail
+	/// to generate a cover packet, or there are no active sessions (though in the no active
+	/// sessions case [`next_authored_packet_delay`](Self::next_authored_packet_delay) should
+	/// return [`None`] and so this function should not really be called).
+	pub fn pop_next_authored_packet(&mut self, ns: &dyn NetworkStatus) -> Option<AddressedPacket> {
+		// This function should be called according to a Poisson process. Randomly choosing between
+		// sessions and cover kinds here is equivalent to there being multiple independent Poisson
+		// processes; see https://www.randomservices.org/random/poisson/Splitting.html
+		let mut rng = rand::thread_rng();
+
+		// First pick the session
+		let sessions: ArrayVec<_, 2> = self
+			.sessions
+			.enumerate_mut()
+			.filter(|(rel_session_index, _)| {
+				self.session_status.phase.gen_cover_packets(*rel_session_index)
+			})
+			.collect();
+		let (rel_session_index, session) = match sessions.into_inner() {
+			Ok(sessions) => {
+				// Both sessions active. We choose randomly based on their rates.
+				let periods = sessions
+					// TODO This could be replaced with .each_ref() once it is stabilised, allowing
+					// the collect/into_inner/expect at the end to be dropped
+					.iter()
+					.map(|(_, session)| session.mean_authored_packet_period.as_secs_f64())
+					.collect::<ArrayVec<_, 2>>()
+					.into_inner()
+					.expect("Input is array of length 2");
+				let [session_0, session_1] = sessions;
+				// Rate is 1/period, and (1/a)/((1/a)+(1/b)) = b/(a+b)
+				if rng.gen_bool(periods[1] / (periods[0] + periods[1])) {
+					session_0
+				} else {
+					session_1
+				}
+			},
+			// Either just one active session or no active sessions. This function shouldn't really
+			// be called in the latter case, as next_authored_packet_delay() should return None.
+			Err(mut sessions) => sessions.pop()?,
+		};
+
+		self.invalidated |= Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+
+		// Choose randomly between drop and loop cover packet
+		if rng.gen_bool(self.config.loop_cover_proportion) {
+			gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Loop, &self.config)
+		} else {
+			self.session_status
+				.phase
+				.allow_requests_and_replies(rel_session_index)
+				.then(|| session.authored_packet_queue.pop())
+				.flatten()
+				.or_else(|| {
+					gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Drop, &self.config)
+				})
+		}
+	}
+
+	/// Post a request message. If `destination` is [`None`], a destination mixnode is chosen at
+	/// random and (on success) the session and mixnode indices are written back to `destination`.
+	/// The message is split into fragments and each fragment is sent over a different path to the
+	/// destination. Returns the maximum total forwarding delay for any fragment/SURB pair; this
+	/// should give a lower bound on the time it takes for a reply to arrive (it is possible for a
+	/// reply to arrive sooner if a mixnode misbehaves).
+	pub fn post_request(
+		&mut self,
+		destination: &mut Option<MixnodeId>,
+		data: &[u8],
+		num_surbs: usize,
+		ns: &dyn NetworkStatus,
+	) -> Result<Duration, PostErr> {
+		let mut rng = rand::thread_rng();
+
+		// Split the message into fragments
+		let mut message_id = [0; MESSAGE_ID_SIZE];
+		rng.fill_bytes(&mut message_id);
+		let fragment_blueprints = match fragment_blueprints(&message_id, data, num_surbs) {
+			Some(fragment_blueprints)
+				if fragment_blueprints.len() <= self.config.max_fragments_per_message =>
+				fragment_blueprints,
+			_ => return Err(PostErr::TooManyFragments),
+		};
+
+		// Grab the session and check there's room in the queue
+		let session_index = destination.map_or_else(
+			|| {
+				self.session_status.phase.default_request_session() +
+					self.session_status.current_index
+			},
+			|destination| destination.session_index,
+		);
+		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
+		// TODO Something better than this
+		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
+			return Err(PostErr::NotEnoughSpaceInQueue)
+		}
+
+		// Generate the packets and push them into the queue
+		let request_builder = RequestBuilder::new(
+			&mut rng,
+			&session.topology,
+			ns,
+			destination.map(|destination| destination.mixnode_index),
+		)
+		.map_err(PostErr::Topology)?;
+		let mut max_request_delay = Delay::zero();
+		let mut max_reply_delay = Delay::zero();
+		for fragment_blueprint in fragment_blueprints {
+			let (packet, delay) = request_builder
+				.build_packet(
+					&mut rng,
+					|fragment, rng| {
+						fragment_blueprint.write_except_surbs(fragment);
+						for surb in fragment_blueprint.surbs(fragment) {
+							// TODO Currently we don't clean up keystore entries on failure
+							let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
+							let num_hops = self.config.num_hops;
+							let delay =
+								request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
+							max_reply_delay = max(max_reply_delay, delay);
+						}
+						Ok(())
+					},
+					self.config.num_hops,
+				)
+				.map_err(PostErr::Topology)?;
+			session.authored_packet_queue.push(packet);
+			max_request_delay = max(max_request_delay, delay);
+		}
+
+		*destination =
+			Some(MixnodeId { session_index, mixnode_index: request_builder.destination_index() });
+		let max_delay = max_request_delay + max_reply_delay;
+		Ok(max_delay.to_duration(self.config.mean_forwarding_delay))
+	}
+
+	/// Post a reply message using SURBs. The session index must match the session the SURBs were
+	/// generated for. SURBs are removed from `surbs` on use.
+	pub fn post_reply(
+		&mut self,
+		surbs: &mut Vec<Surb>,
+		session_index: SessionIndex,
+		message_id: &MessageId,
+		data: &[u8],
+	) -> Result<(), PostErr> {
+		// Split the message into fragments
+		let fragment_blueprints = match fragment_blueprints(message_id, data, 0) {
+			Some(fragment_blueprints)
+				if fragment_blueprints.len() <=
+					min(self.config.max_fragments_per_message, surbs.len()) =>
+				fragment_blueprints,
+			_ => return Err(PostErr::TooManyFragments),
+		};
+
+		// Grab the session and check there's room in the queue
+		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
+		// TODO Something better than this
+		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
+			return Err(PostErr::NotEnoughSpaceInQueue)
+		}
+
+		// Generate the packets and push them into the queue
+		for fragment_blueprint in fragment_blueprints {
+			let mut packet = default_boxed_array();
+			fragment_blueprint.write_except_surbs(mut_payload_data(&mut packet));
+			let mixnode_index = complete_reply_packet(
+				&mut packet,
+				&surbs.pop().expect("Checked number of SURBs above"),
+			)
+			.ok_or(PostErr::BadSurb)?;
+			let peer_id = session
+				.topology
+				.mixnode_index_to_peer_id(mixnode_index)
+				.map_err(PostErr::Topology)?;
+			session.authored_packet_queue.push(AddressedPacket { peer_id, packet });
+		}
+
+		Ok(())
+	}
+
+	/// Clear the invalidated flags. Returns the flags that were cleared.
+	pub fn take_invalidated(&mut self) -> Invalidated {
+		let invalidated = self.invalidated;
+		self.invalidated = Invalidated::empty();
+		invalidated
 	}
 }

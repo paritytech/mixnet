@@ -22,213 +22,281 @@
 //! [`libp2p_swarm::Swarm`], it will handle the mixnet protocol.
 
 mod handler;
+mod maybe_inf_delay;
 mod protocol;
 
-use crate::{
-	core::{
-		to_mix_peer_id, Config, Error, MixEvent, MixPeerAddress, Mixnet, Packet, PublicKeyStore,
-		SessionIndex, Surb, PUBLIC_KEY_LEN,
-	},
-	DecodedMessage, MixPeerId, MixPublicKey, NetworkPeerId, SendOptions, SessionTopology,
+use self::{
+	handler::{Failure, Handler, Packet},
+	maybe_inf_delay::MaybeInfDelay,
 };
-use futures_timer::Delay;
-use handler::{Failure, Handler, Message};
-use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr};
+use super::core::{
+	Config, Invalidated, KxPublic, KxPublicStore, Message, MessageId, Mixnet,
+	Mixnode as InternalMixnode, MixnodeId, NetworkStatus, PeerId as InternalPeerId, PostErr,
+	RelSessionIndex, SessionIndex, SessionStatus, Surb,
+};
+use futures::FutureExt;
+use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
 	IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
 };
 use std::{
-	collections::{HashMap, VecDeque},
+	collections::{hash_map::Entry, HashMap, VecDeque},
 	sync::Arc,
 	task::{Context, Poll},
-	time::Duration,
+	time::{Duration, Instant},
 };
 
-type Result = std::result::Result<Message, Failure>;
-
-/// Internal information tracked for an established connection.
-struct Connection {
-	id: ConnectionId,
-	_address: Option<Multiaddr>,
-	read_timeout: Delay,
+fn to_internal_peer_id(peer_id: &PeerId) -> Option<InternalPeerId> {
+	let hash = peer_id.as_ref();
+	let Ok(libp2p_core::multihash::Code::Identity) = libp2p_core::multihash::Code::try_from(hash.code()) else {
+		return None
+	};
+	let public = libp2p_core::identity::PublicKey::from_protobuf_encoding(hash.digest()).ok()?;
+	let libp2p_core::identity::PublicKey::Ed25519(public) = public;
+	Some(public.encode())
 }
 
-impl Connection {
-	fn new(id: ConnectionId, address: Option<Multiaddr>) -> Self {
-		Self { id, _address: address, read_timeout: Delay::new(Duration::new(2, 0)) }
+fn from_internal_peer_id(internal_peer_id: &InternalPeerId) -> Option<PeerId> {
+	let public = libp2p_core::identity::ed25519::PublicKey::decode(internal_peer_id).ok()?;
+	let public = libp2p_core::identity::PublicKey::Ed25519(public);
+	Some(public.into())
+}
+
+type Result = std::result::Result<Packet, Failure>;
+
+#[derive(Clone)]
+/// Just like `InternalMixnode` but with a libp2p peer ID instead of a mixnet peer ID.
+pub struct Mixnode {
+	/// Key-exchange public key for the mixnode.
+	pub kx_public: KxPublic,
+	/// Peer ID for the mixnode.
+	pub peer_id: PeerId,
+	/// External addresses for the mixnode.
+	pub external_addresses: Vec<Multiaddr>,
+}
+
+struct Peers {
+	local_id: InternalPeerId,
+	connected: HashMap<InternalPeerId, Vec<ConnectionId>>,
+}
+
+impl NetworkStatus for Peers {
+	fn local_peer_id(&self) -> InternalPeerId {
+		self.local_id
+	}
+
+	fn is_connected(&self, peer_id: &InternalPeerId) -> bool {
+		self.connected.contains_key(peer_id)
 	}
 }
 
 /// A [`NetworkBehaviour`] that implements the mixnet protocol.
 pub struct MixnetBehaviour {
-	connected: HashMap<NetworkPeerId, Connection>,
-	handshakes: HashMap<NetworkPeerId, Connection>,
+	log_target: &'static str,
+	peers: Peers,
 	mixnet: Mixnet,
-	events: VecDeque<NetworkEvent>,
-	handshake_queue: VecDeque<NetworkPeerId>,
-	public_key: MixPublicKey,
+	next_forward_packet_delay: MaybeInfDelay,
+	next_authored_packet_delay: MaybeInfDelay,
+	events: VecDeque<MixnetEvent>,
 }
 
 impl MixnetBehaviour {
-	/// Creates a new network behaviour with the given configuration.
-	pub fn new(config: Config, keystore: Arc<PublicKeyStore>) -> Self {
-		Self {
-			public_key: config.public_key.clone(),
-			mixnet: Mixnet::new(config, keystore),
-			connected: Default::default(),
-			handshakes: Default::default(),
+	/// Creates a new network behaviour with the given configuration. Returns `None` if the local
+	/// peer ID cannot be converted to a mixnet peer ID.
+	pub fn new(
+		local_peer_id: &PeerId,
+		config: Config,
+		kx_public_store: Arc<KxPublicStore>,
+	) -> Option<Self> {
+		let log_target = config.log_target;
+		Some(Self {
+			log_target,
+			peers: Peers {
+				local_id: to_internal_peer_id(local_peer_id)?,
+				connected: Default::default(),
+			},
+			mixnet: Mixnet::new(config, kx_public_store),
+			next_forward_packet_delay: MaybeInfDelay::new(None),
+			next_authored_packet_delay: MaybeInfDelay::new(None),
 			events: Default::default(),
-			handshake_queue: Default::default(),
+		})
+	}
+
+	fn handle_invalidated(&mut self) {
+		let invalidated = self.mixnet.take_invalidated();
+		if invalidated.contains(Invalidated::NEXT_FORWARD_PACKET_DEADLINE) {
+			self.next_forward_packet_delay.reset(
+				self.mixnet
+					.next_forward_packet_deadline()
+					.map(|deadline| deadline.saturating_duration_since(Instant::now())),
+			);
+		}
+		if invalidated.contains(Invalidated::NEXT_AUTHORED_PACKET_DEADLINE) {
+			self.next_authored_packet_delay.reset(self.mixnet.next_authored_packet_delay());
 		}
 	}
 
-	/// Send a new message to the mix network. The message will be split, chunked and sent over
-	/// multiple hops with random delays to the specified recipient.
-	pub fn send(
+	/// Sets the current session index and phase. The current and previous mixnodes may need to be
+	/// provided after calling this; see `maybe_set_mixnodes`.
+	pub fn set_session_status(&mut self, session_status: SessionStatus) {
+		self.mixnet.set_session_status(session_status);
+		self.handle_invalidated();
+	}
+
+	/// Sets the mixnodes for the specified session, if they are needed.
+	pub fn maybe_set_mixnodes<F, I, E>(
 		&mut self,
-		to: MixPeerId,
-		message: Vec<u8>,
-		send_options: SendOptions,
-	) -> std::result::Result<(), Error> {
-		self.mixnet.register_message(Some(to), message, send_options)
+		rel_session_index: RelSessionIndex,
+		mixnodes: F,
+	) -> std::result::Result<(), E>
+	where
+		F: FnOnce() -> std::result::Result<I, E>,
+		I: Iterator<Item = Mixnode>,
+	{
+		let res = self.mixnet.maybe_set_mixnodes(rel_session_index, || {
+			Ok(mixnodes()?
+				.map(|mixnode| InternalMixnode {
+					kx_public: mixnode.kx_public,
+					peer_id: to_internal_peer_id(&mixnode.peer_id).unwrap_or_else(|| {
+						log::error!(target: self.log_target,
+                            "Failed to convert libp2p peer ID {} to mixnet peer ID",
+                            mixnode.peer_id);
+						Default::default()
+					}),
+					external_addresses: mixnode.external_addresses,
+				})
+				.collect())
+		});
+		self.handle_invalidated();
+		res
 	}
 
-	/// Send a new message to the mix network. The message will be split, chunked and sent over
-	/// multiple hops with random delays to a random recipient.
-	pub fn send_to_random_recipient(
+	/// Post a request message. If `destination` is `None`, a destination mixnode is chosen at
+	/// random and (on success) the session and mixnode indices are written back to `destination`.
+	/// The message is split into fragments and each fragment is sent over a different path to the
+	/// destination. Returns the maximum total forwarding delay for any fragment/SURB pair; this
+	/// should give a lower bound on the time it takes for a reply to arrive (it is possible for a
+	/// reply to arrive sooner if a mixnode misbehaves).
+	pub fn post_request(
 		&mut self,
-		message: Vec<u8>,
-		send_options: SendOptions,
-	) -> std::result::Result<(), Error> {
-		self.mixnet.register_message(None, message, send_options)
+		destination: &mut Option<MixnodeId>,
+		data: &[u8],
+		num_surbs: usize,
+	) -> std::result::Result<Duration, PostErr> {
+		let res = self.mixnet.post_request(destination, data, num_surbs, &self.peers);
+		self.handle_invalidated();
+		res
 	}
 
-	/// Send a reply to a previously received message.
-	pub fn send_reply(&mut self, message: Vec<u8>, surb: Surb) -> std::result::Result<(), Error> {
-		self.mixnet.register_surb_reply(message, surb)
-	}
-
-	/// If the node isn't part of the topology this returns a set of gateway addresses to connect
-	/// to.
-	pub fn gateways(&self) -> Vec<MixPeerAddress> {
-		self.mixnet.gateways()
-	}
-
-	/// Set network information for a future session.
-	pub fn set_session_topolgy(&mut self, index: SessionIndex, topology: SessionTopology) {
-		self.mixnet.set_session_topolgy(index, topology);
-	}
-
-	/// Start a previously configured session.
-	pub fn start_session(&mut self, index: SessionIndex) {
-		self.mixnet.start_session(index);
-	}
-
-	fn handshake_message(&self) -> Vec<u8> {
-		self.public_key.to_bytes().to_vec()
+	/// Post a reply message using SURBs. The session index must match the session the SURBs were
+	/// generated for. SURBs are removed from `surbs` on use.
+	pub fn post_reply(
+		&mut self,
+		surbs: &mut Vec<Surb>,
+		session_index: SessionIndex,
+		message_id: &MessageId,
+		data: &[u8],
+	) -> std::result::Result<(), PostErr> {
+		let res = self.mixnet.post_reply(surbs, session_index, message_id, data);
+		self.handle_invalidated();
+		res
 	}
 }
 
 /// Event generated by the network behaviour.
 #[derive(Debug)]
-pub enum NetworkEvent {
+pub enum MixnetEvent {
 	/// A new peer has connected over the mixnet protocol.
-	Connected(NetworkPeerId),
+	Connected(PeerId),
 	/// A peer has disconnected the mixnet protocol.
-	Disconnected(NetworkPeerId),
+	Disconnected(PeerId),
 	/// A message has reached us.
-	Message(DecodedMessage),
-	/// Can ignore.
-	None,
+	Message(Message),
 }
 
 impl NetworkBehaviour for MixnetBehaviour {
 	type ConnectionHandler = Handler;
-	type OutEvent = NetworkEvent;
+	type OutEvent = MixnetEvent;
 
 	fn new_handler(&mut self) -> Self::ConnectionHandler {
-		Handler::new(handler::Config::new())
+		Handler::new(self::handler::Config { log_target: self.log_target, ..Default::default() })
 	}
 
-	fn inject_event(&mut self, peer_id: NetworkPeerId, _: ConnectionId, event: Result) {
+	fn inject_event(&mut self, peer_id: PeerId, _: ConnectionId, event: Result) {
 		match event {
-			Ok(Message(message)) => {
-				if let Some(mut connection) = self.handshakes.remove(&peer_id) {
-					if message.len() != PUBLIC_KEY_LEN {
-						log::trace!(target: "mixnet", "Bad handshake message from {:?}", peer_id);
-						// Just drop the connection for now, it should terminate by timeout.
-						return
-					}
-					let mut pk = [0u8; PUBLIC_KEY_LEN];
-					pk.copy_from_slice(&message);
-					let pub_key = MixPublicKey::from(pk);
-					log::trace!(target: "mixnet", "Handshake message from {:?}", peer_id);
-					connection.read_timeout.reset(Duration::new(2, 0));
-					if let Ok(id) = to_mix_peer_id(&peer_id) {
-						self.connected.insert(peer_id, connection);
-						self.mixnet.add_connected_peer(id, pub_key);
-						self.events.push_back(NetworkEvent::Connected(peer_id));
-					}
-				} else if let Some(connection) = self.connected.get_mut(&peer_id) {
-					log::trace!(target: "mixnet", "Incoming message from {:?}", peer_id);
-					connection.read_timeout.reset(Duration::new(2, 0));
-					let Ok(id) = to_mix_peer_id(&peer_id) else {
-						return
-					};
-					let message = Packet::from_vec(message);
-					let Ok(Some((message, kind))) = self.mixnet.import_message(id, message) else {
-						return
-					};
-					self.events.push_front(NetworkEvent::Message(DecodedMessage {
-						peer: id,
-						message,
-						kind,
-					}))
+			Ok(Packet(packet)) => {
+				log::trace!(target: self.log_target, "Incoming packet from {peer_id}");
+				let Ok(packet) = packet.as_slice().try_into() else {
+					log::error!(target: self.log_target,
+						"Dropped incorrectly sized packet ({} bytes) from {peer_id}",
+						packet.len());
+					return
+				};
+				if let Some(message) = self.mixnet.handle_packet(packet) {
+					self.events.push_front(MixnetEvent::Message(message));
 				}
+				self.handle_invalidated();
 			},
 			Err(e) => {
-				log::trace!(target: "mixnet", "Network error: {}", e);
+				log::error!(target: self.log_target, "Network error: {e}");
 			},
 		}
 	}
 
 	fn inject_connection_established(
 		&mut self,
-		peer_id: &NetworkPeerId,
-		con_id: &ConnectionId,
-		endpoint: &ConnectedPoint,
+		peer_id: &PeerId,
+		conn_id: &ConnectionId,
+		_: &ConnectedPoint,
 		_: Option<&Vec<Multiaddr>>,
 		_: usize,
 	) {
-		if self.handshakes.contains_key(peer_id) || self.connected.contains_key(peer_id) {
-			log::trace!(target: "mixnet", "Duplicate connection: {}", peer_id);
+		log::trace!(target: self.log_target, "Connected: {peer_id}, {conn_id:?}");
+		let Some(internal_peer_id) = to_internal_peer_id(peer_id) else {
+			log::error!(target: self.log_target,
+				"Failed to convert libp2p peer ID {peer_id} to mixnet peer ID");
 			return
-		}
-		log::trace!(target: "mixnet", "Connected: {}", peer_id);
-		let address = match endpoint {
-			ConnectedPoint::Dialer { address, .. } => Some(address.clone()),
-			ConnectedPoint::Listener { .. } => None,
 		};
-		if self.handshakes.insert(*peer_id, Connection::new(*con_id, address)).is_none() {
-			self.handshake_queue.push_back(peer_id.clone());
+		match self.peers.connected.entry(internal_peer_id) {
+			Entry::Occupied(mut entry) => entry.get_mut().push(*conn_id),
+			Entry::Vacant(entry) => {
+				entry.insert(vec![*conn_id]);
+				self.events.push_back(MixnetEvent::Connected(*peer_id));
+			},
 		}
 	}
 
 	fn inject_connection_closed(
 		&mut self,
-		peer_id: &NetworkPeerId,
-		_: &ConnectionId,
+		peer_id: &PeerId,
+		conn_id: &ConnectionId,
 		_: &ConnectedPoint,
 		_: <Self::ConnectionHandler as IntoConnectionHandler>::Handler,
 		_: usize,
 	) {
-		log::trace!(target: "mixnet", "Disconnected: {}", peer_id);
-		self.handshakes.remove(peer_id);
-		self.connected.remove(peer_id);
-		let Ok(id) = to_mix_peer_id(peer_id) else {
+		log::trace!(target: self.log_target, "Disconnected: {peer_id}, {conn_id:?}");
+		let Some(internal_peer_id) = to_internal_peer_id(peer_id) else {
+			log::error!(target: self.log_target,
+				"Failed to convert libp2p peer ID {peer_id} to mixnet peer ID");
 			return
 		};
-		self.mixnet.remove_connected_peer(&id);
+		match self.peers.connected.entry(internal_peer_id) {
+			Entry::Occupied(mut entry) => {
+				let conn_ids = entry.get_mut();
+				let Some(i) = conn_ids.iter().position(|open_conn_id| open_conn_id == conn_id) else {
+					log::error!(target: self.log_target,
+						"Closed {conn_id:?} not recognised (peer {peer_id})");
+					return
+				};
+				conn_ids.swap_remove(i);
+				if conn_ids.is_empty() {
+					entry.remove();
+					self.events.push_back(MixnetEvent::Disconnected(*peer_id));
+				}
+			},
+			Entry::Vacant(_) =>
+				log::error!(target: self.log_target, "Disconnected peer {peer_id} not recognised"),
+		}
 	}
 
 	fn poll(
@@ -240,33 +308,36 @@ impl NetworkBehaviour for MixnetBehaviour {
 			return Poll::Ready(NetworkBehaviourAction::GenerateEvent(e))
 		}
 
-		while let Some(id) = self.handshake_queue.pop_front() {
-			if let Some(connection) = self.handshakes.get(&id) {
-				return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-					peer_id: id,
-					handler: NotifyHandler::One(connection.id),
-					event: Message(self.handshake_message()),
-				})
-			}
-		}
+		loop {
+			let packet = if self.next_forward_packet_delay.poll_unpin(cx).is_ready() {
+				self.mixnet.pop_next_forward_packet()
+			} else if self.next_authored_packet_delay.poll_unpin(cx).is_ready() {
+				self.mixnet.pop_next_authored_packet(&self.peers)
+			} else {
+				return Poll::Pending
+			};
+			self.handle_invalidated();
+			let Some(packet) = packet else { continue };
 
-		match self.mixnet.poll(cx) {
-			Poll::Ready(MixEvent::SendMessage((recipient, data))) => {
-				let Ok(id) = crate::core::to_network_peer_id(recipient) else {
-					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::None))
-				};
-				if let Some(connection) = self.connected.get(&id) {
-					return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
-						peer_id: id,
-						handler: NotifyHandler::One(connection.id),
-						event: Message(data),
-					})
-				} else {
-					log::warn!(target: "mixnet", "Message for offline peer {:?} ({})", recipient, id);
-					return Poll::Ready(NetworkBehaviourAction::GenerateEvent(NetworkEvent::None))
-				}
-			},
-			Poll::Pending => Poll::Pending,
+			let Some(peer_id) = from_internal_peer_id(&packet.peer_id) else {
+				log::error!(target: self.log_target,
+					"Failed to convert mixnet peer ID {:x?} to libp2p peer ID",
+					packet.peer_id);
+				continue
+			};
+			let Some(conn_ids) = self.peers.connected.get(&packet.peer_id) else {
+				log::warn!(target: self.log_target, "Packet for offline peer {peer_id}");
+				continue
+			};
+			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+				peer_id,
+				handler: NotifyHandler::One(
+					*conn_ids
+						.first()
+						.expect("Peers removed from connected map when last connection ID removed"),
+				),
+				event: Packet((packet.packet as Box<[_]>).into()),
+			})
 		}
 	}
 }
