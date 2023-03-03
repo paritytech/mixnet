@@ -111,9 +111,7 @@ impl Network {
 			})
 			.collect();
 		for peer in &mut self.peers {
-			peer.mixnet
-				.maybe_set_mixnodes(rel_session_index, || Ok::<_, ()>(mixnodes.clone()))
-				.unwrap();
+			peer.mixnet.maybe_set_mixnodes(rel_session_index, || Ok(mixnodes.clone()));
 		}
 	}
 

@@ -143,17 +143,18 @@ impl MixnetBehaviour {
 		self.handle_invalidated();
 	}
 
-	/// Sets the mixnodes for the specified session, if they are needed.
-	pub fn maybe_set_mixnodes<F, I, E>(
+	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
+	/// `Err(true)`, the session slot will be disabled, and later calls to `maybe_set_mixnodes` for
+	/// the session will return immediately. If `mixnodes()` returns `Err(false)`, the session slot
+	/// will merely remain empty, and later calls to `maybe_set_mixnodes` may succeed.
+	pub fn maybe_set_mixnodes<I>(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: F,
-	) -> std::result::Result<(), E>
-	where
-		F: FnOnce() -> std::result::Result<I, E>,
+		mixnodes: impl FnOnce() -> std::result::Result<I, bool>,
+	) where
 		I: Iterator<Item = Mixnode>,
 	{
-		let res = self.mixnet.maybe_set_mixnodes(rel_session_index, || {
+		self.mixnet.maybe_set_mixnodes(rel_session_index, || {
 			Ok(mixnodes()?
 				.map(|mixnode| InternalMixnode {
 					kx_public: mixnode.kx_public,
@@ -168,7 +169,6 @@ impl MixnetBehaviour {
 				.collect())
 		});
 		self.handle_invalidated();
-		res
 	}
 
 	/// Post a request message. If `destination` is `None`, a destination mixnode is chosen at

@@ -273,35 +273,33 @@ impl Mixnet {
 		self.session_status = session_status;
 	}
 
-	/// Sets the mixnodes for the specified session, if they are needed.
-	pub fn maybe_set_mixnodes<E>(
+	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
+	/// `Err(true)`, the session slot will be disabled, and later calls to `maybe_set_mixnodes` for
+	/// the session will return immediately. If `mixnodes()` returns `Err(false)`, the session slot
+	/// will merely remain empty, and later calls to `maybe_set_mixnodes` may succeed.
+	pub fn maybe_set_mixnodes(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: impl FnOnce() -> Result<Vec<Mixnode>, E>,
-	) -> Result<(), E> {
+		mixnodes: impl FnOnce() -> Result<Vec<Mixnode>, bool>,
+	) {
 		// Create the Session only if the slot is empty. If the slot is disabled, don't even try.
 		let session = &mut self.sessions[rel_session_index];
 		if !session.is_empty() {
-			return Ok(())
+			return
 		}
 
 		let mut rng = rand::thread_rng();
 
 		// Build Topology struct
-		let session_index = rel_session_index + self.session_status.current_index;
-		let mut mixnodes = mixnodes()?;
-		if mixnodes.len() < self.config.min_mixnodes {
-			error!(
-				target: self.config.log_target,
-				"Insufficient mixnodes registered for session {session_index} \
-				({} mixnodes registered, need {}); \
-				mixnet will not be available during this session",
-				mixnodes.len(),
-				self.config.min_mixnodes
-			);
-			*session = SessionSlot::Disabled;
-			return Ok(())
-		}
+		let mut mixnodes = match mixnodes() {
+			Ok(mixnodes) => mixnodes,
+			Err(disable) => {
+				if disable {
+					*session = SessionSlot::Disabled;
+				}
+				return
+			},
+		};
 		let max_mixnodes = (MAX_MIXNODE_INDEX + 1) as usize;
 		if mixnodes.len() > max_mixnodes {
 			warn!(
@@ -311,12 +309,13 @@ impl Mixnet {
 			);
 			mixnodes.truncate(max_mixnodes);
 		}
+		let session_index = rel_session_index + self.session_status.current_index;
 		let Some(local_kx_public) = self.kx_store.public().public_for_session(session_index) else {
 			error!(target: self.config.log_target,
 				"Key-exchange keys for session {session_index} discarded already; \
 				mixnet will not be available");
 			*session = SessionSlot::Disabled;
-			return Ok(())
+			return
 		};
 		let topology =
 			Topology::new(&mut rng, mixnodes, &local_kx_public, self.config.num_gateway_mixnodes);
@@ -329,7 +328,7 @@ impl Mixnet {
 				Some(config) => config,
 				None => {
 					*session = SessionSlot::Disabled;
-					return Ok(())
+					return
 				},
 			}
 		};
@@ -344,8 +343,6 @@ impl Mixnet {
 
 		self.invalidated |=
 			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
-
-		Ok(())
 	}
 
 	/// Returns the addresses of the peers we should try to maintain connections to.

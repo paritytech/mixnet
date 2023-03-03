@@ -45,10 +45,6 @@ pub struct Config {
 	/// The target for log messages.
 	pub log_target: &'static str,
 
-	/// Minimum number of mixnodes. If there are fewer than this many mixnodes registered for a
-	/// session, we will not participate in the mixnet during the session. This should really be
-	/// the same for all nodes!
-	pub min_mixnodes: usize,
 	/// The number of mixnodes to connect to when we are not a mixnode ourselves. When we are a
 	/// mixnode, we connect to all other mixnodes.
 	pub num_gateway_mixnodes: u32,
@@ -91,7 +87,6 @@ impl Default for Config {
 		Self {
 			log_target: "mixnet",
 
-			min_mixnodes: 20,
 			num_gateway_mixnodes: 3,
 
 			mixnode_session: SessionConfig {
