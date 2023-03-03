@@ -81,6 +81,7 @@ impl Topology {
 		// Determine if the local node is a mixnode. It is possible for another node to publish our
 		// key-exchange public key as theirs, possibly resulting in a bogus index here. This isn't
 		// particularly harmful so we don't bother doing anything about it:
+		//
 		// - It might result in us thinking we're in the mixnode set when we're really not. Note
 		//   that this situation can only occur if we were trying to register anyway; if we weren't,
 		//   we wouldn't have even generated our key-exchange keys before session registration

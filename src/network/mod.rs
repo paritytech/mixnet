@@ -159,8 +159,8 @@ impl MixnetBehaviour {
 					kx_public: mixnode.kx_public,
 					peer_id: to_internal_peer_id(&mixnode.peer_id).unwrap_or_else(|| {
 						log::error!(target: self.log_target,
-                            "Failed to convert libp2p peer ID {} to mixnet peer ID",
-                            mixnode.peer_id);
+							"Failed to convert libp2p peer ID {} to mixnet peer ID",
+							mixnode.peer_id);
 						Default::default()
 					}),
 					external_addresses: mixnode.external_addresses,
