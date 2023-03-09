@@ -37,9 +37,13 @@ enum Inner {
 	Finite(Delay),
 }
 
+/// Like [`Delay`] but the duration can be infinite (in which case the future will never fire).
 pub struct MaybeInfDelay(Inner);
 
 impl MaybeInfDelay {
+	/// Create a new `MaybeInfDelay` future. If `duration` is [`Some`], the future will fire after
+	/// the given duration has elapsed. If `duration` is [`None`], the future will "never" fire
+	/// (although see [`reset`](Self::reset)).
 	pub fn new(duration: Option<Duration>) -> Self {
 		match duration {
 			Some(duration) => Self(Inner::Finite(Delay::new(duration))),
@@ -47,6 +51,10 @@ impl MaybeInfDelay {
 		}
 	}
 
+	/// Reset the timer. `duration` is handled just like in [`new`](Self::new). Note that while
+	/// this is similar to `std::mem::replace(&mut self, MaybeInfDelay::new(duration))`, with
+	/// `replace` you would have to manually ensure [`poll`](Self::poll) was called again; with
+	/// `reset` this is not necessary.
 	pub fn reset(&mut self, duration: Option<Duration>) {
 		match duration {
 			Some(duration) => match &mut self.0 {
