@@ -166,7 +166,7 @@ impl Network {
 		let from_peer_ns = PeerNetworkStatus { id: &from_peer.id, connections: &self.connections };
 		from_peer
 			.mixnet
-			.post_request(&mut None, data, num_surbs, &from_peer_ns)
+			.post_request(&mut None, &rand::thread_rng().gen(), data, num_surbs, &from_peer_ns)
 			.unwrap();
 	}
 }

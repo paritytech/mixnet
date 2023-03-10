@@ -39,7 +39,7 @@ use mixnet::{
 	},
 	network::{MixnetBehaviour, MixnetEvent, Mixnode},
 };
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use std::{sync::Arc, time::Duration};
 use util::log_target;
 
@@ -186,7 +186,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
-				.post_request(&mut destination, &source_message, if with_surb { 1 } else { 0 })
+				.post_request(
+					&mut destination,
+					&rand::thread_rng().gen(),
+					&source_message,
+					if with_surb { 1 } else { 0 },
+				)
 				.unwrap();
 		}
 	}

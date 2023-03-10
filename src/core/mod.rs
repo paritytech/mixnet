@@ -70,7 +70,7 @@ use bitflags::bitflags;
 use either::Either;
 use log::{error, warn};
 use multiaddr::Multiaddr;
-use rand::{Rng, RngCore};
+use rand::Rng;
 use std::{
 	cmp::{max, min},
 	collections::HashSet,
@@ -594,16 +594,13 @@ impl Mixnet {
 	pub fn post_request(
 		&mut self,
 		destination: &mut Option<MixnodeId>,
+		message_id: &MessageId,
 		data: &[u8],
 		num_surbs: usize,
 		ns: &dyn NetworkStatus,
 	) -> Result<Duration, PostErr> {
-		let mut rng = rand::thread_rng();
-
 		// Split the message into fragments
-		let mut message_id = [0; MESSAGE_ID_SIZE];
-		rng.fill_bytes(&mut message_id);
-		let fragment_blueprints = match fragment_blueprints(&message_id, data, num_surbs) {
+		let fragment_blueprints = match fragment_blueprints(message_id, data, num_surbs) {
 			Some(fragment_blueprints)
 				if fragment_blueprints.len() <= self.config.max_fragments_per_message =>
 				fragment_blueprints,
@@ -625,6 +622,7 @@ impl Mixnet {
 		}
 
 		// Generate the packets and push them into the queue
+		let mut rng = rand::thread_rng();
 		let request_builder = RequestBuilder::new(
 			&mut rng,
 			&session.topology,

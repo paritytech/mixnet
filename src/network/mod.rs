@@ -180,10 +180,11 @@ impl MixnetBehaviour {
 	pub fn post_request(
 		&mut self,
 		destination: &mut Option<MixnodeId>,
+		message_id: &MessageId,
 		data: &[u8],
 		num_surbs: usize,
 	) -> std::result::Result<Duration, PostErr> {
-		let res = self.mixnet.post_request(destination, data, num_surbs, &self.peers);
+		let res = self.mixnet.post_request(destination, message_id, data, num_surbs, &self.peers);
 		self.handle_invalidated();
 		res
 	}
