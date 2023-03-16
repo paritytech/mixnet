@@ -18,18 +18,21 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! The [`MixnetBehaviour`] struct implements the
-//! [`NetworkBehaviour`](libp2p_swarm::NetworkBehaviour) trait. When used with a
-//! [`libp2p_swarm::Swarm`], it will handle the mixnet protocol.
+use crate::core::PeerId as CorePeerId;
+use libp2p_core::PeerId;
 
-mod behaviour;
-mod handler;
-mod maybe_inf_delay;
-mod mixnode;
-mod peer_id;
-mod protocol;
+pub fn to_core_peer_id(peer_id: &PeerId) -> Option<CorePeerId> {
+	let hash = peer_id.as_ref();
+	let Ok(libp2p_core::multihash::Code::Identity) = libp2p_core::multihash::Code::try_from(hash.code()) else {
+		return None
+	};
+	let public = libp2p_core::identity::PublicKey::from_protobuf_encoding(hash.digest()).ok()?;
+	let libp2p_core::identity::PublicKey::Ed25519(public) = public;
+	Some(public.encode())
+}
 
-pub use self::{
-	behaviour::{MixnetBehaviour, MixnetEvent},
-	mixnode::Mixnode,
-};
+pub fn from_core_peer_id(core_peer_id: &CorePeerId) -> Option<PeerId> {
+	let public = libp2p_core::identity::ed25519::PublicKey::decode(core_peer_id).ok()?;
+	let public = libp2p_core::identity::PublicKey::Ed25519(public);
+	Some(public.into())
+}

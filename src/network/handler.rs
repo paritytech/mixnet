@@ -20,7 +20,7 @@
 
 // libp2p connection handler for the mixnet protocol.
 
-use crate::network::protocol;
+use super::protocol;
 use futures::{future::BoxFuture, prelude::*};
 use libp2p_core::{upgrade::NegotiationError, UpgradeError};
 use libp2p_swarm::{
@@ -85,6 +85,8 @@ impl Error for Failure {
 	}
 }
 
+pub type Result = std::result::Result<Packet, Failure>;
+
 /// Protocol handler that handles dispatching packets.
 ///
 /// If the remote doesn't send anything within a time frame, produces an error that closes the
@@ -134,7 +136,7 @@ impl Handler {
 
 impl ConnectionHandler for Handler {
 	type InEvent = Packet;
-	type OutEvent = crate::network::Result;
+	type OutEvent = Result;
 	type Error = Failure;
 	type InboundProtocol = protocol::Mixnet;
 	type OutboundProtocol = protocol::Mixnet;
@@ -211,7 +213,7 @@ impl ConnectionHandler for Handler {
 	fn poll(
 		&mut self,
 		cx: &mut Context<'_>,
-	) -> Poll<ConnectionHandlerEvent<protocol::Mixnet, (), crate::network::Result, Self::Error>> {
+	) -> Poll<ConnectionHandlerEvent<protocol::Mixnet, (), Result, Self::Error>> {
 		match self.state {
 			State::Inactive { reported: true } => {
 				return Poll::Pending // nothing to do on this connection
@@ -284,8 +286,9 @@ impl ConnectionHandler for Handler {
 	}
 }
 
-type PacketFuture = BoxFuture<'static, Result<(NegotiatedSubstream, Vec<u8>), io::Error>>;
-type SendFuture = BoxFuture<'static, Result<NegotiatedSubstream, io::Error>>;
+type PacketFuture =
+	BoxFuture<'static, std::result::Result<(NegotiatedSubstream, Vec<u8>), io::Error>>;
+type SendFuture = BoxFuture<'static, std::result::Result<NegotiatedSubstream, io::Error>>;
 
 /// The current state w.r.t. outbound packets.
 enum ProtocolState {

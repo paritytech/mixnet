@@ -18,18 +18,36 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! The [`MixnetBehaviour`] struct implements the
-//! [`NetworkBehaviour`](libp2p_swarm::NetworkBehaviour) trait. When used with a
-//! [`libp2p_swarm::Swarm`], it will handle the mixnet protocol.
+use super::peer_id::to_core_peer_id;
+use crate::core::{KxPublic, Mixnode as CoreMixnode};
+use libp2p_core::{Multiaddr, PeerId};
 
-mod behaviour;
-mod handler;
-mod maybe_inf_delay;
-mod mixnode;
-mod peer_id;
-mod protocol;
+#[derive(Clone)]
+/// Just like `CoreMixnode` but with a libp2p peer ID instead of a mixnet peer ID.
+pub struct Mixnode {
+	/// Key-exchange public key for the mixnode.
+	pub kx_public: KxPublic,
+	/// Peer ID for the mixnode.
+	pub peer_id: PeerId,
+	/// External addresses for the mixnode.
+	pub external_addresses: Vec<Multiaddr>,
+}
 
-pub use self::{
-	behaviour::{MixnetBehaviour, MixnetEvent},
-	mixnode::Mixnode,
-};
+impl Mixnode {
+	/// Convert to a `CoreMixnode`. The peer ID conversion may fail; in this case, an error message
+	/// is logged, but a "valid" `CoreMixnode` is still returned.
+	pub fn to_core(self, log_target: &'static str) -> CoreMixnode {
+		CoreMixnode {
+			kx_public: self.kx_public,
+			peer_id: to_core_peer_id(&self.peer_id).unwrap_or_else(|| {
+				log::error!(
+					target: log_target,
+					"Failed to convert libp2p peer ID {} to mixnet peer ID",
+					self.peer_id
+				);
+				Default::default()
+			}),
+			external_addresses: self.external_addresses,
+		}
+	}
+}
