@@ -24,7 +24,7 @@
 mod util;
 
 use mixnet::core::{
-	Config, Invalidated, KxPublicStore, Message, Mixnet, Mixnode, NetworkStatus, PeerId,
+	Config, Invalidated, KxPublicStore, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
 use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
@@ -161,12 +161,18 @@ impl Network {
 		}
 	}
 
-	fn post_request(&mut self, from_peer_index: usize, data: &[u8], num_surbs: usize) {
+	fn post_request(
+		&mut self,
+		from_peer_index: usize,
+		message_id: &MessageId,
+		data: &[u8],
+		num_surbs: usize,
+	) {
 		let from_peer = &mut self.peers[from_peer_index];
 		let from_peer_ns = PeerNetworkStatus { id: &from_peer.id, connections: &self.connections };
 		from_peer
 			.mixnet
-			.post_request(&mut None, &rand::thread_rng().gen(), data, num_surbs, &from_peer_ns)
+			.post_request(&mut None, message_id, data, num_surbs, &from_peer_ns)
 			.unwrap();
 	}
 }
@@ -193,6 +199,8 @@ fn basic_operation() {
 	network.maybe_set_mixnodes(RelSessionIndex::Current, 0..20);
 
 	let request_from_peer_index = 20;
+	let mut request_message_id = [0; MESSAGE_ID_SIZE];
+	rng.fill_bytes(&mut request_message_id);
 	let mut request_data = vec![0; 9999];
 	rng.fill_bytes(&mut request_data);
 	let num_surbs = 3;
@@ -206,10 +214,11 @@ fn basic_operation() {
 		network.tick(|peer_index, peer, message| {
 			match step {
 				0 => {
-					let Message::Request { session_index, data, mut surbs } = message else {
+					let Message::Request { session_index, id, data, mut surbs } = message else {
 						panic!("Expected request message")
 					};
 					assert_eq!(session_index, 1);
+					assert_eq!(id, request_message_id);
 					assert_eq!(data, request_data);
 					assert_eq!(surbs.len(), num_surbs);
 					peer.mixnet
@@ -228,7 +237,12 @@ fn basic_operation() {
 			step += 1;
 		});
 		if i == 0 {
-			network.post_request(request_from_peer_index, &request_data, num_surbs);
+			network.post_request(
+				request_from_peer_index,
+				&request_message_id,
+				&request_data,
+				num_surbs,
+			);
 		}
 	}
 	assert_eq!(step, 2);

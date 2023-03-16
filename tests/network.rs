@@ -206,6 +206,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 				match swarm.select_next_some().await {
 					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request {
 						session_index,
+						id: _,
 						data,
 						mut surbs,
 					})) => {

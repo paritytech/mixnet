@@ -95,6 +95,8 @@ pub enum Message {
 		/// Index of the session this message was received in. This session index should be used
 		/// when sending replies.
 		session_index: SessionIndex,
+		/// Message identifier, explicitly provided by the request sender.
+		id: MessageId,
 		/// The message contents.
 		data: Vec<u8>,
 		/// SURBs that were attached to the message. These can be used to send replies.
@@ -450,6 +452,7 @@ impl Mixnet {
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
 					|message| Message::Request {
 						session_index,
+						id: message.id,
 						data: message.data,
 						surbs: message.surbs,
 					},
