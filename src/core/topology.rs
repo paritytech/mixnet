@@ -337,8 +337,8 @@ impl<'topology> RouteGenerator<'topology> {
 			used_indices.insert(index);
 		}
 
-		// If we're not a mixnode, and the message is to be sent by us, the first hop needs to be
-		// to a connected gateway mixnode
+		// If we're not a mixnode, and the packet is to be sent by us, the first hop needs to be to
+		// a connected gateway mixnode
 		let special_first_index = match self.topology.local_node {
 			LocalNode::NonMixnode(_) if from_local => {
 				let index = self.choose_connected_gateway_index(rng, used_indices.as_option())?;
@@ -348,8 +348,8 @@ impl<'topology> RouteGenerator<'topology> {
 			_ => None,
 		};
 
-		// If we're not a mixnode, and the message is to be received by us, the last hop needs to
-		// be from a connected gateway mixnode
+		// If we're not a mixnode, and the packet is to be received by us, the last hop needs to be
+		// from a connected gateway mixnode
 		let special_penultimate_index = match self.topology.local_node {
 			LocalNode::NonMixnode(_) if to_local => {
 				let index = self.choose_connected_gateway_index(rng, used_indices.as_option())?;

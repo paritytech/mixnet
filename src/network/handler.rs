@@ -146,13 +146,13 @@ impl ConnectionHandler for Handler {
 	}
 
 	fn inject_fully_negotiated_inbound(&mut self, stream: NegotiatedSubstream, (): ()) {
-		self.inbound = Some(protocol::recv_message(stream).boxed());
+		self.inbound = Some(protocol::recv_packet(stream).boxed());
 	}
 
 	fn inject_fully_negotiated_outbound(&mut self, stream: NegotiatedSubstream, (): ()) {
 		if let Some(packet) = self.pending_packet.take() {
 			let Packet(packet) = packet;
-			let stream = protocol::send_message(stream, packet).boxed();
+			let stream = protocol::send_packet(stream, packet).boxed();
 			self.outbound = Some(ProtocolState::Sending(stream));
 		} else {
 			self.outbound = Some(ProtocolState::Idle(stream));
@@ -164,7 +164,7 @@ impl ConnectionHandler for Handler {
 		match self.outbound.take() {
 			Some(ProtocolState::Idle(stream)) => {
 				let Packet(packet) = packet;
-				let stream = protocol::send_message(stream, packet).boxed();
+				let stream = protocol::send_packet(stream, packet).boxed();
 				self.outbound = Some(ProtocolState::Sending(stream));
 			},
 			Some(ProtocolState::OpenStream) => {
@@ -233,7 +233,7 @@ impl ConnectionHandler for Handler {
 				},
 				Poll::Ready(Ok((stream, packet))) => {
 					// An inbound packet.
-					self.inbound = Some(protocol::recv_message(stream).boxed());
+					self.inbound = Some(protocol::recv_packet(stream).boxed());
 					return Poll::Ready(ConnectionHandlerEvent::Custom(Ok(Packet(packet))))
 				},
 			}

@@ -50,7 +50,7 @@ const PAYLOAD_ENCRYPTION_KEY_PERSONA: &[u8; 16] = b"sphinx-pl-en-key";
 // Key exchange
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Shared secret produced by key exchange between a message sender and a mixnode.
+/// Shared secret produced by key exchange between a packet sender and a mixnode.
 pub type KxSharedSecret = [u8; 32];
 
 /// Apply X25519 bit clamping to the given raw bytes to produce a scalar for use with Curve25519.

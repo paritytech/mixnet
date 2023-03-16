@@ -56,29 +56,29 @@ impl OutboundUpgrade<NegotiatedSubstream> for Mixnet {
 	}
 }
 
-/// Sends a payload.
-pub async fn send_message<S>(mut stream: S, message: Vec<u8>) -> io::Result<S>
+/// Sends a packet.
+pub async fn send_packet<S>(mut stream: S, packet: Vec<u8>) -> io::Result<S>
 where
 	S: AsyncRead + AsyncWrite + Unpin,
 {
-	let size: [u8; 4] = (message.len() as u32).to_le_bytes();
+	let size: [u8; 4] = (packet.len() as u32).to_le_bytes();
 	stream.write_all(&size).await?;
-	stream.write_all(&message).await?;
+	stream.write_all(&packet).await?;
 	stream.flush().await?;
 	Ok(stream)
 }
 
-/// Waits for an incoming message
-pub async fn recv_message<S>(mut stream: S) -> io::Result<(S, Vec<u8>)>
+/// Waits for an incoming packet.
+pub async fn recv_packet<S>(mut stream: S) -> io::Result<(S, Vec<u8>)>
 where
 	S: AsyncRead + AsyncWrite + Unpin,
 {
 	let mut size: [u8; 4] = Default::default();
 	stream.read_exact(&mut size).await?;
-	let mut message = Vec::new();
-	message.resize(u32::from_le_bytes(size) as usize, 0u8);
-	stream.read_exact(&mut message).await?;
-	Ok((stream, message))
+	let mut packet = Vec::new();
+	packet.resize(u32::from_le_bytes(size) as usize, 0u8);
+	stream.read_exact(&mut packet).await?;
+	Ok((stream, packet))
 }
 
 #[cfg(test)]
