@@ -31,5 +31,7 @@ mod protocol;
 
 pub use self::{
 	behaviour::{MixnetBehaviour, MixnetEvent},
+	maybe_inf_delay::MaybeInfDelay,
 	mixnode::Mixnode,
+	peer_id::{from_core_peer_id, to_core_peer_id, INVALID_CORE_PEER_ID},
 };
