@@ -279,6 +279,14 @@ impl Mixnet {
 	/// `Err(true)`, the session slot will be disabled, and later calls to `maybe_set_mixnodes` for
 	/// the session will return immediately. If `mixnodes()` returns `Err(false)`, the session slot
 	/// will merely remain empty, and later calls to `maybe_set_mixnodes` may succeed.
+	///
+	/// The mixnode peer IDs are used for two things:
+	///
+	/// - Checking for connectivity (they are passed to [`NetworkStatus::is_connected`]).
+	/// - Sending packets (they are put in [`AddressedPacket::peer_id`]).
+	///
+	/// The mixnode external addresses are merely collated and returned by
+	/// [`reserved_peer_addresses`](Self::reserved_peer_addresses).
 	pub fn maybe_set_mixnodes(
 		&mut self,
 		rel_session_index: RelSessionIndex,
