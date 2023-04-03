@@ -282,7 +282,7 @@ impl Mixnet {
 	pub fn maybe_set_mixnodes(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: impl FnOnce() -> Result<Vec<Mixnode>, bool>,
+		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode>, bool>,
 	) {
 		// Create the Session only if the slot is empty. If the slot is disabled, don't even try.
 		let session = &mut self.sessions[rel_session_index];

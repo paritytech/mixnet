@@ -110,7 +110,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			current_index: 0,
 			phase: SessionPhase::DisconnectFromPrev,
 		});
-		mixnet.maybe_set_mixnodes(RelSessionIndex::Current, || Ok(mixnodes.iter().cloned()));
+		mixnet.maybe_set_mixnodes(RelSessionIndex::Current, &mut || Ok(mixnodes.iter().cloned()));
 
 		let mut swarm = Swarm::with_threadpool_executor(trans, mixnet, mixnode.peer_id);
 		swarm.listen_on(mixnode.external_addresses[0].clone()).unwrap();

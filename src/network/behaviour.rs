@@ -115,11 +115,11 @@ impl MixnetBehaviour {
 	pub fn maybe_set_mixnodes<I>(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: impl FnOnce() -> std::result::Result<I, bool>,
+		mixnodes: &mut dyn FnMut() -> std::result::Result<I, bool>,
 	) where
 		I: Iterator<Item = Mixnode>,
 	{
-		self.mixnet.maybe_set_mixnodes(rel_session_index, || {
+		self.mixnet.maybe_set_mixnodes(rel_session_index, &mut || {
 			Ok(mixnodes()?.map(|mixnode| mixnode.to_core(self.log_target)).collect())
 		});
 		self.handle_invalidated();
