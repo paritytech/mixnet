@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use futures::FutureExt;
+use futures::{future::FusedFuture, FutureExt};
 use futures_timer::Delay;
 use std::{
 	future::Future,
@@ -38,6 +38,9 @@ enum Inner {
 }
 
 /// Like [`Delay`] but the duration can be infinite (in which case the future will never fire).
+/// Unlike [`Delay`], implements [`FusedFuture`], with [`is_terminated`](Self::is_terminated)
+/// returning `true` when the delay is infinite. As with [`Delay`], once [`poll`](Self::poll)
+/// returns [`Poll::Ready`], it will continue to do so until [`reset`](Self::reset) is called.
 pub struct MaybeInfDelay(Inner);
 
 impl MaybeInfDelay {
@@ -100,5 +103,11 @@ impl Future for MaybeInfDelay {
 			},
 			Inner::Finite(delay) => delay.poll_unpin(cx),
 		}
+	}
+}
+
+impl FusedFuture for MaybeInfDelay {
+	fn is_terminated(&self) -> bool {
+		matches!(self.0, Inner::Infinite { .. })
 	}
 }
