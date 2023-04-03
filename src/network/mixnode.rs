@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use super::peer_id::to_core_peer_id;
+use super::peer_id::{to_core_peer_id, INVALID_CORE_PEER_ID};
 use crate::core::{KxPublic, Mixnode as CoreMixnode};
 use libp2p_core::{Multiaddr, PeerId};
 
@@ -35,7 +35,14 @@ pub struct Mixnode {
 
 impl Mixnode {
 	/// Convert to a `CoreMixnode`. The peer ID conversion may fail; in this case, an error message
-	/// is logged, but a "valid" `CoreMixnode` is still returned.
+	/// is logged, but a `CoreMixnode` is still returned, with `peer_id` set to
+	/// [`INVALID_CORE_PEER_ID`].
+	///
+	/// It would be possible to handle conversion failure in a better way, but this would
+	/// complicate things for what should be a rare case. Note that even if we succeed in
+	/// converting the peer ID here, there is no guarantee that we will be able to connect to the
+	/// peer or send packets to it. The most common failure case is expected to be that the peer is
+	/// simply unreachable over the network.
 	pub fn to_core(self, log_target: &'static str) -> CoreMixnode {
 		CoreMixnode {
 			kx_public: self.kx_public,
@@ -45,7 +52,7 @@ impl Mixnode {
 					"Failed to convert libp2p peer ID {} to mixnet peer ID",
 					self.peer_id
 				);
-				Default::default()
+				INVALID_CORE_PEER_ID
 			}),
 			external_addresses: self.external_addresses,
 		}
