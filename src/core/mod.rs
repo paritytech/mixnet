@@ -119,12 +119,12 @@ pub enum PostErr {
 	#[error("Message would need to be split into too many fragments")]
 	/// Message contents too large or too many SURBs.
 	TooManyFragments,
-	#[error("Bad session index: {0}")]
-	/// Bad session index. Most likely the session is no longer active.
-	BadSessionIndex(SessionIndex),
-	#[error("Requests and replies currently blocked for session {0}")]
-	/// Requests and replies currently blocked for the session.
-	RequestsAndRepliesBlocked(SessionIndex),
+	#[error("Session {0} is no longer active")]
+	/// The session is no longer active.
+	SessionNoLongerActive(SessionIndex),
+	#[error("Session {0} is not active yet")]
+	/// The session is not active yet.
+	SessionNotActiveYet(SessionIndex),
 	#[error("Mixnodes not yet known for session {0}")]
 	/// Mixnodes not yet known for the session.
 	SessionEmpty(SessionIndex),
@@ -150,13 +150,23 @@ fn post_session(
 	let rel_index = match status.current_index.wrapping_sub(index) {
 		0 => RelSessionIndex::Current,
 		1 => RelSessionIndex::Prev,
-		_ => return Err(PostErr::BadSessionIndex(index)),
+		_ =>
+			return Err(if index < status.current_index {
+				PostErr::SessionNoLongerActive(index)
+			} else {
+				PostErr::SessionNotActiveYet(index)
+			}),
 	};
 	if !status.phase.allow_requests_and_replies(rel_index) {
-		return Err(PostErr::RequestsAndRepliesBlocked(index))
+		return Err(match rel_index {
+			RelSessionIndex::Prev => PostErr::SessionNoLongerActive(index),
+			RelSessionIndex::Current => PostErr::SessionNotActiveYet(index),
+		})
 	}
 	match &mut sessions[rel_index] {
 		SessionSlot::Empty => Err(PostErr::SessionEmpty(index)),
+		// Note that in the case where the session has been disabled because it is no longer
+		// needed, we will enter the !allow_requests_and_replies if above and not get here
 		SessionSlot::Disabled => Err(PostErr::SessionDisabled(index)),
 		SessionSlot::Full(session) => Ok(session),
 	}
