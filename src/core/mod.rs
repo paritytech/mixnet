@@ -233,6 +233,11 @@ impl Mixnet {
 		}
 	}
 
+	/// Returns the current session index and phase.
+	pub fn session_status(&self) -> SessionStatus {
+		self.session_status
+	}
+
 	/// Sets the current session index and phase. The current and previous mixnodes may need to be
 	/// provided after calling this; see [`maybe_set_mixnodes`](Self::maybe_set_mixnodes).
 	pub fn set_session_status(&mut self, session_status: SessionStatus) {
