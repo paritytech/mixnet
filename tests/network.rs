@@ -189,7 +189,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 				.post_request(
 					&mut destination,
 					&rand::thread_rng().gen(),
-					&source_message,
+					source_message.as_slice().into(),
 					if with_surb { 1 } else { 0 },
 				)
 				.unwrap();
@@ -217,7 +217,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 						if !surbs.is_empty() {
 							swarm
 								.behaviour_mut()
-								.post_reply(&mut surbs, session_index, &[0; MESSAGE_ID_SIZE], &[42])
+								.post_reply(
+									&mut surbs,
+									session_index,
+									&[0; MESSAGE_ID_SIZE],
+									[42].as_slice().into(),
+								)
 								.unwrap();
 						}
 						if received == message_count {

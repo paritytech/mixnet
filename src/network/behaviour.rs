@@ -26,7 +26,7 @@ use super::{
 };
 use crate::core::{
 	Config, Invalidated, KxPublicStore, Message, MessageId, Mixnet, MixnodeId, NetworkStatus,
-	PeerId as CorePeerId, PostErr, RelSessionIndex, SessionIndex, SessionStatus, Surb,
+	PeerId as CorePeerId, PostErr, RelSessionIndex, Scattered, SessionIndex, SessionStatus, Surb,
 };
 use futures::FutureExt;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -135,7 +135,7 @@ impl MixnetBehaviour {
 		&mut self,
 		destination: &mut Option<MixnodeId>,
 		message_id: &MessageId,
-		data: &[u8],
+		data: Scattered<u8>,
 		num_surbs: usize,
 	) -> std::result::Result<Duration, PostErr> {
 		let res = self.mixnet.post_request(destination, message_id, data, num_surbs, &self.peers);
@@ -150,7 +150,7 @@ impl MixnetBehaviour {
 		surbs: &mut Vec<Surb>,
 		session_index: SessionIndex,
 		message_id: &MessageId,
-		data: &[u8],
+		data: Scattered<u8>,
 	) -> std::result::Result<(), PostErr> {
 		let res = self.mixnet.post_reply(surbs, session_index, message_id, data);
 		self.handle_invalidated();

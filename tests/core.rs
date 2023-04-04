@@ -172,7 +172,7 @@ impl Network {
 		let from_peer_ns = PeerNetworkStatus { id: &from_peer.id, connections: &self.connections };
 		from_peer
 			.mixnet
-			.post_request(&mut None, message_id, data, num_surbs, &from_peer_ns)
+			.post_request(&mut None, message_id, data.into(), num_surbs, &from_peer_ns)
 			.unwrap();
 	}
 }
@@ -222,7 +222,12 @@ fn basic_operation() {
 					assert_eq!(data, request_data);
 					assert_eq!(surbs.len(), num_surbs);
 					peer.mixnet
-						.post_reply(&mut surbs, session_index, &reply_message_id, &reply_data)
+						.post_reply(
+							&mut surbs,
+							session_index,
+							&reply_message_id,
+							reply_data.as_slice().into(),
+						)
 						.unwrap();
 				},
 				1 => {

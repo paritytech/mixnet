@@ -30,6 +30,7 @@ mod kx_store;
 mod packet_queues;
 mod replay_filter;
 mod request_builder;
+mod scattered;
 mod sessions;
 mod sphinx;
 mod surb_keystore;
@@ -41,6 +42,7 @@ pub use self::{
 	fragment::{MessageId, MESSAGE_ID_SIZE},
 	kx_store::KxPublicStore,
 	packet_queues::AddressedPacket,
+	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
 		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS,
@@ -606,7 +608,7 @@ impl Mixnet {
 		&mut self,
 		destination: &mut Option<MixnodeId>,
 		message_id: &MessageId,
-		data: &[u8],
+		data: Scattered<u8>,
 		num_surbs: usize,
 		ns: &dyn NetworkStatus,
 	) -> Result<Duration, PostErr> {
@@ -679,7 +681,7 @@ impl Mixnet {
 		surbs: &mut Vec<Surb>,
 		session_index: SessionIndex,
 		message_id: &MessageId,
-		data: &[u8],
+		data: Scattered<u8>,
 	) -> Result<(), PostErr> {
 		// Split the message into fragments
 		let fragment_blueprints = match fragment_blueprints(message_id, data, 0) {
