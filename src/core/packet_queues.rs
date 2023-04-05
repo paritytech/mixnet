@@ -110,6 +110,10 @@ impl AuthoredPacketQueue {
 		Self { capacity, queue: VecDeque::with_capacity(capacity) }
 	}
 
+	pub fn capacity(&self) -> usize {
+		self.capacity
+	}
+
 	pub fn remaining_capacity(&self) -> usize {
 		self.capacity.saturating_sub(self.queue.len())
 	}

@@ -644,6 +644,9 @@ impl Mixnet {
 			|destination| destination.session_index,
 		);
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
+		if fragment_blueprints.len() > session.authored_packet_queue.capacity() {
+			return Err(PostErr::TooManyFragments)
+		}
 		// TODO Something better than this
 		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
 			return Err(PostErr::NotEnoughSpaceInQueue)
@@ -709,6 +712,9 @@ impl Mixnet {
 
 		// Grab the session and check there's room in the queue
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
+		if fragment_blueprints.len() > session.authored_packet_queue.capacity() {
+			return Err(PostErr::TooManyFragments)
+		}
 		// TODO Something better than this
 		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
 			return Err(PostErr::NotEnoughSpaceInQueue)
