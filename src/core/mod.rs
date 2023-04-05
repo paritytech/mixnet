@@ -173,18 +173,18 @@ fn post_session(
 }
 
 bitflags! {
-	/// Flags to indicate which previously queried things are now invalid.
-	pub struct Invalidated: u32 {
-		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`].
-		const RESERVED_PEERS = 0b001;
-		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`].
-		const NEXT_FORWARD_PACKET_DEADLINE = 0b010;
-		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`]. The delay
-		/// (and thus the effective deadline) is randomly generated according to an exponential
-		/// distribution each time the function is called, but the last returned deadline remains
-		/// valid until this bit indicates otherwise. Due to the memoryless nature of exponential
-		/// distributions, it is harmless for this bit to be set spuriously.
-		const NEXT_AUTHORED_PACKET_DEADLINE = 0b100;
+	/// Flags to indicate events that have occurred.
+	pub struct Events: u32 {
+		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`] have changed.
+		const RESERVED_PEERS_CHANGED = 0b001;
+		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`] has changed.
+		const NEXT_FORWARD_PACKET_DEADLINE_CHANGED = 0b010;
+		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`] has changed.
+		/// The delay (and thus the effective deadline) is randomly generated according to an
+		/// exponential distribution each time the function is called, but the last returned
+		/// deadline remains valid until this bit indicates otherwise. Due to the memoryless nature
+		/// of exponential distributions, it is harmless for this bit to be set spuriously.
+		const NEXT_AUTHORED_PACKET_DEADLINE_CHANGED = 0b100;
 	}
 }
 
@@ -208,8 +208,8 @@ pub struct Mixnet {
 	/// for everything (requests and replies across all sessions).
 	fragment_assembler: FragmentAssembler,
 
-	/// Flags to indicate which previously queried things are now invalid.
-	invalidated: Invalidated,
+	/// Flags to indicate events that have occurred.
+	events: Events,
 }
 
 impl Mixnet {
@@ -239,7 +239,7 @@ impl Mixnet {
 			surb_keystore,
 			fragment_assembler,
 
-			invalidated: Invalidated::empty(),
+			events: Events::empty(),
 		}
 	}
 
@@ -284,10 +284,10 @@ impl Mixnet {
 		self.kx_store
 			.discard_sessions_before(min_needed_rel_session_index + session_status.current_index);
 
-		// For simplicity just mark these as invalid whenever anything changes. This should happen
-		// at most once a minute or so.
-		self.invalidated |=
-			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+		// For simplicity just assume these have changed. This should happen at most once a minute
+		// or so.
+		self.events |=
+			Events::RESERVED_PEERS_CHANGED | Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		self.session_status = session_status;
 	}
@@ -368,8 +368,8 @@ impl Mixnet {
 			replay_filter: ReplayFilter::new(&mut rng),
 		});
 
-		self.invalidated |=
-			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+		self.events |=
+			Events::RESERVED_PEERS_CHANGED | Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 	}
 
 	/// Returns the addresses of the peers we should try to maintain connections to.
@@ -449,7 +449,7 @@ impl Mixnet {
 							packet: AddressedPacket { peer_id, packet: out.into() },
 						};
 						if self.forward_packet_queue.insert(forward_packet) {
-							self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
+							self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 						}
 					},
 					Err(err) => error!(
@@ -529,7 +529,7 @@ impl Mixnet {
 	/// Pop and return the packet at the head of the forward packet queue. Returns [`None`] if the
 	/// queue is empty.
 	pub fn pop_next_forward_packet(&mut self) -> Option<AddressedPacket> {
-		self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
+		self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 		self.forward_packet_queue.pop().map(|packet| packet.packet)
 	}
 
@@ -596,7 +596,7 @@ impl Mixnet {
 			Err(mut sessions) => sessions.pop()?,
 		};
 
-		self.invalidated |= Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+		self.events |= Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		// Choose randomly between drop and loop cover packet
 		if rng.gen_bool(self.config.loop_cover_proportion) {
@@ -733,10 +733,10 @@ impl Mixnet {
 		Ok(())
 	}
 
-	/// Clear the invalidated flags. Returns the flags that were cleared.
-	pub fn take_invalidated(&mut self) -> Invalidated {
-		let invalidated = self.invalidated;
-		self.invalidated = Invalidated::empty();
-		invalidated
+	/// Clear the event flags. Returns the flags that were cleared.
+	pub fn take_events(&mut self) -> Events {
+		let events = self.events;
+		self.events = Events::empty();
+		events
 	}
 }

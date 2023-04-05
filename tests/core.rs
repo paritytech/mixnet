@@ -24,7 +24,7 @@
 mod util;
 
 use mixnet::core::{
-	Config, Invalidated, KxPublicStore, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId,
+	Config, Events, KxPublicStore, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
 use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
@@ -118,8 +118,8 @@ impl Network {
 	fn tick(&mut self, mut handle_message: impl FnMut(usize, &mut Peer, Message)) {
 		let mut packets = Vec::new();
 		for peer in &mut self.peers {
-			let invalidated = peer.mixnet.take_invalidated();
-			if invalidated.contains(Invalidated::RESERVED_PEERS) {
+			let events = peer.mixnet.take_events();
+			if events.contains(Events::RESERVED_PEERS_CHANGED) {
 				self.connections.insert(
 					peer.id,
 					peer.mixnet
@@ -130,7 +130,7 @@ impl Network {
 				);
 			}
 			let ns = PeerNetworkStatus { id: &peer.id, connections: &self.connections };
-			if invalidated.contains(Invalidated::NEXT_FORWARD_PACKET_DEADLINE) &&
+			if events.contains(Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED) &&
 				peer.mixnet.next_forward_packet_deadline().is_some()
 			{
 				if let Some(packet) = peer.mixnet.pop_next_forward_packet() {
@@ -138,7 +138,7 @@ impl Network {
 					packets.push(packet);
 				}
 			}
-			if invalidated.contains(Invalidated::NEXT_AUTHORED_PACKET_DEADLINE) &&
+			if events.contains(Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED) &&
 				peer.mixnet.next_authored_packet_delay().is_some()
 			{
 				if let Some(packet) = peer.mixnet.pop_next_authored_packet(&ns) {

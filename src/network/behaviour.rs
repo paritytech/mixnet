@@ -25,7 +25,7 @@ use super::{
 	peer_id::{from_core_peer_id, to_core_peer_id},
 };
 use crate::core::{
-	Config, Invalidated, KxPublicStore, Message, MessageId, Mixnet, MixnodeId, NetworkStatus,
+	Config, Events, KxPublicStore, Message, MessageId, Mixnet, MixnodeId, NetworkStatus,
 	PeerId as CorePeerId, PostErr, RelSessionIndex, Scattered, SessionIndex, SessionStatus, Surb,
 };
 use futures::FutureExt;
@@ -87,16 +87,16 @@ impl MixnetBehaviour {
 		})
 	}
 
-	fn handle_invalidated(&mut self) {
-		let invalidated = self.mixnet.take_invalidated();
-		if invalidated.contains(Invalidated::NEXT_FORWARD_PACKET_DEADLINE) {
+	fn handle_core_events(&mut self) {
+		let events = self.mixnet.take_events();
+		if events.contains(Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED) {
 			self.next_forward_packet_delay.reset(
 				self.mixnet
 					.next_forward_packet_deadline()
 					.map(|deadline| deadline.saturating_duration_since(Instant::now())),
 			);
 		}
-		if invalidated.contains(Invalidated::NEXT_AUTHORED_PACKET_DEADLINE) {
+		if events.contains(Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED) {
 			self.next_authored_packet_delay.reset(self.mixnet.next_authored_packet_delay());
 		}
 	}
@@ -105,7 +105,7 @@ impl MixnetBehaviour {
 	/// provided after calling this; see `maybe_set_mixnodes`.
 	pub fn set_session_status(&mut self, session_status: SessionStatus) {
 		self.mixnet.set_session_status(session_status);
-		self.handle_invalidated();
+		self.handle_core_events();
 	}
 
 	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
@@ -122,7 +122,7 @@ impl MixnetBehaviour {
 		self.mixnet.maybe_set_mixnodes(rel_session_index, &mut || {
 			Ok(mixnodes()?.map(|mixnode| mixnode.to_core(self.log_target)).collect())
 		});
-		self.handle_invalidated();
+		self.handle_core_events();
 	}
 
 	/// Post a request message. If `destination` is `None`, a destination mixnode is chosen at
@@ -139,7 +139,7 @@ impl MixnetBehaviour {
 		num_surbs: usize,
 	) -> std::result::Result<Duration, PostErr> {
 		let res = self.mixnet.post_request(destination, message_id, data, num_surbs, &self.peers);
-		self.handle_invalidated();
+		self.handle_core_events();
 		res
 	}
 
@@ -153,7 +153,7 @@ impl MixnetBehaviour {
 		data: Scattered<u8>,
 	) -> std::result::Result<(), PostErr> {
 		let res = self.mixnet.post_reply(surbs, session_index, message_id, data);
-		self.handle_invalidated();
+		self.handle_core_events();
 		res
 	}
 }
@@ -190,7 +190,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 				if let Some(message) = self.mixnet.handle_packet(packet) {
 					self.events.push_front(MixnetEvent::Message(message));
 				}
-				self.handle_invalidated();
+				self.handle_core_events();
 			},
 			Err(e) => {
 				log::error!(target: self.log_target, "Network error: {e}");
@@ -271,7 +271,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 			} else {
 				return Poll::Pending
 			};
-			self.handle_invalidated();
+			self.handle_core_events();
 			let Some(packet) = packet else { continue };
 
 			let Some(peer_id) = from_core_peer_id(&packet.peer_id) else {
