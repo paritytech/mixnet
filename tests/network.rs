@@ -245,10 +245,9 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			match peer0_swarm.select_next_some().await {
 				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request { .. })) =>
 					panic!("peer 0 expect a reply only"),
-				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply { id, data })) => {
+				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply { data })) => {
 					assert!(with_surb);
 					done_surbs -= 1;
-					assert_eq!(&id, &[0; MESSAGE_ID_SIZE]);
 					assert_eq!(&data, &[42]);
 				},
 				_ => {},

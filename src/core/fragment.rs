@@ -32,7 +32,6 @@ use std::cmp::{max, min};
 /// Size in bytes of a [`MessageId`].
 pub const MESSAGE_ID_SIZE: usize = 16;
 /// Message identifier. Should be randomly generated. Attached to fragments to enable reassembly.
-/// May also be used to identify replies.
 pub type MessageId = [u8; MESSAGE_ID_SIZE];
 const FRAGMENT_INDEX_SIZE: usize = 2;
 type FragmentIndex = u16;

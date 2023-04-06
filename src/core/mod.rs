@@ -106,8 +106,6 @@ pub enum Message {
 	},
 	/// A reply to a previously sent request.
 	Reply {
-		/// Message identifier, explicitly provided by the reply sender.
-		id: MessageId,
 		/// The message contents.
 		data: Vec<u8>,
 	},
@@ -512,7 +510,7 @@ impl Mixnet {
 							warn!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
-						Message::Reply { id: message.id, data: message.data }
+						Message::Reply { data: message.data }
 					},
 				)
 			},

@@ -204,8 +204,6 @@ fn basic_operation() {
 	let mut request_data = vec![0; 9999];
 	rng.fill_bytes(&mut request_data);
 	let num_surbs = 3;
-	let mut reply_message_id = [0; MESSAGE_ID_SIZE];
-	rng.fill_bytes(&mut reply_message_id);
 	let mut reply_data = vec![0; 4567];
 	rng.fill_bytes(&mut reply_data);
 
@@ -221,21 +219,20 @@ fn basic_operation() {
 					assert_eq!(id, request_message_id);
 					assert_eq!(data, request_data);
 					assert_eq!(surbs.len(), num_surbs);
+					let mut reply_id = [0; MESSAGE_ID_SIZE];
+					rng.fill_bytes(&mut reply_id);
 					peer.mixnet
 						.post_reply(
 							&mut surbs,
 							session_index,
-							&reply_message_id,
+							&reply_id,
 							reply_data.as_slice().into(),
 						)
 						.unwrap();
 				},
 				1 => {
 					assert_eq!(peer_index, request_from_peer_index);
-					assert_eq!(
-						message,
-						Message::Reply { id: reply_message_id, data: reply_data.clone() }
-					);
+					assert_eq!(message, Message::Reply { data: reply_data.clone() });
 				},
 				_ => panic!("Unexpected message"),
 			}
