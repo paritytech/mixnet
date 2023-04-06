@@ -20,7 +20,10 @@
 
 //! Key exchange, secret derivation, MAC computation, and encryption.
 
-use super::packet::{EncryptedHeader, KxPublic, Mac, Payload, MAX_HOPS};
+use super::{
+	delay::{DelaySeed, DELAY_SEED_SIZE},
+	packet::{EncryptedHeader, KxPublic, Mac, Payload, MAX_HOPS},
+};
 use arrayref::array_refs;
 use arrayvec::ArrayVec;
 use blake2::{
@@ -155,8 +158,6 @@ const MAC_KEY_SIZE: usize = 16;
 pub type MacKey = [u8; MAC_KEY_SIZE];
 const HEADER_ENCRYPTION_KEY_SIZE: usize = 32;
 pub type HeaderEncryptionKey = [u8; HEADER_ENCRYPTION_KEY_SIZE];
-const DELAY_SEED_SIZE: usize = 16;
-pub type DelaySeed = [u8; DELAY_SEED_SIZE];
 const SMALL_DERIVED_SECRETS_SIZE: usize =
 	MAC_KEY_SIZE + HEADER_ENCRYPTION_KEY_SIZE + DELAY_SEED_SIZE;
 

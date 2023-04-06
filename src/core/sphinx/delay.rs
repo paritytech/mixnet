@@ -20,7 +20,6 @@
 
 //! Forwarding delay type.
 
-use super::crypto::DelaySeed;
 use arrayref::array_mut_ref;
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
@@ -29,6 +28,9 @@ use std::{
 	ops::{Add, AddAssign},
 	time::Duration,
 };
+
+pub const DELAY_SEED_SIZE: usize = 16;
+pub type DelaySeed = [u8; DELAY_SEED_SIZE];
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Delay(f64);
