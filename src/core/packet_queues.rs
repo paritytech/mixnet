@@ -110,6 +110,10 @@ impl AuthoredPacketQueue {
 		Self { capacity, queue: VecDeque::with_capacity(capacity) }
 	}
 
+	pub fn len(&self) -> usize {
+		self.queue.len()
+	}
+
 	pub fn capacity(&self) -> usize {
 		self.capacity
 	}

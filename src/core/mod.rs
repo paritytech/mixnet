@@ -170,6 +170,57 @@ fn post_session(
 	}
 }
 
+/// Returns a conservative estimate of the time taken for the last packet in the authored packet
+/// queue to get dispatched plus the time taken for all reply packets to get through the authored
+/// packet queue at the far end.
+fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> Duration {
+	let rate_mul =
+		// In the worst case, when transitioning between two sessions with equal rate, the rate is
+		// effectively halved
+		0.5 *
+		// Loop cover packets are never replaced with packets from the authored packet queue
+		(1.0 - config.loop_cover_proportion);
+	let request_period = session.mean_authored_packet_period.div_f64(rate_mul);
+	let request_len = session.authored_packet_queue.len();
+	// Assume that the destination mixnode is using the same configuration as us
+	let reply_period = config.mixnode_session.mean_authored_packet_period.div_f64(rate_mul);
+	let reply_len = config.mixnode_session.authored_packet_queue_capacity; // Worst case
+
+	// The delays between authored packet queue pops follow an exponential distribution. The sum of
+	// n independent exponential random variables with scale s follows a gamma distribution with
+	// shape n and scale s. A reasonable approximation to the 99.995th percentile of the gamma
+	// distribution with shape n and scale s is:
+	//
+	// s * (4.92582 + (3.87809 * sqrt(n)) + n)
+	//
+	// The constants were obtained by fitting to the actual values for n=1..200.
+	//
+	// This isn't quite what we want here; we are interested in the sum of two gamma-distributed
+	// random variables with different scales (request_period and reply_period). An approximation
+	// to the 99.995th percentile of such a sum is:
+	//
+	// s * (4.92582 + (3.87809 * sqrt(n + (r^3 * m))) + n + (r * m))
+	//
+	// Where:
+	//
+	// - s is the larger scale.
+	// - n is the corresponding shape.
+	// - m is the other shape.
+	// - r is the other scale divided by s (between 0 and 1).
+	//
+	// Note that when r is 0 this matches the first approximation, and when r is 1 this matches the
+	// first approximation with n replaced by (n + m).
+	let (s, n, m, rs) = if request_period > reply_period {
+		(request_period, request_len, reply_len, reply_period)
+	} else {
+		(reply_period, reply_len, request_len, request_period)
+	};
+	let n = n as f64;
+	let m = m as f64;
+	let r = rs.as_secs_f64() / s.as_secs_f64();
+	s.mul_f64(4.92582 + (3.87809 * (n + (r * r * r * m)).sqrt()) + n + (r * m))
+}
+
 bitflags! {
 	/// Flags to indicate events that have occurred.
 	pub struct Events: u32 {
@@ -614,9 +665,13 @@ impl Mixnet {
 	/// Post a request message. If `destination` is [`None`], a destination mixnode is chosen at
 	/// random and (on success) the session and mixnode indices are written back to `destination`.
 	/// The message is split into fragments and each fragment is sent over a different path to the
-	/// destination. Returns the maximum total forwarding delay for any fragment/SURB pair; this
-	/// should give a lower bound on the time it takes for a reply to arrive (it is possible for a
-	/// reply to arrive sooner if a mixnode misbehaves).
+	/// destination.
+	///
+	/// Returns an estimate of the round-trip time. That is, the maximum time taken for any of the
+	/// fragments to reach the destination, plus the maximum time taken for any of the SURBs to
+	/// come back. The estimate assumes no network/processing delays; the caller should add
+	/// reasonable estimates for these delays on to the returned estimate. Aside from this, the
+	/// returned estimate is conservative and suitable for use as a timeout.
 	pub fn post_request(
 		&mut self,
 		destination: &mut Option<MixnodeId>,
@@ -659,8 +714,8 @@ impl Mixnet {
 			destination.map(|destination| destination.mixnode_index),
 		)
 		.map_err(PostErr::Topology)?;
-		let mut max_request_delay = Delay::zero();
-		let mut max_reply_delay = Delay::zero();
+		let mut request_forwarding_delay = Delay::zero();
+		let mut reply_forwarding_delay = Delay::zero();
 		for fragment_blueprint in fragment_blueprints {
 			let (packet, delay) = request_builder
 				.build_packet(
@@ -673,7 +728,7 @@ impl Mixnet {
 							let num_hops = self.config.num_hops;
 							let delay =
 								request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
-							max_reply_delay = max(max_reply_delay, delay);
+							reply_forwarding_delay = max(reply_forwarding_delay, delay);
 						}
 						Ok(())
 					},
@@ -681,13 +736,19 @@ impl Mixnet {
 				)
 				.map_err(PostErr::Topology)?;
 			session.authored_packet_queue.push(packet);
-			max_request_delay = max(max_request_delay, delay);
+			request_forwarding_delay = max(request_forwarding_delay, delay);
 		}
+
+		// Estimate the total delay (round-trip time)
+		let forwarding_delay = (request_forwarding_delay + reply_forwarding_delay)
+			.to_duration(self.config.mean_forwarding_delay);
+		let authored_packet_queue_delay =
+			estimate_authored_packet_queue_delay(&self.config, session);
+		let delay = forwarding_delay + authored_packet_queue_delay;
 
 		*destination =
 			Some(MixnodeId { session_index, mixnode_index: request_builder.destination_index() });
-		let max_delay = max_request_delay + max_reply_delay;
-		Ok(max_delay.to_duration(self.config.mean_forwarding_delay))
+		Ok(delay)
 	}
 
 	/// Post a reply message using SURBs. The session index must match the session the SURBs were

@@ -49,7 +49,8 @@ pub struct Config {
 	/// mixnode, we connect to all other mixnodes.
 	pub num_gateway_mixnodes: u32,
 
-	/// Used by sessions in which the local node is a mixnode.
+	/// Used by sessions in which the local node is a mixnode. If this is not the same for all
+	/// nodes, delay estimates may be off.
 	pub mixnode_session: SessionConfig,
 	/// Used by sessions in which the local node is not a mixnode. If [`None`], we will only
 	/// participate in the mixnet during sessions in which we are a mixnode.
@@ -58,11 +59,12 @@ pub struct Config {
 	/// Maximum number of packets waiting for their forwarding delay to elapse. When at the limit,
 	/// any packets arriving that need forwarding will simply be dropped.
 	pub forward_packet_queue_capacity: usize,
-	/// Mean forwarding delay at each mixnode.
+	/// Mean forwarding delay at each mixnode. This should really be the same for all nodes!
 	pub mean_forwarding_delay: Duration,
 
 	/// Proportion of authored packets which should be loop cover packets (as opposed to drop cover
-	/// packets or real packets).
+	/// packets or real packets). If this is not the same for all nodes, delay estimates may be
+	/// off.
 	pub loop_cover_proportion: f64,
 	/// Generate cover packets? This option is intended for testing purposes only. It essentially
 	/// just drops all cover packets instead of sending them.
@@ -90,11 +92,11 @@ impl Default for Config {
 			num_gateway_mixnodes: 3,
 
 			mixnode_session: SessionConfig {
-				authored_packet_queue_capacity: 200,
+				authored_packet_queue_capacity: 50,
 				mean_authored_packet_period: Duration::from_millis(100),
 			},
 			non_mixnode_session: Some(SessionConfig {
-				authored_packet_queue_capacity: 50,
+				authored_packet_queue_capacity: 25,
 				mean_authored_packet_period: Duration::from_millis(1000),
 			}),
 

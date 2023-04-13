@@ -128,9 +128,13 @@ impl MixnetBehaviour {
 	/// Post a request message. If `destination` is `None`, a destination mixnode is chosen at
 	/// random and (on success) the session and mixnode indices are written back to `destination`.
 	/// The message is split into fragments and each fragment is sent over a different path to the
-	/// destination. Returns the maximum total forwarding delay for any fragment/SURB pair; this
-	/// should give a lower bound on the time it takes for a reply to arrive (it is possible for a
-	/// reply to arrive sooner if a mixnode misbehaves).
+	/// destination.
+	///
+	/// Returns an estimate of the round-trip time. That is, the maximum time taken for any of the
+	/// fragments to reach the destination, plus the maximum time taken for any of the SURBs to
+	/// come back. The estimate assumes no network/processing delays; the caller should add
+	/// reasonable estimates for these delays on to the returned estimate. Aside from this, the
+	/// returned estimate is conservative and suitable for use as a timeout.
 	pub fn post_request(
 		&mut self,
 		destination: &mut Option<MixnodeId>,
