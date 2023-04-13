@@ -20,16 +20,15 @@
 
 //! Mixnet configuration.
 
-use super::sphinx::MAX_HOPS;
+use super::{packet_queues::AuthoredPacketQueueConfig, sphinx::MAX_HOPS};
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
 /// Configuration that can vary between sessions depending on whether the local node is a mixnode
 /// or not.
 pub struct SessionConfig {
-	/// Maximum number of packets in the authored packet queue. Note that cover packets do not go
-	/// in the authored packet queue; they are generated on demand.
-	pub authored_packet_queue_capacity: usize,
+	/// Authored packet queue configuration.
+	pub authored_packet_queue: AuthoredPacketQueueConfig,
 	/// Mean period between authored packet dispatches for the session. Cover packets are sent when
 	/// there are no real packets to send, or when we randomly choose to send loop cover packets
 	/// (see `Config::loop_cover_proportion`). This parameter, in combination with
@@ -92,11 +91,23 @@ impl Default for Config {
 			num_gateway_mixnodes: 3,
 
 			mixnode_session: SessionConfig {
-				authored_packet_queue_capacity: 50,
+				authored_packet_queue: AuthoredPacketQueueConfig {
+					capacity: 50,
+					multiple_messages: true,
+				},
 				mean_authored_packet_period: Duration::from_millis(100),
 			},
 			non_mixnode_session: Some(SessionConfig {
-				authored_packet_queue_capacity: 25,
+				authored_packet_queue: AuthoredPacketQueueConfig {
+					capacity: 25,
+					// By default only allow a single message to be queued in non-mixnode sessions.
+					// Replies won't be sent in non-mixnode sessions, and requests really need to
+					// be buffered externally anyway to handle eg retransmission. Limiting the
+					// queue to a single message means we don't need to choose a session for
+					// messages until the last moment (improving behaviour around session changes),
+					// and minimises SPACE_IN_AUTHORED_PACKET_QUEUE events.
+					multiple_messages: false,
+				},
 				mean_authored_packet_period: Duration::from_millis(1000),
 			}),
 

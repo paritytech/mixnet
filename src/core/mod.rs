@@ -184,7 +184,7 @@ fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> D
 	let request_len = session.authored_packet_queue.len();
 	// Assume that the destination mixnode is using the same configuration as us
 	let reply_period = config.mixnode_session.mean_authored_packet_period.div_f64(rate_mul);
-	let reply_len = config.mixnode_session.authored_packet_queue_capacity; // Worst case
+	let reply_len = config.mixnode_session.authored_packet_queue.capacity; // Worst case
 
 	// The delays between authored packet queue pops follow an exponential distribution. The sum of
 	// n independent exponential random variables with scale s follows a gamma distribution with
@@ -222,18 +222,20 @@ fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> D
 }
 
 bitflags! {
-	/// Flags to indicate events that have occurred.
+	/// Flags to indicate events that have occurred. Note that these may be set spuriously.
 	pub struct Events: u32 {
 		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`] have changed.
-		const RESERVED_PEERS_CHANGED = 0b001;
+		const RESERVED_PEERS_CHANGED = 0b1;
 		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`] has changed.
-		const NEXT_FORWARD_PACKET_DEADLINE_CHANGED = 0b010;
+		const NEXT_FORWARD_PACKET_DEADLINE_CHANGED = 0b10;
 		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`] has changed.
 		/// The delay (and thus the effective deadline) is randomly generated according to an
 		/// exponential distribution each time the function is called, but the last returned
 		/// deadline remains valid until this bit indicates otherwise. Due to the memoryless nature
 		/// of exponential distributions, it is harmless for this bit to be set spuriously.
 		const NEXT_AUTHORED_PACKET_DEADLINE_CHANGED = 0b100;
+		/// Space has become available in an authored packet queue.
+		const SPACE_IN_AUTHORED_PACKET_QUEUE = 0b1000;
 	}
 }
 
@@ -412,7 +414,7 @@ impl Mixnet {
 		// Build Session struct
 		*session = SessionSlot::Full(Session {
 			topology,
-			authored_packet_queue: AuthoredPacketQueue::new(config.authored_packet_queue_capacity),
+			authored_packet_queue: AuthoredPacketQueue::new(config.authored_packet_queue),
 			mean_authored_packet_period: config.mean_authored_packet_period,
 			replay_filter: ReplayFilter::new(&mut rng),
 		});
@@ -654,7 +656,13 @@ impl Mixnet {
 			self.session_status
 				.phase
 				.allow_requests_and_replies(rel_session_index)
-				.then(|| session.authored_packet_queue.pop())
+				.then(|| {
+					let (packet, space) = session.authored_packet_queue.pop();
+					if space {
+						self.events |= Events::SPACE_IN_AUTHORED_PACKET_QUEUE;
+					}
+					packet
+				})
 				.flatten()
 				.or_else(|| {
 					gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Drop, &self.config)
@@ -700,8 +708,7 @@ impl Mixnet {
 		if fragment_blueprints.len() > session.authored_packet_queue.capacity() {
 			return Err(PostErr::TooManyFragments)
 		}
-		// TODO Something better than this
-		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
+		if !session.authored_packet_queue.has_space_for_message(fragment_blueprints.len()) {
 			return Err(PostErr::NotEnoughSpaceInQueue)
 		}
 
@@ -774,8 +781,7 @@ impl Mixnet {
 		if fragment_blueprints.len() > session.authored_packet_queue.capacity() {
 			return Err(PostErr::TooManyFragments)
 		}
-		// TODO Something better than this
-		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
+		if !session.authored_packet_queue.has_space_for_message(fragment_blueprints.len()) {
 			return Err(PostErr::NotEnoughSpaceInQueue)
 		}
 

@@ -98,16 +98,23 @@ impl ForwardPacketQueue {
 	}
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AuthoredPacketQueueConfig {
+	/// Maximum number of packets in the queue. Note that cover packets do not go in the queue;
+	/// they are generated on demand.
+	pub capacity: usize,
+	/// Allow packets for multiple messages in the queue?
+	pub multiple_messages: bool,
+}
+
 pub struct AuthoredPacketQueue {
-	/// Maximum number of packets in the queue. This should match the capacity of `queue`, but we
-	/// don't rely on that.
-	capacity: usize,
+	config: AuthoredPacketQueueConfig,
 	queue: VecDeque<AddressedPacket>,
 }
 
 impl AuthoredPacketQueue {
-	pub fn new(capacity: usize) -> Self {
-		Self { capacity, queue: VecDeque::with_capacity(capacity) }
+	pub fn new(config: AuthoredPacketQueueConfig) -> Self {
+		Self { config, queue: VecDeque::with_capacity(config.capacity) }
 	}
 
 	pub fn len(&self) -> usize {
@@ -115,21 +122,30 @@ impl AuthoredPacketQueue {
 	}
 
 	pub fn capacity(&self) -> usize {
-		self.capacity
+		self.config.capacity
 	}
 
-	pub fn remaining_capacity(&self) -> usize {
-		self.capacity.saturating_sub(self.queue.len())
+	pub fn has_space_for_message(&self, num_packets: usize) -> bool {
+		if self.config.multiple_messages {
+			num_packets <= self.config.capacity.saturating_sub(self.queue.len())
+		} else {
+			self.queue.is_empty() && (num_packets <= self.config.capacity)
+		}
 	}
 
 	/// Push a packet onto the queue. Should only be called if there is space in the queue (see
-	/// [`remaining_capacity`](Self::remaining_capacity)).
+	/// [`has_space_for_message`](Self::has_space_for_message)).
 	pub fn push(&mut self, packet: AddressedPacket) {
-		debug_assert!(self.queue.len() < self.capacity);
+		debug_assert!(self.queue.len() < self.config.capacity);
 		self.queue.push_back(packet);
 	}
 
-	pub fn pop(&mut self) -> Option<AddressedPacket> {
-		self.queue.pop_front()
+	/// Pop the packet at the head of the queue and return it, or, if the queue is empty, return
+	/// `None`. Also returns true if [`has_space_for_message`](Self::has_space_for_message) might
+	/// now return true where it wouldn't before.
+	pub fn pop(&mut self) -> (Option<AddressedPacket>, bool) {
+		let packet = self.queue.pop_front();
+		let space = self.config.multiple_messages || self.queue.is_empty();
+		(packet, space)
 	}
 }
