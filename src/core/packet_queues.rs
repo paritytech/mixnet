@@ -107,6 +107,13 @@ pub struct AuthoredPacketQueueConfig {
 	pub multiple_messages: bool,
 }
 
+pub enum CheckSpaceErr {
+	/// There will never be enough space.
+	Capacity,
+	/// There are too many other packets in the queue at the moment.
+	Len,
+}
+
 pub struct AuthoredPacketQueue {
 	config: AuthoredPacketQueueConfig,
 	queue: VecDeque<AddressedPacket>,
@@ -121,28 +128,30 @@ impl AuthoredPacketQueue {
 		self.queue.len()
 	}
 
-	pub fn capacity(&self) -> usize {
-		self.config.capacity
-	}
-
-	pub fn has_space_for_message(&self, num_packets: usize) -> bool {
-		if self.config.multiple_messages {
-			num_packets <= self.config.capacity.saturating_sub(self.queue.len())
+	pub fn check_space(&self, num_packets: usize) -> Result<(), CheckSpaceErr> {
+		let Some(mut max_len) = self.config.capacity.checked_sub(num_packets) else {
+			return Err(CheckSpaceErr::Capacity)
+		};
+		if !self.config.multiple_messages {
+			max_len = 0;
+		}
+		if self.queue.len() > max_len {
+			Err(CheckSpaceErr::Len)
 		} else {
-			self.queue.is_empty() && (num_packets <= self.config.capacity)
+			Ok(())
 		}
 	}
 
 	/// Push a packet onto the queue. Should only be called if there is space in the queue (see
-	/// [`has_space_for_message`](Self::has_space_for_message)).
+	/// [`check_space`](Self::check_space)).
 	pub fn push(&mut self, packet: AddressedPacket) {
 		debug_assert!(self.queue.len() < self.config.capacity);
 		self.queue.push_back(packet);
 	}
 
 	/// Pop the packet at the head of the queue and return it, or, if the queue is empty, return
-	/// `None`. Also returns true if [`has_space_for_message`](Self::has_space_for_message) might
-	/// now return true where it wouldn't before.
+	/// `None`. Also returns true if [`check_space`](Self::check_space) might now succeed where it
+	/// wouldn't before.
 	pub fn pop(&mut self) -> (Option<AddressedPacket>, bool) {
 		let packet = self.queue.pop_front();
 		let space = self.config.multiple_messages || self.queue.is_empty();

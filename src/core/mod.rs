@@ -54,7 +54,7 @@ use self::{
 	cover::{gen_cover_packet, CoverKind},
 	fragment::{fragment_blueprints, FragmentAssembler},
 	kx_store::KxStore,
-	packet_queues::{AuthoredPacketQueue, ForwardPacket, ForwardPacketQueue},
+	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacket, ForwardPacketQueue},
 	replay_filter::ReplayFilter,
 	request_builder::RequestBuilder,
 	sessions::{Session, SessionSlot, Sessions},
@@ -167,6 +167,15 @@ fn post_session(
 		// needed, we will enter the !allow_requests_and_replies if above and not get here
 		SessionSlot::Disabled => Err(PostErr::SessionDisabled(index)),
 		SessionSlot::Full(session) => Ok(session),
+	}
+}
+
+impl From<CheckSpaceErr> for PostErr {
+	fn from(value: CheckSpaceErr) -> Self {
+		match value {
+			CheckSpaceErr::Capacity => PostErr::TooManyFragments,
+			CheckSpaceErr::Len => PostErr::NotEnoughSpaceInQueue,
+		}
 	}
 }
 
@@ -705,12 +714,7 @@ impl Mixnet {
 			|destination| destination.session_index,
 		);
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
-		if fragment_blueprints.len() > session.authored_packet_queue.capacity() {
-			return Err(PostErr::TooManyFragments)
-		}
-		if !session.authored_packet_queue.has_space_for_message(fragment_blueprints.len()) {
-			return Err(PostErr::NotEnoughSpaceInQueue)
-		}
+		session.authored_packet_queue.check_space(fragment_blueprints.len())?;
 
 		// Generate the packets and push them into the queue
 		let mut rng = rand::thread_rng();
@@ -778,12 +782,7 @@ impl Mixnet {
 
 		// Grab the session and check there's room in the queue
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
-		if fragment_blueprints.len() > session.authored_packet_queue.capacity() {
-			return Err(PostErr::TooManyFragments)
-		}
-		if !session.authored_packet_queue.has_space_for_message(fragment_blueprints.len()) {
-			return Err(PostErr::NotEnoughSpaceInQueue)
-		}
+		session.authored_packet_queue.check_space(fragment_blueprints.len())?;
 
 		// Generate the packets and push them into the queue
 		for fragment_blueprint in fragment_blueprints {
