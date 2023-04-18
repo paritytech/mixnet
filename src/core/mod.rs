@@ -230,6 +230,30 @@ fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> D
 	s.mul_f64(4.92582 + (3.87809 * (n + (r * r * r * m)).sqrt()) + n + (r * m))
 }
 
+/// Metrics that can be used to estimate a request's round-trip time.
+pub struct RequestMetrics {
+	/// The maximum number of hops for any of the fragments to reach the destination, plus the
+	/// maximum number of hops for any of the SURBs to come back.
+	pub num_hops: usize,
+	/// The maximum total forwarding delay for any request fragment, plus the maximum total
+	/// forwarding delay for any SURB.
+	pub forwarding_delay: Duration,
+	/// A conservative estimate of the total delay through the authored packet queues at the source
+	/// and destination.
+	pub authored_packet_queue_delay: Duration,
+}
+
+impl RequestMetrics {
+	/// Returns a conservative estimate of the round-trip time, suitable for use as a timeout.
+	/// `per_hop_net_delay` should be a conservative estimate of the network (and processing) delay
+	/// per hop. `handling_delay` should be a conservative estimate of the time taken to handle the
+	/// request at the destination and post the reply.
+	pub fn estimate_rtt(&self, per_hop_net_delay: Duration, handling_delay: Duration) -> Duration {
+		let net_delay = per_hop_net_delay * (self.num_hops as u32);
+		self.forwarding_delay + self.authored_packet_queue_delay + net_delay + handling_delay
+	}
+}
+
 bitflags! {
 	/// Flags to indicate events that have occurred. Note that these may be set spuriously.
 	pub struct Events: u32 {
@@ -683,12 +707,6 @@ impl Mixnet {
 	/// random and (on success) the session and mixnode indices are written back to `destination`.
 	/// The message is split into fragments and each fragment is sent over a different path to the
 	/// destination.
-	///
-	/// Returns an estimate of the round-trip time. That is, the maximum time taken for any of the
-	/// fragments to reach the destination, plus the maximum time taken for any of the SURBs to
-	/// come back. The estimate assumes no network/processing delays; the caller should add
-	/// reasonable estimates for these delays on to the returned estimate. Aside from this, the
-	/// returned estimate is conservative and suitable for use as a timeout.
 	pub fn post_request(
 		&mut self,
 		destination: &mut Option<MixnodeId>,
@@ -696,7 +714,7 @@ impl Mixnet {
 		data: Scattered<u8>,
 		num_surbs: usize,
 		ns: &dyn NetworkStatus,
-	) -> Result<Duration, PostErr> {
+	) -> Result<RequestMetrics, PostErr> {
 		// Split the message into fragments
 		let fragment_blueprints = match fragment_blueprints(message_id, data, num_surbs) {
 			Some(fragment_blueprints)
@@ -725,10 +743,12 @@ impl Mixnet {
 			destination.map(|destination| destination.mixnode_index),
 		)
 		.map_err(PostErr::Topology)?;
+		let mut request_hops = 0;
 		let mut request_forwarding_delay = Delay::zero();
+		let mut reply_hops = 0;
 		let mut reply_forwarding_delay = Delay::zero();
 		for fragment_blueprint in fragment_blueprints {
-			let (packet, delay) = request_builder
+			let (packet, metrics) = request_builder
 				.build_packet(
 					&mut rng,
 					|fragment, rng| {
@@ -737,9 +757,11 @@ impl Mixnet {
 							// TODO Currently we don't clean up keystore entries on failure
 							let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
 							let num_hops = self.config.num_hops;
-							let delay =
+							let metrics =
 								request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
-							reply_forwarding_delay = max(reply_forwarding_delay, delay);
+							reply_hops = max(reply_hops, metrics.num_hops);
+							reply_forwarding_delay =
+								max(reply_forwarding_delay, metrics.forwarding_delay);
 						}
 						Ok(())
 					},
@@ -747,19 +769,24 @@ impl Mixnet {
 				)
 				.map_err(PostErr::Topology)?;
 			session.authored_packet_queue.push(packet);
-			request_forwarding_delay = max(request_forwarding_delay, delay);
+			request_hops = max(request_hops, metrics.num_hops);
+			request_forwarding_delay = max(request_forwarding_delay, metrics.forwarding_delay);
 		}
 
-		// Estimate the total delay (round-trip time)
-		let forwarding_delay = (request_forwarding_delay + reply_forwarding_delay)
-			.to_duration(self.config.mean_forwarding_delay);
-		let authored_packet_queue_delay =
-			estimate_authored_packet_queue_delay(&self.config, session);
-		let delay = forwarding_delay + authored_packet_queue_delay;
+		// Calculate metrics
+		let metrics = RequestMetrics {
+			num_hops: request_hops + reply_hops,
+			forwarding_delay: (request_forwarding_delay + reply_forwarding_delay)
+				.to_duration(self.config.mean_forwarding_delay),
+			authored_packet_queue_delay: estimate_authored_packet_queue_delay(
+				&self.config,
+				session,
+			),
+		};
 
 		*destination =
 			Some(MixnodeId { session_index, mixnode_index: request_builder.destination_index() });
-		Ok(delay)
+		Ok(metrics)
 	}
 
 	/// Post a reply message using SURBs. The session index must match the session the SURBs were

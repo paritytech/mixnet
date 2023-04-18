@@ -26,7 +26,8 @@ use super::{
 };
 use crate::core::{
 	Config, Events, KxPublicStore, Message, MessageId, Mixnet, MixnodeId, NetworkStatus,
-	PeerId as CorePeerId, PostErr, RelSessionIndex, Scattered, SessionIndex, SessionStatus, Surb,
+	PeerId as CorePeerId, PostErr, RelSessionIndex, RequestMetrics, Scattered, SessionIndex,
+	SessionStatus, Surb,
 };
 use futures::FutureExt;
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
@@ -37,7 +38,7 @@ use std::{
 	collections::{hash_map::Entry, HashMap, VecDeque},
 	sync::Arc,
 	task::{Context, Poll},
-	time::{Duration, Instant},
+	time::Instant,
 };
 
 struct Peers {
@@ -129,19 +130,13 @@ impl MixnetBehaviour {
 	/// random and (on success) the session and mixnode indices are written back to `destination`.
 	/// The message is split into fragments and each fragment is sent over a different path to the
 	/// destination.
-	///
-	/// Returns an estimate of the round-trip time. That is, the maximum time taken for any of the
-	/// fragments to reach the destination, plus the maximum time taken for any of the SURBs to
-	/// come back. The estimate assumes no network/processing delays; the caller should add
-	/// reasonable estimates for these delays on to the returned estimate. Aside from this, the
-	/// returned estimate is conservative and suitable for use as a timeout.
 	pub fn post_request(
 		&mut self,
 		destination: &mut Option<MixnodeId>,
 		message_id: &MessageId,
 		data: Scattered<u8>,
 		num_surbs: usize,
-	) -> std::result::Result<Duration, PostErr> {
+	) -> std::result::Result<RequestMetrics, PostErr> {
 		let res = self.mixnet.post_request(destination, message_id, data, num_surbs, &self.peers);
 		self.handle_core_events();
 		res
