@@ -100,6 +100,10 @@ pub struct Sessions {
 }
 
 impl Sessions {
+	pub fn is_empty(&self) -> bool {
+		self.current.is_empty() && self.prev.is_empty()
+	}
+
 	pub fn advance_by_one(&mut self) {
 		self.prev = std::mem::replace(&mut self.current, SessionSlot::Empty);
 	}

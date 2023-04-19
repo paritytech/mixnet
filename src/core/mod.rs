@@ -333,15 +333,26 @@ impl Mixnet {
 		// Shift sessions in self.sessions when current session changes
 		if self.session_status.current_index != session_status.current_index {
 			if session_status.current_index.saturating_sub(self.session_status.current_index) == 1 {
+				// This will discard any replay filter we have for the (old) previous session. The
+				// corresponding secret key will be discarded by the discard_sessions_before() call
+				// below.
 				self.sessions.advance_by_one();
-			} else {
+			} else if !self.sessions.is_empty() {
+				warn!(
+					target: self.config.log_target,
+					"Unexpected session index {}; previous session index was {}",
+					session_status.current_index,
+					self.session_status.current_index
+				);
+				// If discarding any replay filters, also discard the corresponding secret keys.
+				// This is a bit overzealous in some cases, but this should never really happen so
+				// don't worry about it too much.
 				if self.sessions.current.is_full() {
-					warn!(
-						target: self.config.log_target,
-						"Unexpected session index {}; previous session index was {}",
-						session_status.current_index,
-						self.session_status.current_index
+					self.kx_store.discard_sessions_before(
+						self.session_status.current_index.saturating_add(1),
 					);
+				} else if self.sessions.prev.is_full() {
+					self.kx_store.discard_sessions_before(self.session_status.current_index);
 				}
 				self.sessions = Default::default();
 			}
