@@ -164,6 +164,7 @@ impl Network {
 	fn post_request(
 		&mut self,
 		from_peer_index: usize,
+		session_index: SessionIndex,
 		message_id: &MessageId,
 		data: &[u8],
 		num_surbs: usize,
@@ -172,7 +173,14 @@ impl Network {
 		let from_peer_ns = PeerNetworkStatus { id: &from_peer.id, connections: &self.connections };
 		from_peer
 			.mixnet
-			.post_request(&mut None, message_id, data.into(), num_surbs, &from_peer_ns)
+			.post_request(
+				session_index,
+				&mut None,
+				message_id,
+				data.into(),
+				num_surbs,
+				&from_peer_ns,
+			)
 			.unwrap();
 	}
 }
@@ -241,6 +249,7 @@ fn basic_operation() {
 		if i == 0 {
 			network.post_request(
 				request_from_peer_index,
+				1,
 				&request_message_id,
 				&request_data,
 				num_surbs,

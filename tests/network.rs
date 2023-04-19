@@ -34,7 +34,7 @@ use libp2p_swarm::{Swarm, SwarmEvent};
 use libp2p_tcp::{async_io::Transport as TcpTransport, Config as TcpConfig};
 use mixnet::{
 	core::{
-		Config, KxPublicStore, Message, MixnodeId, RelSessionIndex, SessionPhase, SessionStatus,
+		Config, KxPublicStore, Message, RelSessionIndex, SessionPhase, SessionStatus,
 		MESSAGE_ID_SIZE,
 	},
 	network::{MixnetBehaviour, MixnetEvent, Mixnode},
@@ -181,13 +181,13 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let log_target_0 = log_target(0);
 	for np in 1..num_peers {
 		log::trace!(target: log_target_0, "Sending {message_count} messages to mixnode {np}");
-		let mut destination =
-			Some(MixnodeId { session_index: 0, mixnode_index: np.try_into().unwrap() });
+		let mut destination_index = Some(np.try_into().unwrap());
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
 				.post_request(
-					&mut destination,
+					0,
+					&mut destination_index,
 					&rand::thread_rng().gen(),
 					source_message.as_slice().into(),
 					if with_surb { 1 } else { 0 },

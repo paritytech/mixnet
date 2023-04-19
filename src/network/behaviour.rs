@@ -25,7 +25,7 @@ use super::{
 	peer_id::{from_core_peer_id, to_core_peer_id},
 };
 use crate::core::{
-	Config, Events, KxPublicStore, Message, MessageId, Mixnet, MixnodeId, NetworkStatus,
+	Config, Events, KxPublicStore, Message, MessageId, Mixnet, MixnodeIndex, NetworkStatus,
 	PeerId as CorePeerId, PostErr, RelSessionIndex, RequestMetrics, Scattered, SessionIndex,
 	SessionStatus, Surb,
 };
@@ -126,18 +126,25 @@ impl MixnetBehaviour {
 		self.handle_core_events();
 	}
 
-	/// Post a request message. If `destination` is `None`, a destination mixnode is chosen at
-	/// random and (on success) the session and mixnode indices are written back to `destination`.
-	/// The message is split into fragments and each fragment is sent over a different path to the
-	/// destination.
+	/// Post a request message. If `destination_index` is [`None`], a destination mixnode is chosen
+	/// at random and (on success) its index is written back to `destination_index`. The message is
+	/// split into fragments and each fragment is sent over a different path to the destination.
 	pub fn post_request(
 		&mut self,
-		destination: &mut Option<MixnodeId>,
+		session_index: SessionIndex,
+		destination_index: &mut Option<MixnodeIndex>,
 		message_id: &MessageId,
 		data: Scattered<u8>,
 		num_surbs: usize,
 	) -> std::result::Result<RequestMetrics, PostErr> {
-		let res = self.mixnet.post_request(destination, message_id, data, num_surbs, &self.peers);
+		let res = self.mixnet.post_request(
+			session_index,
+			destination_index,
+			message_id,
+			data,
+			num_surbs,
+			&self.peers,
+		);
 		self.handle_core_events();
 		res
 	}

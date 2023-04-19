@@ -80,15 +80,6 @@ use std::{
 	time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy)]
-/// A session index and the index of a mixnode in the session.
-pub struct MixnodeId {
-	/// The session index.
-	pub session_index: SessionIndex,
-	/// Index of the mixnode in the list for the session with index `session_index`.
-	pub mixnode_index: MixnodeIndex,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 /// A message received over the mixnet.
 pub enum Message {
@@ -703,13 +694,13 @@ impl Mixnet {
 		}
 	}
 
-	/// Post a request message. If `destination` is [`None`], a destination mixnode is chosen at
-	/// random and (on success) the session and mixnode indices are written back to `destination`.
-	/// The message is split into fragments and each fragment is sent over a different path to the
-	/// destination.
+	/// Post a request message. If `destination_index` is [`None`], a destination mixnode is chosen
+	/// at random and (on success) its index is written back to `destination_index`. The message is
+	/// split into fragments and each fragment is sent over a different path to the destination.
 	pub fn post_request(
 		&mut self,
-		destination: &mut Option<MixnodeId>,
+		session_index: SessionIndex,
+		destination_index: &mut Option<MixnodeIndex>,
 		message_id: &MessageId,
 		data: Scattered<u8>,
 		num_surbs: usize,
@@ -724,25 +715,14 @@ impl Mixnet {
 		};
 
 		// Grab the session and check there's room in the queue
-		let session_index = destination.map_or_else(
-			|| {
-				self.session_status.phase.default_request_session() +
-					self.session_status.current_index
-			},
-			|destination| destination.session_index,
-		);
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
 		session.authored_packet_queue.check_space(fragment_blueprints.len())?;
 
 		// Generate the packets and push them into the queue
 		let mut rng = rand::thread_rng();
-		let request_builder = RequestBuilder::new(
-			&mut rng,
-			&session.topology,
-			ns,
-			destination.map(|destination| destination.mixnode_index),
-		)
-		.map_err(PostErr::Topology)?;
+		let request_builder =
+			RequestBuilder::new(&mut rng, &session.topology, ns, *destination_index)
+				.map_err(PostErr::Topology)?;
 		let mut request_hops = 0;
 		let mut request_forwarding_delay = Delay::zero();
 		let mut reply_hops = 0;
@@ -784,8 +764,7 @@ impl Mixnet {
 			),
 		};
 
-		*destination =
-			Some(MixnodeId { session_index, mixnode_index: request_builder.destination_index() });
+		*destination_index = Some(request_builder.destination_index());
 		Ok(metrics)
 	}
 
