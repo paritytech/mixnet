@@ -79,15 +79,15 @@ impl ForwardPacketQueue {
 		self.queue.peek().map(|packet| packet.deadline)
 	}
 
-	pub fn remaining_capacity(&self) -> usize {
-		self.capacity.saturating_sub(self.queue.len())
+	pub fn has_space(&self) -> bool {
+		self.queue.len() < self.capacity
 	}
 
 	/// Insert a packet into the queue. Returns true iff the deadline of the item at the head of
 	/// the queue changed. Should only be called if there is space in the queue (see
-	/// [`remaining_capacity`](Self::remaining_capacity)).
+	/// [`has_space`](Self::has_space)).
 	pub fn insert(&mut self, packet: ForwardPacket) -> bool {
-		debug_assert!(self.queue.len() < self.capacity);
+		debug_assert!(self.has_space());
 		let prev_deadline = self.next_deadline();
 		self.queue.push(packet);
 		self.next_deadline() != prev_deadline

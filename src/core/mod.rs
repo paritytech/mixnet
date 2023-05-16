@@ -525,7 +525,7 @@ impl Mixnet {
 					return None
 				}
 
-				if self.forward_packet_queue.remaining_capacity() == 0 {
+				if !self.forward_packet_queue.has_space() {
 					warn!(target: self.config.log_target, "Dropped forward packet; forward queue full");
 					return None
 				}
