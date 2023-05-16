@@ -144,15 +144,12 @@ fn post_session(
 	status: SessionStatus,
 	index: SessionIndex,
 ) -> Result<&mut Session, PostErr> {
-	let rel_index = match status.current_index.wrapping_sub(index) {
-		0 => RelSessionIndex::Current,
-		1 => RelSessionIndex::Prev,
-		_ =>
-			return Err(if index < status.current_index {
-				PostErr::SessionNoLongerActive(index)
-			} else {
-				PostErr::SessionNotActiveYet(index)
-			}),
+	let Some(rel_index) = RelSessionIndex::from_session_index(index, status.current_index) else {
+		return Err(if index < status.current_index {
+			PostErr::SessionNoLongerActive(index)
+		} else {
+			PostErr::SessionNotActiveYet(index)
+		})
 	};
 	if !status.phase.allow_requests_and_replies(rel_index) {
 		return Err(match rel_index {

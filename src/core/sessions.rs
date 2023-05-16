@@ -52,6 +52,21 @@ pub enum RelSessionIndex {
 	Prev,
 }
 
+impl RelSessionIndex {
+	/// Returns the `RelSessionIndex` corresponding to `session_index`, or `None` if there is no
+	/// such `RelSessionIndex`.
+	pub fn from_session_index(
+		session_index: SessionIndex,
+		current_session_index: SessionIndex,
+	) -> Option<Self> {
+		match current_session_index.checked_sub(session_index) {
+			Some(0) => Some(Self::Current),
+			Some(1) => Some(Self::Prev),
+			_ => None,
+		}
+	}
+}
+
 impl Add<SessionIndex> for RelSessionIndex {
 	type Output = SessionIndex;
 
