@@ -125,7 +125,7 @@ pub enum PostErr {
 	NotEnoughSpaceInQueue,
 	/// Topology error.
 	#[error("Topology error: {0}")]
-	Topology(TopologyErr),
+	Topology(#[from] TopologyErr),
 	/// Bad SURB.
 	#[error("Bad SURB")]
 	BadSurb,
@@ -732,33 +732,29 @@ impl Mixnet {
 		// Generate the packets and push them into the queue
 		let mut rng = rand::thread_rng();
 		let request_builder =
-			RequestBuilder::new(&mut rng, &session.topology, ns, *destination_index)
-				.map_err(PostErr::Topology)?;
+			RequestBuilder::new(&mut rng, &session.topology, ns, *destination_index)?;
 		let mut request_hops = 0;
 		let mut request_forwarding_delay = Delay::zero();
 		let mut reply_hops = 0;
 		let mut reply_forwarding_delay = Delay::zero();
 		for fragment_blueprint in fragment_blueprints {
-			let (packet, metrics) = request_builder
-				.build_packet(
-					&mut rng,
-					|fragment, rng| {
-						fragment_blueprint.write_except_surbs(fragment);
-						for surb in fragment_blueprint.surbs(fragment) {
-							// TODO Currently we don't clean up keystore entries on failure
-							let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
-							let num_hops = self.config.num_hops;
-							let metrics =
-								request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
-							reply_hops = max(reply_hops, metrics.num_hops);
-							reply_forwarding_delay =
-								max(reply_forwarding_delay, metrics.forwarding_delay);
-						}
-						Ok(())
-					},
-					self.config.num_hops,
-				)
-				.map_err(PostErr::Topology)?;
+			let (packet, metrics) = request_builder.build_packet(
+				&mut rng,
+				|fragment, rng| {
+					fragment_blueprint.write_except_surbs(fragment);
+					for surb in fragment_blueprint.surbs(fragment) {
+						// TODO Currently we don't clean up keystore entries on failure
+						let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
+						let num_hops = self.config.num_hops;
+						let metrics = request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
+						reply_hops = max(reply_hops, metrics.num_hops);
+						reply_forwarding_delay =
+							max(reply_forwarding_delay, metrics.forwarding_delay);
+					}
+					Ok(())
+				},
+				self.config.num_hops,
+			)?;
 			session.authored_packet_queue.push(packet);
 			request_hops = max(request_hops, metrics.num_hops);
 			request_forwarding_delay = max(request_forwarding_delay, metrics.forwarding_delay);
@@ -810,10 +806,7 @@ impl Mixnet {
 				&surbs.pop().expect("Checked number of SURBs above"),
 			)
 			.ok_or(PostErr::BadSurb)?;
-			let peer_id = session
-				.topology
-				.mixnode_index_to_peer_id(mixnode_index)
-				.map_err(PostErr::Topology)?;
+			let peer_id = session.topology.mixnode_index_to_peer_id(mixnode_index)?;
 			session.authored_packet_queue.push(AddressedPacket { peer_id, packet });
 		}
 
