@@ -173,7 +173,7 @@ pub enum RouteKind {
 	Loop,
 }
 
-struct UsedIndices(ArrayVec<MixnodeIndex, MAX_HOPS>);
+struct UsedIndices(ArrayVec<MixnodeIndex, { MAX_HOPS + 1 }>);
 
 impl UsedIndices {
 	fn new() -> Self {
