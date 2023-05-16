@@ -29,8 +29,8 @@ pub fn kx_public(packet: &Packet) -> &KxPublic {
 	array_ref![packet, 0, KX_PUBLIC_SIZE]
 }
 
-#[derive(Debug, PartialEq, Eq)]
 /// Action to take with a peeled packet.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Action {
 	/// The packet in `out` should be forwarded to `target` after `delay`.
 	ForwardTo { target: Target, delay: Delay },

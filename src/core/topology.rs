@@ -29,8 +29,8 @@ use multiaddr::Multiaddr;
 use rand::{seq::SliceRandom, CryptoRng, Rng};
 use std::cmp::{max, min};
 
-#[derive(Clone)]
 /// Key-exchange public key, peer ID, and external addresses for a mixnode.
+#[derive(Clone)]
 pub struct Mixnode {
 	/// Key-exchange public key for the mixnode.
 	pub kx_public: KxPublic,
@@ -48,17 +48,17 @@ enum LocalNode {
 	NonMixnode(Vec<MixnodeIndex>),
 }
 
-#[derive(Debug, thiserror::Error)]
 /// Topology error.
+#[derive(Debug, thiserror::Error)]
 pub enum TopologyErr {
-	#[error("Bad mixnode index ({0})")]
 	/// An out-of-range mixnode index was encountered.
+	#[error("Bad mixnode index ({0})")]
 	BadMixnodeIndex(MixnodeIndex),
-	#[error("Too few mixnodes; this should have been caught earlier")]
 	/// There aren't enough mixnodes.
+	#[error("Too few mixnodes; this should have been caught earlier")]
 	TooFewMixnodes,
-	#[error("The local node has not managed to connect to any gateway mixnodes")]
 	/// The local node has not managed to connect to any gateway mixnodes.
+	#[error("The local node has not managed to connect to any gateway mixnodes")]
 	NoConnectedGatewayMixnodes,
 }
 

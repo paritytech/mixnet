@@ -18,9 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#[derive(Clone, Copy)]
 /// A concatenation of multiple slices. The slices are not copied until
 /// [`copy_to_slice`](Self::copy_to_slice) or [`to_vec`](Self::to_vec) is called.
+#[derive(Clone, Copy)]
 pub struct Scattered<'a, T> {
 	len: usize,
 	first_slice: &'a [T],

@@ -80,8 +80,8 @@ use std::{
 	time::{Duration, Instant},
 };
 
-#[derive(Debug, PartialEq, Eq)]
 /// A message received over the mixnet.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Message {
 	/// A request from another node.
 	Request {
@@ -102,32 +102,32 @@ pub enum Message {
 	},
 }
 
-#[derive(Debug, thiserror::Error)]
 /// Request/reply posting error.
+#[derive(Debug, thiserror::Error)]
 pub enum PostErr {
-	#[error("Message would need to be split into too many fragments")]
 	/// Message contents too large or too many SURBs.
+	#[error("Message would need to be split into too many fragments")]
 	TooManyFragments,
-	#[error("Session {0} is no longer active")]
 	/// The session is no longer active.
+	#[error("Session {0} is no longer active")]
 	SessionNoLongerActive(SessionIndex),
-	#[error("Session {0} is not active yet")]
 	/// The session is not active yet.
+	#[error("Session {0} is not active yet")]
 	SessionNotActiveYet(SessionIndex),
-	#[error("Mixnodes not yet known for session {0}")]
 	/// Mixnodes not yet known for the session.
+	#[error("Mixnodes not yet known for session {0}")]
 	SessionEmpty(SessionIndex),
-	#[error("Mixnet disabled for session {0}")]
 	/// Mixnet disabled for the session.
+	#[error("Mixnet disabled for session {0}")]
 	SessionDisabled(SessionIndex),
-	#[error("There is not enough space in the authored packet queue")]
 	/// Not enough space in the authored packet queue.
+	#[error("There is not enough space in the authored packet queue")]
 	NotEnoughSpaceInQueue,
-	#[error("Topology error: {0}")]
 	/// Topology error.
+	#[error("Topology error: {0}")]
 	Topology(TopologyErr),
-	#[error("Bad SURB")]
 	/// Bad SURB.
+	#[error("Bad SURB")]
 	BadSurb,
 }
 

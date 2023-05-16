@@ -23,9 +23,9 @@
 use super::packet::{PeerId, RawMixnodeIndex, MAX_MIXNODE_INDEX};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// The index of a mixnode in a session's mixnode list. The index is always <=
 /// [`MAX_MIXNODE_INDEX`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MixnodeIndex(RawMixnodeIndex);
 
 impl MixnodeIndex {

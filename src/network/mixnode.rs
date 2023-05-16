@@ -22,8 +22,8 @@ use super::peer_id::{to_core_peer_id, INVALID_CORE_PEER_ID};
 use crate::core::{KxPublic, Mixnode as CoreMixnode};
 use libp2p_core::{Multiaddr, PeerId};
 
-#[derive(Clone)]
 /// Just like `CoreMixnode` but with a libp2p peer ID instead of a mixnet peer ID.
+#[derive(Clone)]
 pub struct Mixnode {
 	/// Key-exchange public key for the mixnode.
 	pub kx_public: KxPublic,

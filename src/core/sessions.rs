@@ -43,8 +43,8 @@ pub struct Session {
 /// Absolute session index.
 pub type SessionIndex = u32;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 /// Relative session index.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RelSessionIndex {
 	/// The current session.
 	Current,
@@ -154,8 +154,8 @@ impl IndexMut<RelSessionIndex> for Sessions {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Each session should progress through these phases in order.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SessionPhase {
 	/// Connect to the mixnode set for the current session, but only attempt to forward traffic to
 	/// it.
@@ -206,8 +206,8 @@ impl SessionPhase {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 /// The index and phase of the current session.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SessionStatus {
 	/// Index of the current session.
 	pub current_index: SessionIndex,

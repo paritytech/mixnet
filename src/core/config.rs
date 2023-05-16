@@ -23,9 +23,9 @@
 use super::{packet_queues::AuthoredPacketQueueConfig, sphinx::MAX_HOPS};
 use std::time::Duration;
 
-#[derive(Clone, Debug)]
 /// Configuration that can vary between sessions depending on whether the local node is a mixnode
 /// or not.
+#[derive(Clone, Debug)]
 pub struct SessionConfig {
 	/// Authored packet queue configuration.
 	pub authored_packet_queue: AuthoredPacketQueueConfig,
@@ -38,8 +38,8 @@ pub struct SessionConfig {
 	pub mean_authored_packet_period: Duration,
 }
 
-#[derive(Clone, Debug)]
 /// Mixnet configuration.
+#[derive(Clone, Debug)]
 pub struct Config {
 	/// The target for log messages.
 	pub log_target: &'static str,
