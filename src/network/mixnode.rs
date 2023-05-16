@@ -20,7 +20,8 @@
 
 use super::peer_id::{to_core_peer_id, INVALID_CORE_PEER_ID};
 use crate::core::{KxPublic, Mixnode as CoreMixnode};
-use libp2p_core::{Multiaddr, PeerId};
+use libp2p_core::PeerId;
+use multiaddr::{multiaddr, Multiaddr, Protocol};
 
 /// Just like `CoreMixnode` but with a libp2p peer ID instead of a mixnet peer ID.
 #[derive(Clone)]
@@ -34,6 +35,42 @@ pub struct Mixnode {
 }
 
 impl Mixnode {
+	/// Modify [`external_addresses`](Self::external_addresses) such that there is at least one
+	/// address and the final component of each address matches [`peer_id`](Self::peer_id).
+	pub fn fixup_external_addresses(&mut self, log_target: &'static str) {
+		// Ensure the final component of each address matches peer_id
+		self.external_addresses
+			.retain_mut(|addr| match PeerId::try_from_multiaddr(addr) {
+				Some(peer_id) if peer_id == self.peer_id => true,
+				Some(_) => {
+					log::error!(
+						target: log_target,
+						"Mixnode address {} does not match mixnode peer ID {}, ignoring",
+						addr,
+						self.peer_id
+					);
+					false
+				},
+				None if matches!(addr.iter().last(), Some(Protocol::P2p(_))) => {
+					log::error!(
+						target: log_target,
+						"Mixnode address {} has unrecognised P2P protocol, ignoring",
+						addr
+					);
+					false
+				},
+				None => {
+					addr.push(Protocol::P2p(*self.peer_id.as_ref()));
+					true
+				},
+			});
+
+		// If there are no external addresses, insert one consisting of just the peer ID
+		if self.external_addresses.is_empty() {
+			self.external_addresses.push(multiaddr!(P2p(*self.peer_id.as_ref())));
+		}
+	}
+
 	/// Convert to a `CoreMixnode`. The peer ID conversion may fail; in this case, an error message
 	/// is logged, but a `CoreMixnode` is still returned, with `peer_id` set to
 	/// [`INVALID_CORE_PEER_ID`].
@@ -56,5 +93,36 @@ impl Mixnode {
 			}),
 			external_addresses: self.external_addresses,
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use multiaddr::multihash::Multihash;
+
+	#[test]
+	fn fixup_external_addresses() {
+		let peer_id = PeerId::random();
+		let mut mixnode =
+			Mixnode { kx_public: Default::default(), peer_id, external_addresses: Vec::new() };
+		mixnode.fixup_external_addresses("mixnet");
+		assert_eq!(mixnode.external_addresses, vec![multiaddr!(P2p(*peer_id.as_ref()))]);
+
+		let other_peer_id = PeerId::random();
+		mixnode.external_addresses = vec![
+			multiaddr!(Tcp(0u16), P2p(*peer_id.as_ref())),
+			multiaddr!(Tcp(1u16), P2p(*other_peer_id.as_ref())),
+			multiaddr!(Tcp(2u16), P2p(Multihash::wrap(999, &[1, 2, 3]).unwrap())),
+			multiaddr!(Tcp(3u16)),
+		];
+		mixnode.fixup_external_addresses("mixnet");
+		assert_eq!(
+			mixnode.external_addresses,
+			vec![
+				multiaddr!(Tcp(0u16), P2p(*peer_id.as_ref())),
+				multiaddr!(Tcp(3u16), P2p(*peer_id.as_ref())),
+			]
+		);
 	}
 }
