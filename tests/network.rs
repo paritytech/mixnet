@@ -204,22 +204,21 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			let mut received = 0;
 			loop {
 				match swarm.select_next_some().await {
-					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request {
-						session_index,
-						id: _,
-						data,
-						mut surbs,
-					})) => {
+					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request(mut message))) => {
 						received += 1;
-						log::trace!(target: log_target, "Decoded message {} bytes", data.len());
-						assert_eq!(source_message, &data);
-						assert_eq!(surbs.is_empty(), !with_surb);
-						if !surbs.is_empty() {
+						log::trace!(
+							target: log_target,
+							"Decoded message {} bytes",
+							message.data.len()
+						);
+						assert_eq!(source_message, &message.data);
+						assert_eq!(message.surbs.is_empty(), !with_surb);
+						if !message.surbs.is_empty() {
 							swarm
 								.behaviour_mut()
 								.post_reply(
-									&mut surbs,
-									session_index,
+									&mut message.surbs,
+									message.session_index,
 									&[0; MESSAGE_ID_SIZE],
 									[42].as_slice().into(),
 								)
@@ -229,7 +228,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 							return swarm
 						}
 					},
-					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply { .. })) =>
+					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply(_))) =>
 						panic!("only peer 0 should receive this"),
 					_ => {},
 				}
@@ -243,12 +242,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let spin_future = async move {
 		loop {
 			match peer0_swarm.select_next_some().await {
-				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request { .. })) =>
+				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request(_))) =>
 					panic!("peer 0 expect a reply only"),
-				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply { data })) => {
+				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply(message))) => {
 					assert!(with_surb);
 					done_surbs -= 1;
-					assert_eq!(&data, &[42]);
+					assert_eq!(&message.data, &[42]);
 				},
 				_ => {},
 			}

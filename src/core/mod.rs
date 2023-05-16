@@ -80,26 +80,34 @@ use std::{
 	time::{Duration, Instant},
 };
 
+/// A request from another node.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RequestMessage {
+	/// Index of the session this message was received in. This session index should be used when
+	/// sending replies.
+	pub session_index: SessionIndex,
+	/// Message identifier, explicitly provided by the request sender.
+	pub id: MessageId,
+	/// The message contents.
+	pub data: Vec<u8>,
+	/// SURBs that were attached to the message. These can be used to send replies.
+	pub surbs: Vec<Surb>,
+}
+
+/// A reply to a previously sent request.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplyMessage {
+	/// The message contents.
+	pub data: Vec<u8>,
+}
+
 /// A message received over the mixnet.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Message {
 	/// A request from another node.
-	Request {
-		/// Index of the session this message was received in. This session index should be used
-		/// when sending replies.
-		session_index: SessionIndex,
-		/// Message identifier, explicitly provided by the request sender.
-		id: MessageId,
-		/// The message contents.
-		data: Vec<u8>,
-		/// SURBs that were attached to the message. These can be used to send replies.
-		surbs: Vec<Surb>,
-	},
+	Request(RequestMessage),
 	/// A reply to a previously sent request.
-	Reply {
-		/// The message contents.
-		data: Vec<u8>,
-	},
+	Reply(ReplyMessage),
 }
 
 /// Request/reply posting error.
@@ -561,11 +569,13 @@ impl Mixnet {
 
 				// Add to fragment assembler and return any completed message
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
-					|message| Message::Request {
-						session_index,
-						id: message.id,
-						data: message.data,
-						surbs: message.surbs,
+					|message| {
+						Message::Request(RequestMessage {
+							session_index,
+							id: message.id,
+							data: message.data,
+							surbs: message.surbs,
+						})
 					},
 				)
 			},
@@ -598,7 +608,7 @@ impl Mixnet {
 							warn!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
-						Message::Reply { data: message.data }
+						Message::Reply(ReplyMessage { data: message.data })
 					},
 				)
 			},

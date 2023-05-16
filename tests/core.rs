@@ -220,19 +220,19 @@ fn basic_operation() {
 		network.tick(|peer_index, peer, message| {
 			match step {
 				0 => {
-					let Message::Request { session_index, id, data, mut surbs } = message else {
+					let Message::Request(mut message) = message else {
 						panic!("Expected request message")
 					};
-					assert_eq!(session_index, 1);
-					assert_eq!(id, request_message_id);
-					assert_eq!(data, request_data);
-					assert_eq!(surbs.len(), num_surbs);
+					assert_eq!(message.session_index, 1);
+					assert_eq!(message.id, request_message_id);
+					assert_eq!(message.data, request_data);
+					assert_eq!(message.surbs.len(), num_surbs);
 					let mut reply_id = [0; MESSAGE_ID_SIZE];
 					rng.fill_bytes(&mut reply_id);
 					peer.mixnet
 						.post_reply(
-							&mut surbs,
-							session_index,
+							&mut message.surbs,
+							message.session_index,
 							&reply_id,
 							reply_data.as_slice().into(),
 						)
@@ -240,7 +240,10 @@ fn basic_operation() {
 				},
 				1 => {
 					assert_eq!(peer_index, request_from_peer_index);
-					assert_eq!(message, Message::Reply { data: reply_data.clone() });
+					let Message::Reply(message) = message else {
+						panic!("Expected reply message")
+					};
+					assert_eq!(message.data, reply_data);
 				},
 				_ => panic!("Unexpected message"),
 			}
