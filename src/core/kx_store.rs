@@ -53,17 +53,32 @@ struct KxPublicStoreInner {
 	pending_session_secrets: Vec<SessionSecret>,
 }
 
+impl KxPublicStoreInner {
+	fn insert(&mut self, index: SessionIndex, secret: Box<StaticSecret>) -> KxPublic {
+		let public: PublicKey = secret.as_ref().into();
+		let public = public.to_bytes();
+		self.session_publics.push(SessionPublic { index, public });
+		self.pending_session_secrets.push(SessionSecret { index, secret });
+		public
+	}
+}
+
 /// Provides access to public keys. Intended to be shared among multiple threads.
 pub struct KxPublicStore(Mutex<KxPublicStoreInner>);
 
 impl KxPublicStore {
-	/// Create a new `KxPublicStore`.
-	pub fn new() -> Self {
-		Self(Mutex::new(KxPublicStoreInner {
+	/// Create a new `KxPublicStore`. For testing purposes, the secret key for session 0 can be
+	/// explicitly provided; usually it is randomly generated.
+	pub fn new(session_0_secret: Option<&[u8; 32]>) -> Self {
+		let mut inner = KxPublicStoreInner {
 			discarded_sessions_before: 0,
 			session_publics: Vec::new(),
 			pending_session_secrets: Vec::new(),
-		}))
+		};
+		if let Some(secret) = session_0_secret {
+			inner.insert(0, Box::new((*secret).into()));
+		}
+		Self(Mutex::new(inner))
 	}
 
 	/// Returns the public key for the specified session, or [`None`] if the key pair was discarded
@@ -84,12 +99,7 @@ impl KxPublicStore {
 		// We box the secret to avoid leaving copies of it in memory when the SessionSecret is
 		// moved. Note that we will likely leave some copies on the stack here; I'm not aware of
 		// any good way of avoiding this.
-		let secret = Box::new(StaticSecret::new(OsRng));
-		let public: PublicKey = secret.as_ref().into();
-		let public = public.to_bytes();
-		inner.session_publics.push(SessionPublic { index, public });
-		inner.pending_session_secrets.push(SessionSecret { index, secret });
-		Some(public)
+		Some(inner.insert(index, Box::new(StaticSecret::new(OsRng))))
 	}
 
 	fn discard_sessions_before(&self, index: SessionIndex) {
@@ -104,12 +114,6 @@ impl KxPublicStore {
 	fn take_pending_session_secrets(&self) -> Vec<SessionSecret> {
 		let mut inner = self.0.lock().unwrap();
 		std::mem::take(&mut inner.pending_session_secrets)
-	}
-}
-
-impl Default for KxPublicStore {
-	fn default() -> Self {
-		Self::new()
 	}
 }
 
@@ -166,7 +170,7 @@ mod tests {
 		let their_public: PublicKey = (&their_secret).into();
 		let their_public = their_public.to_bytes();
 
-		let mut store = KxStore::new(Arc::new(KxPublicStore::new()));
+		let mut store = KxStore::new(Arc::new(KxPublicStore::new(None)));
 
 		for session_index in 0..2 {
 			let our_public = store.public().public_for_session(session_index).unwrap();
@@ -183,7 +187,7 @@ mod tests {
 
 	#[test]
 	fn session_discarding() {
-		let mut store = KxStore::new(Arc::new(KxPublicStore::new()));
+		let mut store = KxStore::new(Arc::new(KxPublicStore::new(None)));
 		let public_0 = store.public().public_for_session(0).unwrap();
 		assert_eq!(store.public().public_for_session(0), Some(public_0));
 		store.discard_sessions_before(1);

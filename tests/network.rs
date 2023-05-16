@@ -80,7 +80,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let mut transports = Vec::new();
 	for _ in 0..num_peers {
 		let (peer_id, trans) = mk_transport();
-		let kx_public_store = KxPublicStore::new();
+		let kx_public_store = KxPublicStore::new(None);
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		mixnodes.push(Mixnode {
 			kx_public: kx_public_store.public_for_session(0).unwrap(),

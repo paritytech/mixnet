@@ -79,7 +79,7 @@ impl Network {
 		let peers = (0..num_peers)
 			.map(|peer_index| {
 				let id = rng.gen();
-				let kx_public_store = Arc::new(KxPublicStore::new());
+				let kx_public_store = Arc::new(KxPublicStore::new(None));
 				let mixnet = Mixnet::new(config(peer_index), kx_public_store.clone());
 				Peer { id, kx_public_store, mixnet }
 			})
