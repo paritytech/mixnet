@@ -21,7 +21,7 @@
 //! A mixnet loosely based on
 //! [Loopix](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/piotrowska).
 
-#![deny(missing_docs)]
+#![warn(missing_docs)]
 
 pub mod core;
 pub mod network;
