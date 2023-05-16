@@ -73,7 +73,7 @@ impl Add<SessionIndex> for RelSessionIndex {
 	fn add(self, other: SessionIndex) -> Self::Output {
 		match self {
 			Self::Current => other,
-			Self::Prev => other.saturating_sub(1),
+			Self::Prev => other.checked_sub(1).expect("Session index underflow"),
 		}
 	}
 }
@@ -140,12 +140,6 @@ impl Sessions {
 		[(RelSessionIndex::Current, &mut self.current), (RelSessionIndex::Prev, &mut self.prev)]
 			.into_iter()
 			.filter_map(|(index, session)| session.as_mut_option().map(|session| (index, session)))
-	}
-}
-
-impl Default for Sessions {
-	fn default() -> Self {
-		Self { current: SessionSlot::Empty, prev: SessionSlot::Empty }
 	}
 }
 

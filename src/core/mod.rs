@@ -309,9 +309,9 @@ impl Mixnet {
 
 			session_status: SessionStatus {
 				current_index: 0,
-				phase: SessionPhase::ConnectToCurrent, // Doesn't really matter
+				phase: SessionPhase::ConnectToCurrent,
 			},
-			sessions: Default::default(),
+			sessions: Sessions { current: SessionSlot::Empty, prev: SessionSlot::Disabled },
 			kx_store: KxStore::new(kx_public_store),
 
 			forward_packet_queue,
@@ -353,27 +353,32 @@ impl Mixnet {
 				// This is a bit overzealous in some cases, but this should never really happen so
 				// don't worry about it too much.
 				if self.sessions.current.is_full() {
-					self.kx_store.discard_sessions_before(
-						self.session_status.current_index.saturating_add(1),
-					);
+					let Some(next_session_index) = self.session_status.current_index.checked_add(1) else {
+						panic!("Session index overflow")
+					};
+					self.kx_store.discard_sessions_before(next_session_index);
 				} else if self.sessions.prev.is_full() {
 					self.kx_store.discard_sessions_before(self.session_status.current_index);
 				}
-				self.sessions = Default::default();
+				self.sessions = Sessions { current: SessionSlot::Empty, prev: SessionSlot::Empty };
 			}
 		}
 
-		// Discard sessions which are no longer needed
-		if !session_status.phase.need_prev() {
+		// Discard sessions which are no longer needed. Also, avoid ever having a previous session
+		// when the current session index is 0... there is no sensible index for it.
+		if !session_status.phase.need_prev() || (session_status.current_index == 0) {
 			self.sessions.prev = SessionSlot::Disabled;
 		}
-		let min_needed_rel_session_index = if session_status.phase.need_prev() {
-			RelSessionIndex::Prev
-		} else {
-			RelSessionIndex::Current
-		};
-		self.kx_store
-			.discard_sessions_before(min_needed_rel_session_index + session_status.current_index);
+		if session_status.current_index != 0 {
+			let min_needed_rel_session_index = if session_status.phase.need_prev() {
+				RelSessionIndex::Prev
+			} else {
+				RelSessionIndex::Current
+			};
+			self.kx_store.discard_sessions_before(
+				min_needed_rel_session_index + session_status.current_index,
+			);
+		}
 
 		// For simplicity just assume these have changed. This should happen at most once a minute
 		// or so.
