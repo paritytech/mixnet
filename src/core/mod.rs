@@ -45,8 +45,8 @@ pub use self::{
 	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS,
-		MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
+		Delay, KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
+		MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
@@ -60,7 +60,7 @@ use self::{
 	sessions::{Session, SessionSlot, Sessions},
 	sphinx::{
 		complete_reply_packet, decrypt_reply_payload, kx_public, mut_payload_data, peel, Action,
-		Delay, PeelErr, PAYLOAD_DATA_SIZE, PAYLOAD_SIZE,
+		PeelErr, PAYLOAD_DATA_SIZE, PAYLOAD_SIZE,
 	},
 	surb_keystore::SurbKeystore,
 	topology::Topology,

@@ -152,7 +152,7 @@ pub fn peel(
 			};
 
 			// Determine the forwarding delay
-			let delay = Delay::from_seed(sds.delay_seed());
+			let delay = Delay::exp(sds.delay_seed());
 
 			// Blind the key-exchange public key
 			*array_mut_ref![out, 0, KX_PUBLIC_SIZE] = blind_kx_public(kx_public, kx_shared_secret);
