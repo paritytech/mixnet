@@ -18,12 +18,36 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! A mixnet loosely based on
-//! [Loopix](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/piotrowska).
+use std::time::Duration;
 
-#![warn(missing_docs)]
-#![deny(unsafe_code)]
+/// Request manager configuration.
+#[derive(Clone, Debug)]
+pub struct Config {
+	/// Maximum number of requests that can be managed at once.
+	pub capacity: super::pool::Index,
 
-pub mod core;
-pub mod network;
-pub mod request_manager;
+	/// Number of different destinations to try sending a request to before giving up.
+	pub num_destinations: u32,
+	/// Number of times to retry a destination after timing out before moving on to the next
+	/// destination. Must not be 0.
+	pub num_retries_per_destination: u32,
+	/// Number of copies of the message to post each time we send a request. Must not be 0.
+	pub num_posts_per_retry: u32,
+
+	/// Conservative estimate of the network (and processing) delay per hop.
+	pub per_hop_net_delay: Duration,
+}
+
+impl Default for Config {
+	fn default() -> Self {
+		Self {
+			capacity: 20,
+
+			num_destinations: 3,
+			num_retries_per_destination: 2,
+			num_posts_per_retry: 2,
+
+			per_hop_net_delay: Duration::from_millis(300),
+		}
+	}
+}
