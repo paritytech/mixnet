@@ -28,7 +28,7 @@ use super::{
 	util::default_boxed_array,
 };
 use arrayvec::ArrayVec;
-use log::error;
+use log::warn;
 use rand::{CryptoRng, Rng};
 
 pub enum CoverKind {
@@ -75,7 +75,7 @@ pub fn gen_cover_packet(
 	match gen() {
 		Ok(packet) => Some(packet),
 		Err(err) => {
-			error!(target: config.log_target, "Failed to generate cover packet: {err}");
+			warn!(target: config.log_target, "Failed to generate cover packet: {err}");
 			None
 		},
 	}

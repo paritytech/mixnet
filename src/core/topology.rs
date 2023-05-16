@@ -27,7 +27,10 @@ use arrayvec::ArrayVec;
 use either::Either;
 use multiaddr::Multiaddr;
 use rand::{seq::SliceRandom, CryptoRng, Rng};
-use std::cmp::{max, min};
+use std::{
+	cmp::{max, min},
+	fmt,
+};
 
 /// Key-exchange public key, peer ID, and external addresses for a mixnode.
 #[derive(Clone)]
@@ -150,6 +153,25 @@ impl Topology {
 		match target {
 			Target::MixnodeIndex(index) => self.mixnode_index_to_peer_id(*index),
 			Target::PeerId(peer_id) => Ok(*peer_id),
+		}
+	}
+}
+
+impl fmt::Display for Topology {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		match &self.local_node {
+			LocalNode::Mixnode(local_index) => write!(fmt, "Local node is mixnode {local_index}"),
+			LocalNode::NonMixnode(gateway_indices) => {
+				write!(fmt, "Local node is not a mixnode; gateway mixnodes are ")?;
+				for (i, gateway_index) in gateway_indices.iter().enumerate() {
+					if i == 0 {
+						gateway_index.fmt(fmt)?;
+					} else {
+						write!(fmt, ", {gateway_index}")?;
+					}
+				}
+				Ok(())
+			},
 		}
 	}
 }

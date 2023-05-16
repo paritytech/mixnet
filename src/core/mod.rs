@@ -70,7 +70,7 @@ use arrayref::{array_mut_ref, array_ref};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use either::Either;
-use log::{error, warn};
+use log::{debug, error, info, warn};
 use multiaddr::Multiaddr;
 use rand::Rng;
 use std::{
@@ -386,6 +386,8 @@ impl Mixnet {
 			Events::RESERVED_PEERS_CHANGED | Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		self.session_status = session_status;
+
+		info!(target: self.config.log_target, "Session status changed: {session_status}");
 	}
 
 	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
@@ -411,6 +413,7 @@ impl Mixnet {
 			return
 		}
 
+		let session_index = rel_session_index + self.session_status.current_index;
 		let mut rng = rand::thread_rng();
 
 		// Build Topology struct
@@ -427,15 +430,14 @@ impl Mixnet {
 		if mixnodes.len() > max_mixnodes {
 			warn!(
 				target: self.config.log_target,
-				"Too many mixnodes ({}, max {max_mixnodes}); ignoring excess",
+				"Session {session_index}: Too many mixnodes ({}, max {max_mixnodes}); ignoring excess",
 				mixnodes.len()
 			);
 			mixnodes.truncate(max_mixnodes);
 		}
-		let session_index = rel_session_index + self.session_status.current_index;
 		let Some(local_kx_public) = self.kx_store.public().public_for_session(session_index) else {
 			error!(target: self.config.log_target,
-				"Key-exchange keys for session {session_index} discarded already; \
+				"Session {session_index}: Key-exchange keys discarded already; \
 				mixnet will not be available");
 			*session = SessionSlot::Disabled;
 			return
@@ -450,11 +452,16 @@ impl Mixnet {
 			match &self.config.non_mixnode_session {
 				Some(config) => config,
 				None => {
+					info!(target: self.config.log_target,
+						"Session {session_index}: Local node is not a mixnode; \
+						disabling mixnet as per configuration");
 					*session = SessionSlot::Disabled;
 					return
 				},
 			}
 		};
+
+		info!(target: self.config.log_target, "Session {session_index}: {topology}");
 
 		// Build Session struct
 		*session = SessionSlot::Full(Session {
@@ -506,7 +513,9 @@ impl Mixnet {
 
 		let (action, session_index, session) = match res {
 			None => {
-				error!(
+				// This will usually get hit quite a bit on session changeover after we discard the
+				// keys for the previous session
+				debug!(
 					target: self.config.log_target,
 					"Failed to peel packet; either bad MAC or unknown secret"
 				);
@@ -591,7 +600,7 @@ impl Mixnet {
 
 				// Lookup payload encryption keys and decrypt payload
 				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
-					error!(target: self.config.log_target,
+					warn!(target: self.config.log_target,
 						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
 					return None
 				};
@@ -607,7 +616,7 @@ impl Mixnet {
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
 					|message| {
 						if !message.surbs.is_empty() {
-							warn!(target: self.config.log_target,
+							error!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
 						Message::Reply(ReplyMessage { data: message.data })

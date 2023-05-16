@@ -22,6 +22,7 @@
 
 use super::{packet_queues::AuthoredPacketQueue, replay_filter::ReplayFilter, topology::Topology};
 use std::{
+	fmt,
 	ops::{Add, Index, IndexMut},
 	time::Duration,
 };
@@ -215,6 +216,18 @@ impl SessionPhase {
 	}
 }
 
+impl fmt::Display for SessionPhase {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			Self::ConnectToCurrent => write!(fmt, "Connecting to current mixnode set"),
+			Self::CoverToCurrent => write!(fmt, "Generating cover traffic to current mixnode set"),
+			Self::RequestsToCurrent => write!(fmt, "Building requests using current mixnode set"),
+			Self::CoverToPrev => write!(fmt, "Only sending cover traffic to previous mixnode set"),
+			Self::DisconnectFromPrev => write!(fmt, "Only using current mixnode set"),
+		}
+	}
+}
+
 /// The index and phase of the current session.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SessionStatus {
@@ -222,4 +235,10 @@ pub struct SessionStatus {
 	pub current_index: SessionIndex,
 	/// Current session phase.
 	pub phase: SessionPhase,
+}
+
+impl fmt::Display for SessionStatus {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		write!(fmt, "Current index {}, phase: {}", self.current_index, self.phase)
+	}
 }
