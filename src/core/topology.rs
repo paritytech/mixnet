@@ -180,7 +180,7 @@ impl fmt::Display for Topology {
 pub trait NetworkStatus {
 	/// Returns the peer ID of the local node.
 	fn local_peer_id(&self) -> PeerId;
-	/// Returns true iff the local node is currently connected to the specified peer.
+	/// Returns `true` iff the local node is currently connected to the specified peer.
 	fn is_connected(&self, peer_id: &PeerId) -> bool;
 }
 

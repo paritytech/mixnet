@@ -83,7 +83,7 @@ impl ForwardPacketQueue {
 		self.queue.len() < self.capacity
 	}
 
-	/// Insert a packet into the queue. Returns true iff the deadline of the item at the head of
+	/// Insert a packet into the queue. Returns `true` iff the deadline of the item at the head of
 	/// the queue changed. Should only be called if there is space in the queue (see
 	/// [`has_space`](Self::has_space)).
 	pub fn insert(&mut self, packet: ForwardPacket) -> bool {
@@ -150,8 +150,8 @@ impl AuthoredPacketQueue {
 	}
 
 	/// Pop the packet at the head of the queue and return it, or, if the queue is empty, return
-	/// `None`. Also returns true if [`check_space`](Self::check_space) might now succeed where it
-	/// wouldn't before.
+	/// `None`. Also returns `true` if [`check_space`](Self::check_space) might now succeed where
+	/// it wouldn't before.
 	pub fn pop(&mut self) -> (Option<AddressedPacket>, bool) {
 		let packet = self.queue.pop_front();
 		let space = self.config.multiple_messages || self.queue.is_empty();
