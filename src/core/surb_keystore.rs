@@ -46,7 +46,7 @@ pub struct SurbKeystore {
 
 impl SurbKeystore {
 	pub fn new(capacity: usize) -> Self {
-		debug_assert!(capacity != 0);
+		debug_assert_ne!(capacity, 0);
 		Self { capacity, surb_keys: LinkedHashMap::with_capacity(capacity) }
 	}
 
