@@ -24,7 +24,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct Config {
 	/// Maximum number of requests that can be managed at once.
-	pub capacity: super::pool::Index,
+	pub capacity: usize,
 
 	/// Number of different destinations to try sending a request to before giving up.
 	pub num_destinations: u32,

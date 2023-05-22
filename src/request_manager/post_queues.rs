@@ -18,35 +18,39 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use super::{super::core::RelSessionIndex, pool::Handle};
+use super::super::core::RelSessionIndex;
 use std::collections::VecDeque;
 
-pub struct PostQueues {
+pub struct PostQueues<T> {
 	/// Post queue for the current session.
-	pub current: VecDeque<Handle>,
+	pub current: VecDeque<T>,
 	/// Post queue for the previous session.
-	pub prev: VecDeque<Handle>,
+	pub prev: VecDeque<T>,
 	/// Additional post queue for the default session (either the previous or the current session,
 	/// depending on the current session phase).
-	pub default: VecDeque<Handle>,
+	pub default: VecDeque<T>,
 }
 
-impl PostQueues {
-	pub fn new(capacity: super::pool::Index) -> Self {
+impl<T> PostQueues<T> {
+	pub fn new(capacity: usize) -> Self {
 		Self {
-			current: VecDeque::with_capacity(capacity as usize),
-			prev: VecDeque::with_capacity(capacity as usize),
-			default: VecDeque::with_capacity(capacity as usize),
+			current: VecDeque::with_capacity(capacity),
+			prev: VecDeque::with_capacity(capacity),
+			default: VecDeque::with_capacity(capacity),
 		}
 	}
 
-	pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut VecDeque<Handle>> {
+	pub fn iter(&self) -> impl Iterator<Item = &VecDeque<T>> {
+		[&self.current, &self.prev, &self.default].into_iter()
+	}
+
+	pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut VecDeque<T>> {
 		[&mut self.current, &mut self.prev, &mut self.default].into_iter()
 	}
 }
 
-impl std::ops::Index<Option<RelSessionIndex>> for PostQueues {
-	type Output = VecDeque<Handle>;
+impl<T> std::ops::Index<Option<RelSessionIndex>> for PostQueues<T> {
+	type Output = VecDeque<T>;
 
 	fn index(&self, index: Option<RelSessionIndex>) -> &Self::Output {
 		match index {
@@ -57,7 +61,7 @@ impl std::ops::Index<Option<RelSessionIndex>> for PostQueues {
 	}
 }
 
-impl std::ops::IndexMut<Option<RelSessionIndex>> for PostQueues {
+impl<T> std::ops::IndexMut<Option<RelSessionIndex>> for PostQueues<T> {
 	fn index_mut(&mut self, index: Option<RelSessionIndex>) -> &mut Self::Output {
 		match index {
 			Some(RelSessionIndex::Current) => &mut self.current,

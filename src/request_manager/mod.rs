@@ -23,14 +23,10 @@
 //! requests, and will retry posting if requests are not removed within the expected time.
 
 mod config;
-mod pool;
 mod post_queues;
 
 pub use self::config::Config;
-use self::{
-	pool::{Handle, Pool},
-	post_queues::PostQueues,
-};
+use self::post_queues::PostQueues;
 use super::core::{
 	MessageId, Mixnet, MixnodeIndex, NetworkStatus, PostErr, RelSessionIndex, Scattered,
 	SessionIndex, SessionPhase, SessionStatus,
@@ -102,13 +98,12 @@ pub struct RequestManager<R> {
 	config: Config,
 	created_at: Instant,
 	session_status: SessionStatus,
-	pool: Pool<RequestState<R>>,
 	/// `post_queues.prev` should be empty if `session_status.current_index` is 0, or if
 	/// previous-session requests are not allowed in the current phase. Similarly,
 	/// `post_queues.current` should be empty if current-session requests are not allowed in the
 	/// current phase.
-	post_queues: PostQueues,
-	retry_queue: VecDeque<Handle>,
+	post_queues: PostQueues<RequestState<R>>,
+	retry_queue: VecDeque<RequestState<R>>,
 	next_retry_deadline_changed: bool,
 }
 
@@ -123,9 +118,8 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 				current_index: 0,
 				phase: SessionPhase::ConnectToCurrent,
 			},
-			pool: Pool::new(capacity),
 			post_queues: PostQueues::new(capacity),
-			retry_queue: VecDeque::with_capacity(capacity as usize),
+			retry_queue: VecDeque::with_capacity(capacity),
 			next_retry_deadline_changed: false,
 		}
 	}
@@ -163,8 +157,8 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 			self.post_queues.default.append(&mut self.post_queues.prev);
 		}
 
-		for handle in self.post_queues.default.iter().skip(prev_default_len) {
-			self.pool[*handle].new_destination(self.created_at);
+		for state in self.post_queues.default.iter_mut().skip(prev_default_len) {
+			state.new_destination(self.created_at);
 		}
 
 		self.session_status = session_status;
@@ -176,7 +170,9 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 
 	/// Returns `true` iff there is space for another request.
 	pub fn has_space(&self) -> bool {
-		self.pool.has_space()
+		let len =
+			self.post_queues.iter().map(VecDeque::len).sum::<usize>() + self.retry_queue.len();
+		len < self.config.capacity
 	}
 
 	/// Insert a request. This should only be called if there is space (see
@@ -191,6 +187,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 	/// - The retry limit is reached. In this case, [`Request::handle_retry_limit_reached`] is
 	///   called.
 	pub fn insert(&mut self, request: R, mixnet: &mut Mixnet, ns: &dyn NetworkStatus, context: &C) {
+		debug_assert!(self.has_space());
 		let state = RequestState {
 			request,
 
@@ -204,31 +201,26 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 			destination_index: None,
 			retry_deadline: self.created_at,
 		};
-		let handle = self.pool.alloc(state).expect("Should only insert if there is space");
-		self.retry(handle, mixnet, ns, context);
+		self.retry(state, mixnet, ns, context);
 	}
 
 	/// Remove a request. Typically this would be called when a reply is received. Returns `None`
 	/// if there is no request with the given message ID.
 	pub fn remove(&mut self, message_id: &MessageId) -> Option<R> {
-		let Some((handle, _)) = self.pool.iter().find(|(_, state)| &state.message_id == message_id) else {
-			return None
-		};
-
 		for post_queue in self.post_queues.iter_mut() {
-			if let Some(i) = post_queue.iter().position(|h| *h == handle) {
-				post_queue.remove(i);
+			if let Some(i) = post_queue.iter().position(|state| &state.message_id == message_id) {
+				return Some(post_queue.remove(i).expect("i returned by position()").request)
 			}
 		}
 
-		if let Some(i) = self.retry_queue.iter().position(|h| *h == handle) {
-			self.retry_queue.remove(i);
+		if let Some(i) = self.retry_queue.iter().position(|state| &state.message_id == message_id) {
 			if i == 0 {
 				self.next_retry_deadline_changed = true;
 			}
+			return Some(self.retry_queue.remove(i).expect("i returned by position()").request)
 		}
 
-		Some(self.pool.free(handle).request)
+		None
 	}
 
 	fn process_post_queue(
@@ -254,8 +246,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		let session_index_or_default =
 			rel_session_index_or_default + self.session_status.current_index;
 
-		while let Some(handle) = self.post_queues[rel_session_index].pop_front() {
-			let state = &mut self.pool[handle];
+		while let Some(mut state) = self.post_queues[rel_session_index].pop_front() {
 			debug_assert_eq!(state.session_index, session_index);
 
 			// Attempt to post a request message
@@ -285,14 +276,13 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 					match state.posts_remaining.checked_sub(1) {
 						Some(posts_remaining) => {
 							state.posts_remaining = posts_remaining;
-							self.post_queues[Some(rel_session_index_or_default)].push_back(handle);
+							self.post_queues[Some(rel_session_index_or_default)].push_back(state);
 						},
 						None => {
-							let deadline = state.retry_deadline;
-							let i = self.retry_queue.partition_point(|handle| {
-								self.pool[*handle].retry_deadline < deadline
-							});
-							self.retry_queue.insert(i, handle);
+							let i = self
+								.retry_queue
+								.partition_point(|s| s.retry_deadline < state.retry_deadline);
+							self.retry_queue.insert(i, state);
 							if i == 0 {
 								self.next_retry_deadline_changed = true;
 							}
@@ -302,16 +292,16 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 				Err(PostErr::NotEnoughSpaceInQueue) => {
 					// In this case, nothing should have changed. Just push the request back on the
 					// front of the queue and try again later.
-					self.post_queues[rel_session_index].push_front(handle);
+					self.post_queues[rel_session_index].push_front(state);
 					break
 				},
-				Err(err) => self.pool.free(handle).request.handle_post_err(err, context),
+				Err(err) => state.request.handle_post_err(err, context),
 			}
 		}
 	}
 
-	/// Attempt to transfer messages from the internal post queues to `mixnet`. This should be
-	/// called when the
+	/// Attempt to post messages from the internal post queues to `mixnet`. This should be called
+	/// when the
 	/// [`SPACE_IN_AUTHORED_PACKET_QUEUE`](super::core::Events::SPACE_IN_AUTHORED_PACKET_QUEUE)
 	/// event fires.
 	pub fn process_post_queues(
@@ -340,15 +330,19 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		}
 	}
 
-	fn retry(&mut self, handle: Handle, mixnet: &mut Mixnet, ns: &dyn NetworkStatus, context: &C) {
-		let state = &mut self.pool[handle];
-
+	fn retry(
+		&mut self,
+		mut state: RequestState<R>,
+		mixnet: &mut Mixnet,
+		ns: &dyn NetworkStatus,
+		context: &C,
+	) {
 		debug_assert_eq!(state.posts_remaining, 0);
 		match state.retries_remaining.checked_sub(1) {
 			Some(retries_remaining) => state.retries_remaining = retries_remaining,
 			None => {
 				let Some(destinations_remaining) = state.destinations_remaining.checked_sub(1) else {
-					self.pool.free(handle).request.handle_retry_limit_reached(context);
+					state.request.handle_retry_limit_reached(context);
 					return
 				};
 				state.destinations_remaining = destinations_remaining;
@@ -373,7 +367,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		});
 
 		let empty = self.session_post_queues_empty(rel_session_index);
-		self.post_queues[rel_session_index].push_back(handle);
+		self.post_queues[rel_session_index].push_back(state);
 		if empty {
 			// There were no requests waiting. It might be possible to post immediately.
 			self.process_post_queue(rel_session_index, mixnet, ns, context);
@@ -393,7 +387,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 	/// Returns the next instant at which [`pop_next_retry`](Self::pop_next_retry) should be
 	/// called.
 	pub fn next_retry_deadline(&self) -> Option<Instant> {
-		self.retry_queue.front().map(|handle| self.pool[*handle].retry_deadline)
+		self.retry_queue.front().map(|state| state.retry_deadline)
 	}
 
 	/// Pop the next request from the internal retry queue. This should be called whenever the
@@ -405,9 +399,9 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		ns: &dyn NetworkStatus,
 		context: &C,
 	) -> bool {
-		if let Some(handle) = self.retry_queue.pop_front() {
+		if let Some(state) = self.retry_queue.pop_front() {
 			self.next_retry_deadline_changed = true;
-			self.retry(handle, mixnet, ns, context);
+			self.retry(state, mixnet, ns, context);
 			true
 		} else {
 			false
