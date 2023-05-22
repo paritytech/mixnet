@@ -60,6 +60,8 @@ pub struct Config {
 	pub forward_packet_queue_capacity: usize,
 	/// Mean forwarding delay at each mixnode. This should really be the same for all nodes!
 	pub mean_forwarding_delay: Duration,
+	/// Conservative estimate of the network (and processing) delay per hop.
+	pub per_hop_net_delay: Duration,
 
 	/// Proportion of authored packets which should be loop cover packets (as opposed to drop cover
 	/// packets or real packets). If this is not the same for all nodes, delay estimates may be
@@ -113,6 +115,7 @@ impl Default for Config {
 
 			forward_packet_queue_capacity: 300,
 			mean_forwarding_delay: Duration::from_secs(1),
+			per_hop_net_delay: Duration::from_millis(300),
 
 			loop_cover_proportion: 0.25,
 			gen_cover_packets: true,

@@ -270,7 +270,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 
 					// Extend the retry deadline
 					let handling_delay = state.request.handling_delay(&state.message_id, context);
-					let rtt = metrics.estimate_rtt(self.config.per_hop_net_delay, handling_delay);
+					let rtt = metrics.estimate_rtt(handling_delay);
 					state.retry_deadline = max(state.retry_deadline, Instant::now() + rtt);
 
 					match state.posts_remaining.checked_sub(1) {

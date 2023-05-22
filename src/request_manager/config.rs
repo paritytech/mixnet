@@ -18,8 +18,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::time::Duration;
-
 /// Request manager configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -33,9 +31,6 @@ pub struct Config {
 	pub num_retries_per_destination: u32,
 	/// Number of copies of the message to post each time we send a request. Must not be 0.
 	pub num_posts_per_retry: u32,
-
-	/// Conservative estimate of the network (and processing) delay per hop.
-	pub per_hop_net_delay: Duration,
 }
 
 impl Default for Config {
@@ -46,8 +41,6 @@ impl Default for Config {
 			num_destinations: 3,
 			num_retries_per_destination: 2,
 			num_posts_per_retry: 2,
-
-			per_hop_net_delay: Duration::from_millis(300),
 		}
 	}
 }

@@ -231,6 +231,8 @@ pub struct RequestMetrics {
 	/// The maximum number of hops for any of the fragments to reach the destination, plus the
 	/// maximum number of hops for any of the SURBs to come back.
 	pub num_hops: usize,
+	/// Conservative estimate of the network (and processing) delay per hop.
+	pub per_hop_net_delay: Duration,
 	/// The maximum total forwarding delay for any request fragment, plus the maximum total
 	/// forwarding delay for any SURB.
 	pub forwarding_delay: Duration,
@@ -241,11 +243,10 @@ pub struct RequestMetrics {
 
 impl RequestMetrics {
 	/// Returns a conservative estimate of the round-trip time, suitable for use as a timeout.
-	/// `per_hop_net_delay` should be a conservative estimate of the network (and processing) delay
-	/// per hop. `handling_delay` should be a conservative estimate of the time taken to handle the
-	/// request at the destination and post the reply.
-	pub fn estimate_rtt(&self, per_hop_net_delay: Duration, handling_delay: Duration) -> Duration {
-		let net_delay = per_hop_net_delay * (self.num_hops as u32);
+	/// `handling_delay` should be a conservative estimate of the time taken to handle the request
+	/// at the destination and post the reply.
+	pub fn estimate_rtt(&self, handling_delay: Duration) -> Duration {
+		let net_delay = self.per_hop_net_delay * (self.num_hops as u32);
 		self.forwarding_delay + self.authored_packet_queue_delay + net_delay + handling_delay
 	}
 }
@@ -784,6 +785,7 @@ impl Mixnet {
 		// Calculate metrics
 		let metrics = RequestMetrics {
 			num_hops: request_hops + reply_hops,
+			per_hop_net_delay: self.config.per_hop_net_delay,
 			forwarding_delay: (request_forwarding_delay + reply_forwarding_delay)
 				.to_duration(self.config.mean_forwarding_delay),
 			authored_packet_queue_delay: estimate_authored_packet_queue_delay(
