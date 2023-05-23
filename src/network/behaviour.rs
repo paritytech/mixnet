@@ -25,9 +25,9 @@ use super::{
 	peer_id::{from_core_peer_id, to_core_peer_id},
 };
 use crate::core::{
-	Config, Events, KxPublicStore, Message, MessageId, Mixnet, MixnodeIndex, NetworkStatus,
-	PeerId as CorePeerId, PostErr, RelSessionIndex, RequestMetrics, Scattered, SessionIndex,
-	SessionStatus, Surb,
+	Config, Events, KxPublicStore, Message, MessageId, Mixnet, MixnodeIndex, MixnodesErr,
+	NetworkStatus, PeerId as CorePeerId, PostErr, RelSessionIndex, RequestMetrics, Scattered,
+	SessionIndex, SessionStatus, Surb,
 };
 use futures::FutureExt;
 use libp2p_identity::PeerId;
@@ -111,13 +111,14 @@ impl MixnetBehaviour {
 	}
 
 	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
-	/// `Err(true)`, the session slot will be disabled, and later calls to `maybe_set_mixnodes` for
-	/// the session will return immediately. If `mixnodes()` returns `Err(false)`, the session slot
-	/// will merely remain empty, and later calls to `maybe_set_mixnodes` may succeed.
+	/// `Err(MixnodesErr::Permanent)`, the session slot will be disabled, and later calls to
+	/// `maybe_set_mixnodes` for the session will return immediately. If `mixnodes()` returns
+	/// `Err(MixnodesErr::Transient)`, the session slot will merely remain empty, and later calls to
+	/// `maybe_set_mixnodes` may succeed.
 	pub fn maybe_set_mixnodes<I>(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: &mut dyn FnMut() -> std::result::Result<I, bool>,
+		mixnodes: &mut dyn FnMut() -> std::result::Result<I, MixnodesErr>,
 	) where
 		I: Iterator<Item = Mixnode>,
 	{

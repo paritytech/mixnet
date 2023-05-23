@@ -80,6 +80,14 @@ use std::{
 	time::{Duration, Instant},
 };
 
+/// Error querying the mixnodes for a session.
+pub enum MixnodesErr {
+	/// Transient error. The query might succeed later. Do not disable the mixnet for the session.
+	Transient,
+	/// Permanent error. The query will never succeed. Disable the mixnet for the session.
+	Permanent,
+}
+
 /// A request from another node.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RequestMessage {
@@ -392,9 +400,10 @@ impl Mixnet {
 	}
 
 	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
-	/// `Err(true)`, the session slot will be disabled, and later calls to `maybe_set_mixnodes` for
-	/// the session will return immediately. If `mixnodes()` returns `Err(false)`, the session slot
-	/// will merely remain empty, and later calls to `maybe_set_mixnodes` may succeed.
+	/// `Err(MixnodesErr::Permanent)`, the session slot will be disabled, and later calls to
+	/// `maybe_set_mixnodes` for the session will return immediately. If `mixnodes()` returns
+	/// `Err(MixnodesErr::Transient)`, the session slot will merely remain empty, and later calls to
+	/// `maybe_set_mixnodes` may succeed.
 	///
 	/// The mixnode peer IDs are used for two things:
 	///
@@ -406,7 +415,7 @@ impl Mixnet {
 	pub fn maybe_set_mixnodes(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode>, bool>,
+		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode>, MixnodesErr>,
 	) {
 		// Create the Session only if the slot is empty. If the slot is disabled, don't even try.
 		let session = &mut self.sessions[rel_session_index];
@@ -420,8 +429,8 @@ impl Mixnet {
 		// Build Topology struct
 		let mut mixnodes = match mixnodes() {
 			Ok(mixnodes) => mixnodes,
-			Err(disable) => {
-				if disable {
+			Err(err) => {
+				if matches!(err, MixnodesErr::Permanent) {
 					*session = SessionSlot::Disabled;
 				}
 				return
