@@ -19,7 +19,7 @@ curve25519-dalek = "3.2.0"
 either = "1.5.3"
 futures = "0.3.25"
 futures-timer = "3.0.2"
-hashlink = "0.8.1"
+hashlink = "0.8.2"
 libp2p-core = { version = "0.39.2", default-features = false }
 libp2p-identity = { version = "0.1.2", features = ["peerid"] }
 libp2p-swarm = "0.42.2"
@@ -37,7 +37,7 @@ x25519-dalek = "1.1.1"
 
 [dev-dependencies]
 async-std = "1.12"
-env_logger = "0.9.3"
+env_logger = "0.10.0"
 itertools = "0.10.5"
 libp2p-mplex = "0.39.0"
 libp2p-noise = "0.42.2"
