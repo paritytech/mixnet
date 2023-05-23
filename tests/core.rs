@@ -24,7 +24,7 @@
 mod util;
 
 use mixnet::core::{
-	Config, Invalidated, KxPublicStore, Message, Mixnet, Mixnode, NetworkStatus, PeerId,
+	Config, Events, KxPublicStore, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
 use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
@@ -79,7 +79,7 @@ impl Network {
 		let peers = (0..num_peers)
 			.map(|peer_index| {
 				let id = rng.gen();
-				let kx_public_store = Arc::new(KxPublicStore::new());
+				let kx_public_store = Arc::new(KxPublicStore::new(None));
 				let mixnet = Mixnet::new(config(peer_index), kx_public_store.clone());
 				Peer { id, kx_public_store, mixnet }
 			})
@@ -111,17 +111,15 @@ impl Network {
 			})
 			.collect();
 		for peer in &mut self.peers {
-			peer.mixnet
-				.maybe_set_mixnodes(rel_session_index, || Ok::<_, ()>(mixnodes.clone()))
-				.unwrap();
+			peer.mixnet.maybe_set_mixnodes(rel_session_index, &mut || Ok(mixnodes.clone()));
 		}
 	}
 
 	fn tick(&mut self, mut handle_message: impl FnMut(usize, &mut Peer, Message)) {
 		let mut packets = Vec::new();
 		for peer in &mut self.peers {
-			let invalidated = peer.mixnet.take_invalidated();
-			if invalidated.contains(Invalidated::RESERVED_PEERS) {
+			let events = peer.mixnet.take_events();
+			if events.contains(Events::RESERVED_PEERS_CHANGED) {
 				self.connections.insert(
 					peer.id,
 					peer.mixnet
@@ -132,7 +130,7 @@ impl Network {
 				);
 			}
 			let ns = PeerNetworkStatus { id: &peer.id, connections: &self.connections };
-			if invalidated.contains(Invalidated::NEXT_FORWARD_PACKET_DEADLINE) &&
+			if events.contains(Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED) &&
 				peer.mixnet.next_forward_packet_deadline().is_some()
 			{
 				if let Some(packet) = peer.mixnet.pop_next_forward_packet() {
@@ -140,7 +138,7 @@ impl Network {
 					packets.push(packet);
 				}
 			}
-			if invalidated.contains(Invalidated::NEXT_AUTHORED_PACKET_DEADLINE) &&
+			if events.contains(Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED) &&
 				peer.mixnet.next_authored_packet_delay().is_some()
 			{
 				if let Some(packet) = peer.mixnet.pop_next_authored_packet(&ns) {
@@ -163,12 +161,26 @@ impl Network {
 		}
 	}
 
-	fn post_request(&mut self, from_peer_index: usize, data: &[u8], num_surbs: usize) {
+	fn post_request(
+		&mut self,
+		from_peer_index: usize,
+		session_index: SessionIndex,
+		message_id: &MessageId,
+		data: &[u8],
+		num_surbs: usize,
+	) {
 		let from_peer = &mut self.peers[from_peer_index];
 		let from_peer_ns = PeerNetworkStatus { id: &from_peer.id, connections: &self.connections };
 		from_peer
 			.mixnet
-			.post_request(&mut None, data, num_surbs, &from_peer_ns)
+			.post_request(
+				session_index,
+				&mut None,
+				message_id,
+				data.into(),
+				num_surbs,
+				&from_peer_ns,
+			)
 			.unwrap();
 	}
 }
@@ -195,11 +207,11 @@ fn basic_operation() {
 	network.maybe_set_mixnodes(RelSessionIndex::Current, 0..20);
 
 	let request_from_peer_index = 20;
+	let mut request_message_id = [0; MESSAGE_ID_SIZE];
+	rng.fill_bytes(&mut request_message_id);
 	let mut request_data = vec![0; 9999];
 	rng.fill_bytes(&mut request_data);
 	let num_surbs = 3;
-	let mut reply_message_id = [0; MESSAGE_ID_SIZE];
-	rng.fill_bytes(&mut reply_message_id);
 	let mut reply_data = vec![0; 4567];
 	rng.fill_bytes(&mut reply_data);
 
@@ -208,29 +220,43 @@ fn basic_operation() {
 		network.tick(|peer_index, peer, message| {
 			match step {
 				0 => {
-					let Message::Request { session_index, data, mut surbs } = message else {
+					let Message::Request(mut message) = message else {
 						panic!("Expected request message")
 					};
-					assert_eq!(session_index, 1);
-					assert_eq!(data, request_data);
-					assert_eq!(surbs.len(), num_surbs);
+					assert_eq!(message.session_index, 1);
+					assert_eq!(message.id, request_message_id);
+					assert_eq!(message.data, request_data);
+					assert_eq!(message.surbs.len(), num_surbs);
+					let mut reply_id = [0; MESSAGE_ID_SIZE];
+					rng.fill_bytes(&mut reply_id);
 					peer.mixnet
-						.post_reply(&mut surbs, session_index, &reply_message_id, &reply_data)
+						.post_reply(
+							&mut message.surbs,
+							message.session_index,
+							&reply_id,
+							reply_data.as_slice().into(),
+						)
 						.unwrap();
 				},
 				1 => {
 					assert_eq!(peer_index, request_from_peer_index);
-					assert_eq!(
-						message,
-						Message::Reply { id: reply_message_id, data: reply_data.clone() }
-					);
+					let Message::Reply(message) = message else {
+						panic!("Expected reply message")
+					};
+					assert_eq!(message.data, reply_data);
 				},
 				_ => panic!("Unexpected message"),
 			}
 			step += 1;
 		});
 		if i == 0 {
-			network.post_request(request_from_peer_index, &request_data, num_surbs);
+			network.post_request(
+				request_from_peer_index,
+				1,
+				&request_message_id,
+				&request_data,
+				num_surbs,
+			);
 		}
 	}
 	assert_eq!(step, 2);

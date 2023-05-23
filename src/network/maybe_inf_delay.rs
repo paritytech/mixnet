@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use futures::FutureExt;
+use futures::{future::FusedFuture, FutureExt};
 use futures_timer::Delay;
 use std::{
 	future::Future,
@@ -37,9 +37,16 @@ enum Inner {
 	Finite(Delay),
 }
 
+/// Like [`Delay`] but the duration can be infinite (in which case the future will never fire).
+/// Unlike [`Delay`], implements [`FusedFuture`], with [`is_terminated`](Self::is_terminated)
+/// returning `true` when the delay is infinite. As with [`Delay`], once [`poll`](Self::poll)
+/// returns [`Poll::Ready`], it will continue to do so until [`reset`](Self::reset) is called.
 pub struct MaybeInfDelay(Inner);
 
 impl MaybeInfDelay {
+	/// Create a new `MaybeInfDelay` future. If `duration` is [`Some`], the future will fire after
+	/// the given duration has elapsed. If `duration` is [`None`], the future will "never" fire
+	/// (although see [`reset`](Self::reset)).
 	pub fn new(duration: Option<Duration>) -> Self {
 		match duration {
 			Some(duration) => Self(Inner::Finite(Delay::new(duration))),
@@ -47,6 +54,10 @@ impl MaybeInfDelay {
 		}
 	}
 
+	/// Reset the timer. `duration` is handled just like in [`new`](Self::new). Note that while
+	/// this is similar to `std::mem::replace(&mut self, MaybeInfDelay::new(duration))`, with
+	/// `replace` you would have to manually ensure [`poll`](Self::poll) was called again; with
+	/// `reset` this is not necessary.
 	pub fn reset(&mut self, duration: Option<Duration>) {
 		match duration {
 			Some(duration) => match &mut self.0 {
@@ -92,5 +103,11 @@ impl Future for MaybeInfDelay {
 			},
 			Inner::Finite(delay) => delay.poll_unpin(cx),
 		}
+	}
+}
+
+impl FusedFuture for MaybeInfDelay {
+	fn is_terminated(&self) -> bool {
+		matches!(self.0, Inner::Infinite { .. })
 	}
 }

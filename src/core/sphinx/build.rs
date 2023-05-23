@@ -102,7 +102,7 @@ fn build_header(
 
 		let sds = SmallDerivedSecrets::new(kx_shared_secret);
 
-		total_delay += Delay::from_seed(sds.delay_seed());
+		total_delay += Delay::exp(sds.delay_seed());
 
 		hops.push(Hop {
 			mac_key: *sds.mac_key(),

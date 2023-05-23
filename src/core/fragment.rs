@@ -20,7 +20,10 @@
 
 //! Mixnet message fragment handling.
 
-use super::sphinx::{Surb, PAYLOAD_DATA_SIZE, SURB_SIZE};
+use super::{
+	scattered::Scattered,
+	sphinx::{Surb, PAYLOAD_DATA_SIZE, SURB_SIZE},
+};
 use arrayref::{array_mut_ref, array_refs, mut_array_refs};
 use hashlink::{linked_hash_map::Entry, LinkedHashMap};
 use log::{error, log, warn, Level};
@@ -29,7 +32,6 @@ use std::cmp::{max, min};
 /// Size in bytes of a [`MessageId`].
 pub const MESSAGE_ID_SIZE: usize = 16;
 /// Message identifier. Should be randomly generated. Attached to fragments to enable reassembly.
-/// May also be used to identify replies.
 pub type MessageId = [u8; MESSAGE_ID_SIZE];
 const FRAGMENT_INDEX_SIZE: usize = 2;
 type FragmentIndex = u16;
@@ -323,7 +325,7 @@ pub struct FragmentBlueprint<'a> {
 	message_id: MessageId,
 	last_index: FragmentIndex,
 	index: FragmentIndex,
-	data: &'a [u8],
+	data: Scattered<'a, u8>,
 	num_surbs: FragmentNumSurbs,
 }
 
@@ -347,7 +349,7 @@ impl<'a> FragmentBlueprint<'a> {
 		*num_surbs = self.num_surbs.to_le_bytes();
 
 		// Write payload
-		payload[..self.data.len()].copy_from_slice(self.data);
+		self.data.copy_to_slice(&mut payload[..self.data.len()]);
 	}
 
 	pub fn surbs<'fragment>(
@@ -380,7 +382,7 @@ fn div_ceil(x: usize, y: usize) -> usize {
 /// significantly less than this.
 pub fn fragment_blueprints<'a>(
 	message_id: &MessageId,
-	mut data: &'a [u8],
+	mut data: Scattered<'a, u8>,
 	mut num_surbs: usize,
 ) -> Option<impl ExactSizeIterator<Item = FragmentBlueprint<'a>>> {
 	let message_id = *message_id;
@@ -427,7 +429,7 @@ mod tests {
 		let mut rng = rand::thread_rng();
 
 		let id = rng.gen();
-		let mut blueprints = fragment_blueprints(&id, &[42], 1).unwrap();
+		let mut blueprints = fragment_blueprints(&id, [42].as_slice().into(), 1).unwrap();
 		assert_eq!(blueprints.len(), 1);
 		let blueprint = blueprints.next().unwrap();
 
@@ -449,7 +451,7 @@ mod tests {
 	}
 
 	fn no_surb_fragments(message_id: &MessageId, data: &[u8]) -> Vec<Fragment> {
-		fragment_blueprints(message_id, data, 0)
+		fragment_blueprints(message_id, data.into(), 0)
 			.unwrap()
 			.map(|blueprint| {
 				let mut fragment = [0; FRAGMENT_SIZE];
@@ -489,7 +491,9 @@ mod tests {
 	#[test]
 	fn create_too_large() {
 		let too_large = vec![0; (((FragmentIndex::MAX as usize) + 1) * FRAGMENT_PAYLOAD_SIZE) + 1];
-		assert!(fragment_blueprints(&[0; MESSAGE_ID_SIZE], &too_large, 0).is_none());
+		assert!(
+			fragment_blueprints(&[0; MESSAGE_ID_SIZE], too_large.as_slice().into(), 0).is_none()
+		);
 	}
 
 	#[test]

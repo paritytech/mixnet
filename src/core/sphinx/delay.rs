@@ -18,9 +18,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Forwarding delay type.
+//! Unitless delay type.
 
-use super::crypto::DelaySeed;
 use arrayref::array_mut_ref;
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
@@ -30,15 +29,22 @@ use std::{
 	time::Duration,
 };
 
+pub const DELAY_SEED_SIZE: usize = 16;
+pub type DelaySeed = [u8; DELAY_SEED_SIZE];
+
+/// Unitless delay. Can be converted to a [`Duration`] with [`to_duration`](Self::to_duration).
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Delay(f64);
 
 impl Delay {
+	/// Returns a delay of zero time.
 	pub fn zero() -> Self {
 		Self(0.0)
 	}
 
-	pub(super) fn from_seed(seed: &DelaySeed) -> Self {
+	/// Returns a random delay sampled from an exponential distribution with mean 1. `seed`
+	/// provides the entropy.
+	pub fn exp(seed: &DelaySeed) -> Self {
 		// The algorithm for sampling from an exponential distribution consumes a variable amount
 		// of random data; possibly more random data than is in seed. So it is not sufficient to
 		// just use the random data in seed directly; we really do need to seed an RNG with it.
@@ -52,11 +58,10 @@ impl Delay {
 		Self(delay.min(10.0))
 	}
 
-	/// Convert the raw delay value into a [`Duration`]. `mean` is the desired mean delay; for
-	/// delays calculated by senders to match the delays calculated by mixnodes, senders and
-	/// mixnodes must agree on this.
-	pub fn to_duration(self, mean: Duration) -> Duration {
-		mean.mul_f64(self.0)
+	/// Convert the unitless delay into a [`Duration`] by multiplying by `unit`. For delays
+	/// calculated by different parties to match, they must all agree on `unit`!
+	pub fn to_duration(self, unit: Duration) -> Duration {
+		unit.mul_f64(self.0)
 	}
 }
 

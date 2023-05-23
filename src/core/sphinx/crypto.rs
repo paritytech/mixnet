@@ -20,7 +20,10 @@
 
 //! Key exchange, secret derivation, MAC computation, and encryption.
 
-use super::packet::{EncryptedHeader, KxPublic, Mac, Payload, MAX_HOPS};
+use super::{
+	delay::{DelaySeed, DELAY_SEED_SIZE},
+	packet::{EncryptedHeader, KxPublic, Mac, Payload, MAX_HOPS},
+};
 use arrayref::array_refs;
 use arrayvec::ArrayVec;
 use blake2::{
@@ -50,11 +53,11 @@ const PAYLOAD_ENCRYPTION_KEY_PERSONA: &[u8; 16] = b"sphinx-pl-en-key";
 // Key exchange
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Shared secret produced by key exchange between a message sender and a mixnode.
+/// Shared secret produced by key exchange between a packet sender and a mixnode.
 pub type KxSharedSecret = [u8; 32];
 
 /// Apply X25519 bit clamping to the given raw bytes to produce a scalar for use with Curve25519.
-fn clamp_scalar(mut scalar: [u8; 32]) -> Scalar {
+pub fn clamp_scalar(mut scalar: [u8; 32]) -> Scalar {
 	scalar[0] &= 248;
 	scalar[31] &= 127;
 	scalar[31] |= 64;
@@ -70,7 +73,7 @@ pub fn gen_kx_secret(rng: &mut (impl Rng + CryptoRng)) -> Scalar {
 
 /// Derive the public key corresponding to a secret key.
 pub fn derive_kx_public(kx_secret: &Scalar) -> KxPublic {
-	(&ED25519_BASEPOINT_TABLE * kx_secret).to_montgomery().to_bytes()
+	(ED25519_BASEPOINT_TABLE * kx_secret).to_montgomery().to_bytes()
 }
 
 fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> Scalar {
@@ -155,8 +158,6 @@ const MAC_KEY_SIZE: usize = 16;
 pub type MacKey = [u8; MAC_KEY_SIZE];
 const HEADER_ENCRYPTION_KEY_SIZE: usize = 32;
 pub type HeaderEncryptionKey = [u8; HEADER_ENCRYPTION_KEY_SIZE];
-const DELAY_SEED_SIZE: usize = 16;
-pub type DelaySeed = [u8; DELAY_SEED_SIZE];
 const SMALL_DERIVED_SECRETS_SIZE: usize =
 	MAC_KEY_SIZE + HEADER_ENCRYPTION_KEY_SIZE + DELAY_SEED_SIZE;
 

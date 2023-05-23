@@ -30,6 +30,7 @@ mod kx_store;
 mod packet_queues;
 mod replay_filter;
 mod request_builder;
+mod scattered;
 mod sessions;
 mod sphinx;
 mod surb_keystore;
@@ -41,10 +42,11 @@ pub use self::{
 	fragment::{MessageId, MESSAGE_ID_SIZE},
 	kx_store::KxPublicStore,
 	packet_queues::AddressedPacket,
+	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS,
-		MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
+		Delay, KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
+		MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
@@ -52,13 +54,13 @@ use self::{
 	cover::{gen_cover_packet, CoverKind},
 	fragment::{fragment_blueprints, FragmentAssembler},
 	kx_store::KxStore,
-	packet_queues::{AuthoredPacketQueue, ForwardPacket, ForwardPacketQueue},
+	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacket, ForwardPacketQueue},
 	replay_filter::ReplayFilter,
 	request_builder::RequestBuilder,
 	sessions::{Session, SessionSlot, Sessions},
 	sphinx::{
 		complete_reply_packet, decrypt_reply_payload, kx_public, mut_payload_data, peel, Action,
-		Delay, PeelErr, PAYLOAD_DATA_SIZE, PAYLOAD_SIZE,
+		PeelErr, PAYLOAD_DATA_SIZE, PAYLOAD_SIZE,
 	},
 	surb_keystore::SurbKeystore,
 	topology::Topology,
@@ -68,9 +70,9 @@ use arrayref::{array_mut_ref, array_ref};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use either::Either;
-use log::{error, warn};
+use log::{debug, error, info, warn};
 use multiaddr::Multiaddr;
-use rand::{Rng, RngCore};
+use rand::Rng;
 use std::{
 	cmp::{max, min},
 	collections::HashSet,
@@ -78,63 +80,70 @@ use std::{
 	time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy)]
-/// A session index and the index of a mixnode in the session.
-pub struct MixnodeId {
-	/// The session index.
-	pub session_index: SessionIndex,
-	/// Index of the mixnode in the list for the session with index `session_index`.
-	pub mixnode_index: MixnodeIndex,
+/// Error querying the mixnodes for a session.
+pub enum MixnodesErr {
+	/// Transient error. The query might succeed later. Do not disable the mixnet for the session.
+	Transient,
+	/// Permanent error. The query will never succeed. Disable the mixnet for the session.
+	Permanent,
 }
 
+/// A request from another node.
 #[derive(Debug, PartialEq, Eq)]
+pub struct RequestMessage {
+	/// Index of the session this message was received in. This session index should be used when
+	/// sending replies.
+	pub session_index: SessionIndex,
+	/// Message identifier, explicitly provided by the request sender.
+	pub id: MessageId,
+	/// The message contents.
+	pub data: Vec<u8>,
+	/// SURBs that were attached to the message. These can be used to send replies.
+	pub surbs: Vec<Surb>,
+}
+
+/// A reply to a previously sent request.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplyMessage {
+	/// The message contents.
+	pub data: Vec<u8>,
+}
+
 /// A message received over the mixnet.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Message {
 	/// A request from another node.
-	Request {
-		/// Index of the session this message was received in. This session index should be used
-		/// when sending replies.
-		session_index: SessionIndex,
-		/// The message contents.
-		data: Vec<u8>,
-		/// SURBs that were attached to the message. These can be used to send replies.
-		surbs: Vec<Surb>,
-	},
+	Request(RequestMessage),
 	/// A reply to a previously sent request.
-	Reply {
-		/// Message identifier, explicitly provided by the reply sender.
-		id: MessageId,
-		/// The message contents.
-		data: Vec<u8>,
-	},
+	Reply(ReplyMessage),
 }
 
-#[derive(Debug, thiserror::Error)]
 /// Request/reply posting error.
+#[derive(Debug, thiserror::Error)]
 pub enum PostErr {
-	#[error("Message would need to be split into too many fragments")]
 	/// Message contents too large or too many SURBs.
+	#[error("Message would need to be split into too many fragments")]
 	TooManyFragments,
-	#[error("Bad session index: {0}")]
-	/// Bad session index. Most likely the session is no longer active.
-	BadSessionIndex(SessionIndex),
-	#[error("Requests and replies currently blocked for session {0}")]
-	/// Requests and replies currently blocked for the session.
-	RequestsAndRepliesBlocked(SessionIndex),
-	#[error("Mixnodes not yet known for session {0}")]
+	/// The session is no longer active.
+	#[error("Session {0} is no longer active")]
+	SessionNoLongerActive(SessionIndex),
+	/// The session is not active yet.
+	#[error("Session {0} is not active yet")]
+	SessionNotActiveYet(SessionIndex),
 	/// Mixnodes not yet known for the session.
+	#[error("Mixnodes not yet known for session {0}")]
 	SessionEmpty(SessionIndex),
-	#[error("Mixnet disabled for session {0}")]
 	/// Mixnet disabled for the session.
+	#[error("Mixnet disabled for session {0}")]
 	SessionDisabled(SessionIndex),
-	#[error("There is not enough space in the authored packet queue")]
 	/// Not enough space in the authored packet queue.
+	#[error("There is not enough space in the authored packet queue")]
 	NotEnoughSpaceInQueue,
-	#[error("Topology error: {0}")]
 	/// Topology error.
-	Topology(TopologyErr),
-	#[error("Bad SURB")]
+	#[error("Topology error: {0}")]
+	Topology(#[from] TopologyErr),
 	/// Bad SURB.
+	#[error("Bad SURB")]
 	BadSurb,
 }
 
@@ -143,34 +152,128 @@ fn post_session(
 	status: SessionStatus,
 	index: SessionIndex,
 ) -> Result<&mut Session, PostErr> {
-	let rel_index = match status.current_index.wrapping_sub(index) {
-		0 => RelSessionIndex::Current,
-		1 => RelSessionIndex::Prev,
-		_ => return Err(PostErr::BadSessionIndex(index)),
+	let Some(rel_index) = RelSessionIndex::from_session_index(index, status.current_index) else {
+		return Err(if index < status.current_index {
+			PostErr::SessionNoLongerActive(index)
+		} else {
+			PostErr::SessionNotActiveYet(index)
+		})
 	};
 	if !status.phase.allow_requests_and_replies(rel_index) {
-		return Err(PostErr::RequestsAndRepliesBlocked(index))
+		return Err(match rel_index {
+			RelSessionIndex::Prev => PostErr::SessionNoLongerActive(index),
+			RelSessionIndex::Current => PostErr::SessionNotActiveYet(index),
+		})
 	}
 	match &mut sessions[rel_index] {
 		SessionSlot::Empty => Err(PostErr::SessionEmpty(index)),
+		// Note that in the case where the session has been disabled because it is no longer
+		// needed, we will enter the !allow_requests_and_replies if above and not get here
 		SessionSlot::Disabled => Err(PostErr::SessionDisabled(index)),
 		SessionSlot::Full(session) => Ok(session),
 	}
 }
 
+impl From<CheckSpaceErr> for PostErr {
+	fn from(value: CheckSpaceErr) -> Self {
+		match value {
+			CheckSpaceErr::Capacity => PostErr::TooManyFragments,
+			CheckSpaceErr::Len => PostErr::NotEnoughSpaceInQueue,
+		}
+	}
+}
+
+/// Returns a conservative estimate of the time taken for the last packet in the authored packet
+/// queue to get dispatched plus the time taken for all reply packets to get through the authored
+/// packet queue at the far end.
+fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> Duration {
+	let rate_mul =
+		// In the worst case, when transitioning between two sessions with equal rate, the rate is
+		// effectively halved
+		0.5 *
+		// Loop cover packets are never replaced with packets from the authored packet queue
+		(1.0 - config.loop_cover_proportion);
+	let request_period = session.mean_authored_packet_period.div_f64(rate_mul);
+	let request_len = session.authored_packet_queue.len();
+	// Assume that the destination mixnode is using the same configuration as us
+	let reply_period = config.mixnode_session.mean_authored_packet_period.div_f64(rate_mul);
+	let reply_len = config.mixnode_session.authored_packet_queue.capacity; // Worst case
+
+	// The delays between authored packet queue pops follow an exponential distribution. The sum of
+	// n independent exponential random variables with scale s follows a gamma distribution with
+	// shape n and scale s. A reasonable approximation to the 99.995th percentile of the gamma
+	// distribution with shape n and scale s is:
+	//
+	// s * (4.92582 + (3.87809 * sqrt(n)) + n)
+	//
+	// The constants were obtained by fitting to the actual values for n=1..200.
+	//
+	// This isn't quite what we want here; we are interested in the sum of two gamma-distributed
+	// random variables with different scales (request_period and reply_period). An approximation
+	// to the 99.995th percentile of such a sum is:
+	//
+	// s * (4.92582 + (3.87809 * sqrt(n + (r^3 * m))) + n + (r * m))
+	//
+	// Where:
+	//
+	// - s is the larger scale.
+	// - n is the corresponding shape.
+	// - m is the other shape.
+	// - r is the other scale divided by s (between 0 and 1).
+	//
+	// Note that when r is 0 this matches the first approximation, and when r is 1 this matches the
+	// first approximation with n replaced by (n + m).
+	let (s, n, m, rs) = if request_period > reply_period {
+		(request_period, request_len, reply_len, reply_period)
+	} else {
+		(reply_period, reply_len, request_len, request_period)
+	};
+	let n = n as f64;
+	let m = m as f64;
+	let r = rs.as_secs_f64() / s.as_secs_f64();
+	s.mul_f64(4.92582 + (3.87809 * (n + (r * r * r * m)).sqrt()) + n + (r * m))
+}
+
+/// Metrics that can be used to estimate a request's round-trip time.
+pub struct RequestMetrics {
+	/// The maximum number of hops for any of the fragments to reach the destination, plus the
+	/// maximum number of hops for any of the SURBs to come back.
+	pub num_hops: usize,
+	/// Conservative estimate of the network (and processing) delay per hop.
+	pub per_hop_net_delay: Duration,
+	/// The maximum total forwarding delay for any request fragment, plus the maximum total
+	/// forwarding delay for any SURB.
+	pub forwarding_delay: Duration,
+	/// A conservative estimate of the total delay through the authored packet queues at the source
+	/// and destination.
+	pub authored_packet_queue_delay: Duration,
+}
+
+impl RequestMetrics {
+	/// Returns a conservative estimate of the round-trip time, suitable for use as a timeout.
+	/// `handling_delay` should be a conservative estimate of the time taken to handle the request
+	/// at the destination and post the reply.
+	pub fn estimate_rtt(&self, handling_delay: Duration) -> Duration {
+		let net_delay = self.per_hop_net_delay * (self.num_hops as u32);
+		self.forwarding_delay + self.authored_packet_queue_delay + net_delay + handling_delay
+	}
+}
+
 bitflags! {
-	/// Flags to indicate which previously queried things are now invalid.
-	pub struct Invalidated: u32 {
-		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`].
-		const RESERVED_PEERS = 0b001;
-		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`].
-		const NEXT_FORWARD_PACKET_DEADLINE = 0b010;
-		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`]. The delay
-		/// (and thus the effective deadline) is randomly generated according to an exponential
-		/// distribution each time the function is called, but the last returned deadline remains
-		/// valid until this bit indicates otherwise. Due to the memoryless nature of exponential
-		/// distributions, it is harmless for this bit to be set spuriously.
-		const NEXT_AUTHORED_PACKET_DEADLINE = 0b100;
+	/// Flags to indicate events that have occurred. Note that these may be set spuriously.
+	pub struct Events: u32 {
+		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`] have changed.
+		const RESERVED_PEERS_CHANGED = 0b1;
+		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`] has changed.
+		const NEXT_FORWARD_PACKET_DEADLINE_CHANGED = 0b10;
+		/// The effective deadline returned by [`Mixnet::next_authored_packet_delay`] has changed.
+		/// The delay (and thus the effective deadline) is randomly generated according to an
+		/// exponential distribution each time the function is called, but the last returned
+		/// deadline remains valid until this bit indicates otherwise. Due to the memoryless nature
+		/// of exponential distributions, it is harmless for this bit to be set spuriously.
+		const NEXT_AUTHORED_PACKET_DEADLINE_CHANGED = 0b100;
+		/// Space has become available in an authored packet queue.
+		const SPACE_IN_AUTHORED_PACKET_QUEUE = 0b1000;
 	}
 }
 
@@ -194,8 +297,8 @@ pub struct Mixnet {
 	/// for everything (requests and replies across all sessions).
 	fragment_assembler: FragmentAssembler,
 
-	/// Flags to indicate which previously queried things are now invalid.
-	invalidated: Invalidated,
+	/// Flags to indicate events that have occurred.
+	events: Events,
 }
 
 impl Mixnet {
@@ -215,9 +318,9 @@ impl Mixnet {
 
 			session_status: SessionStatus {
 				current_index: 0,
-				phase: SessionPhase::ConnectToCurrent, // Doesn't really matter
+				phase: SessionPhase::ConnectToCurrent,
 			},
-			sessions: Default::default(),
+			sessions: Sessions { current: SessionSlot::Empty, prev: SessionSlot::Disabled },
 			kx_store: KxStore::new(kx_public_store),
 
 			forward_packet_queue,
@@ -225,8 +328,13 @@ impl Mixnet {
 			surb_keystore,
 			fragment_assembler,
 
-			invalidated: Invalidated::empty(),
+			events: Events::empty(),
 		}
+	}
+
+	/// Returns the current session index and phase.
+	pub fn session_status(&self) -> SessionStatus {
+		self.session_status
 	}
 
 	/// Sets the current session index and phase. The current and previous mixnodes may need to be
@@ -239,84 +347,110 @@ impl Mixnet {
 		// Shift sessions in self.sessions when current session changes
 		if self.session_status.current_index != session_status.current_index {
 			if session_status.current_index.saturating_sub(self.session_status.current_index) == 1 {
+				// This will discard any replay filter we have for the (old) previous session. The
+				// corresponding secret key will be discarded by the discard_sessions_before() call
+				// below.
 				self.sessions.advance_by_one();
-			} else {
+			} else if !self.sessions.is_empty() {
+				warn!(
+					target: self.config.log_target,
+					"Unexpected session index {}; previous session index was {}",
+					session_status.current_index,
+					self.session_status.current_index
+				);
+				// If discarding any replay filters, also discard the corresponding secret keys.
+				// This is a bit overzealous in some cases, but this should never really happen so
+				// don't worry about it too much.
 				if self.sessions.current.is_full() {
-					warn!(
-						target: self.config.log_target,
-						"Unexpected session index {}; previous session index was {}",
-						session_status.current_index,
-						self.session_status.current_index
-					);
+					let Some(next_session_index) = self.session_status.current_index.checked_add(1) else {
+						panic!("Session index overflow")
+					};
+					self.kx_store.discard_sessions_before(next_session_index);
+				} else if self.sessions.prev.is_full() {
+					self.kx_store.discard_sessions_before(self.session_status.current_index);
 				}
-				self.sessions = Default::default();
+				self.sessions = Sessions { current: SessionSlot::Empty, prev: SessionSlot::Empty };
 			}
 		}
 
-		// Discard sessions which are no longer needed
-		if !session_status.phase.need_prev() {
+		// Discard sessions which are no longer needed. Also, avoid ever having a previous session
+		// when the current session index is 0... there is no sensible index for it.
+		if !session_status.phase.need_prev() || (session_status.current_index == 0) {
 			self.sessions.prev = SessionSlot::Disabled;
 		}
-		let min_needed_rel_session_index = if session_status.phase.need_prev() {
-			RelSessionIndex::Prev
-		} else {
-			RelSessionIndex::Current
-		};
-		self.kx_store
-			.discard_sessions_before(min_needed_rel_session_index + session_status.current_index);
+		if session_status.current_index != 0 {
+			let min_needed_rel_session_index = if session_status.phase.need_prev() {
+				RelSessionIndex::Prev
+			} else {
+				RelSessionIndex::Current
+			};
+			self.kx_store.discard_sessions_before(
+				min_needed_rel_session_index + session_status.current_index,
+			);
+		}
 
-		// For simplicity just mark these as invalid whenever anything changes. This should happen
-		// at most once a minute or so.
-		self.invalidated |=
-			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+		// For simplicity just assume these have changed. This should happen at most once a minute
+		// or so.
+		self.events |=
+			Events::RESERVED_PEERS_CHANGED | Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		self.session_status = session_status;
+
+		info!(target: self.config.log_target, "Session status changed: {session_status}");
 	}
 
-	/// Sets the mixnodes for the specified session, if they are needed.
-	pub fn maybe_set_mixnodes<E>(
+	/// Sets the mixnodes for the specified session, if they are needed. If `mixnodes()` returns
+	/// `Err(MixnodesErr::Permanent)`, the session slot will be disabled, and later calls to
+	/// `maybe_set_mixnodes` for the session will return immediately. If `mixnodes()` returns
+	/// `Err(MixnodesErr::Transient)`, the session slot will merely remain empty, and later calls to
+	/// `maybe_set_mixnodes` may succeed.
+	///
+	/// The mixnode peer IDs are used for two things:
+	///
+	/// - Checking for connectivity (they are passed to [`NetworkStatus::is_connected`]).
+	/// - Sending packets (they are put in [`AddressedPacket::peer_id`]).
+	///
+	/// The mixnode external addresses are merely collated and returned by
+	/// [`reserved_peer_addresses`](Self::reserved_peer_addresses).
+	pub fn maybe_set_mixnodes(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: impl FnOnce() -> Result<Vec<Mixnode>, E>,
-	) -> Result<(), E> {
+		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode>, MixnodesErr>,
+	) {
 		// Create the Session only if the slot is empty. If the slot is disabled, don't even try.
 		let session = &mut self.sessions[rel_session_index];
 		if !session.is_empty() {
-			return Ok(())
+			return
 		}
 
+		let session_index = rel_session_index + self.session_status.current_index;
 		let mut rng = rand::thread_rng();
 
 		// Build Topology struct
-		let session_index = rel_session_index + self.session_status.current_index;
-		let mut mixnodes = mixnodes()?;
-		if mixnodes.len() < self.config.min_mixnodes {
-			error!(
-				target: self.config.log_target,
-				"Insufficient mixnodes registered for session {session_index} \
-				({} mixnodes registered, need {}); \
-				mixnet will not be available during this session",
-				mixnodes.len(),
-				self.config.min_mixnodes
-			);
-			*session = SessionSlot::Disabled;
-			return Ok(())
-		}
+		let mut mixnodes = match mixnodes() {
+			Ok(mixnodes) => mixnodes,
+			Err(err) => {
+				if matches!(err, MixnodesErr::Permanent) {
+					*session = SessionSlot::Disabled;
+				}
+				return
+			},
+		};
 		let max_mixnodes = (MAX_MIXNODE_INDEX + 1) as usize;
 		if mixnodes.len() > max_mixnodes {
 			warn!(
 				target: self.config.log_target,
-				"Too many mixnodes ({}, max {max_mixnodes}); ignoring excess",
+				"Session {session_index}: Too many mixnodes ({}, max {max_mixnodes}); ignoring excess",
 				mixnodes.len()
 			);
 			mixnodes.truncate(max_mixnodes);
 		}
 		let Some(local_kx_public) = self.kx_store.public().public_for_session(session_index) else {
 			error!(target: self.config.log_target,
-				"Key-exchange keys for session {session_index} discarded already; \
+				"Session {session_index}: Key-exchange keys discarded already; \
 				mixnet will not be available");
 			*session = SessionSlot::Disabled;
-			return Ok(())
+			return
 		};
 		let topology =
 			Topology::new(&mut rng, mixnodes, &local_kx_public, self.config.num_gateway_mixnodes);
@@ -328,24 +462,27 @@ impl Mixnet {
 			match &self.config.non_mixnode_session {
 				Some(config) => config,
 				None => {
+					info!(target: self.config.log_target,
+						"Session {session_index}: Local node is not a mixnode; \
+						disabling mixnet as per configuration");
 					*session = SessionSlot::Disabled;
-					return Ok(())
+					return
 				},
 			}
 		};
 
+		info!(target: self.config.log_target, "Session {session_index}: {topology}");
+
 		// Build Session struct
 		*session = SessionSlot::Full(Session {
 			topology,
-			authored_packet_queue: AuthoredPacketQueue::new(config.authored_packet_queue_capacity),
+			authored_packet_queue: AuthoredPacketQueue::new(config.authored_packet_queue),
 			mean_authored_packet_period: config.mean_authored_packet_period,
 			replay_filter: ReplayFilter::new(&mut rng),
 		});
 
-		self.invalidated |=
-			Invalidated::RESERVED_PEERS | Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
-
-		Ok(())
+		self.events |=
+			Events::RESERVED_PEERS_CHANGED | Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 	}
 
 	/// Returns the addresses of the peers we should try to maintain connections to.
@@ -386,7 +523,9 @@ impl Mixnet {
 
 		let (action, session_index, session) = match res {
 			None => {
-				error!(
+				// This will usually get hit quite a bit on session changeover after we discard the
+				// keys for the previous session
+				debug!(
 					target: self.config.log_target,
 					"Failed to peel packet; either bad MAC or unknown secret"
 				);
@@ -407,7 +546,7 @@ impl Mixnet {
 					return None
 				}
 
-				if self.forward_packet_queue.remaining_capacity() == 0 {
+				if !self.forward_packet_queue.has_space() {
 					warn!(target: self.config.log_target, "Dropped forward packet; forward queue full");
 					return None
 				}
@@ -425,7 +564,7 @@ impl Mixnet {
 							packet: AddressedPacket { peer_id, packet: out.into() },
 						};
 						if self.forward_packet_queue.insert(forward_packet) {
-							self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
+							self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 						}
 					},
 					Err(err) => error!(
@@ -451,10 +590,13 @@ impl Mixnet {
 
 				// Add to fragment assembler and return any completed message
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
-					|message| Message::Request {
-						session_index,
-						data: message.data,
-						surbs: message.surbs,
+					|message| {
+						Message::Request(RequestMessage {
+							session_index,
+							id: message.id,
+							data: message.data,
+							surbs: message.surbs,
+						})
 					},
 				)
 			},
@@ -468,7 +610,7 @@ impl Mixnet {
 
 				// Lookup payload encryption keys and decrypt payload
 				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
-					error!(target: self.config.log_target,
+					warn!(target: self.config.log_target,
 						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
 					return None
 				};
@@ -484,10 +626,10 @@ impl Mixnet {
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
 					|message| {
 						if !message.surbs.is_empty() {
-							warn!(target: self.config.log_target,
+							error!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
-						Message::Reply { id: message.id, data: message.data }
+						Message::Reply(ReplyMessage { data: message.data })
 					},
 				)
 			},
@@ -504,7 +646,7 @@ impl Mixnet {
 	/// Pop and return the packet at the head of the forward packet queue. Returns [`None`] if the
 	/// queue is empty.
 	pub fn pop_next_forward_packet(&mut self) -> Option<AddressedPacket> {
-		self.invalidated |= Invalidated::NEXT_FORWARD_PACKET_DEADLINE;
+		self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 		self.forward_packet_queue.pop().map(|packet| packet.packet)
 	}
 
@@ -571,7 +713,7 @@ impl Mixnet {
 			Err(mut sessions) => sessions.pop()?,
 		};
 
-		self.invalidated |= Invalidated::NEXT_AUTHORED_PACKET_DEADLINE;
+		self.events |= Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		// Choose randomly between drop and loop cover packet
 		if rng.gen_bool(self.config.loop_cover_proportion) {
@@ -580,7 +722,13 @@ impl Mixnet {
 			self.session_status
 				.phase
 				.allow_requests_and_replies(rel_session_index)
-				.then(|| session.authored_packet_queue.pop())
+				.then(|| {
+					let (packet, space) = session.authored_packet_queue.pop();
+					if space {
+						self.events |= Events::SPACE_IN_AUTHORED_PACKET_QUEUE;
+					}
+					packet
+				})
 				.flatten()
 				.or_else(|| {
 					gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Drop, &self.config)
@@ -588,25 +736,20 @@ impl Mixnet {
 		}
 	}
 
-	/// Post a request message. If `destination` is [`None`], a destination mixnode is chosen at
-	/// random and (on success) the session and mixnode indices are written back to `destination`.
-	/// The message is split into fragments and each fragment is sent over a different path to the
-	/// destination. Returns the maximum total forwarding delay for any fragment/SURB pair; this
-	/// should give a lower bound on the time it takes for a reply to arrive (it is possible for a
-	/// reply to arrive sooner if a mixnode misbehaves).
+	/// Post a request message. If `destination_index` is [`None`], a destination mixnode is chosen
+	/// at random and (on success) its index is written back to `destination_index`. The message is
+	/// split into fragments and each fragment is sent over a different path to the destination.
 	pub fn post_request(
 		&mut self,
-		destination: &mut Option<MixnodeId>,
-		data: &[u8],
+		session_index: SessionIndex,
+		destination_index: &mut Option<MixnodeIndex>,
+		message_id: &MessageId,
+		data: Scattered<u8>,
 		num_surbs: usize,
 		ns: &dyn NetworkStatus,
-	) -> Result<Duration, PostErr> {
-		let mut rng = rand::thread_rng();
-
+	) -> Result<RequestMetrics, PostErr> {
 		// Split the message into fragments
-		let mut message_id = [0; MESSAGE_ID_SIZE];
-		rng.fill_bytes(&mut message_id);
-		let fragment_blueprints = match fragment_blueprints(&message_id, data, num_surbs) {
+		let fragment_blueprints = match fragment_blueprints(message_id, data, num_surbs) {
 			Some(fragment_blueprints)
 				if fragment_blueprints.len() <= self.config.max_fragments_per_message =>
 				fragment_blueprints,
@@ -614,56 +757,54 @@ impl Mixnet {
 		};
 
 		// Grab the session and check there's room in the queue
-		let session_index = destination.map_or_else(
-			|| {
-				self.session_status.phase.default_request_session() +
-					self.session_status.current_index
-			},
-			|destination| destination.session_index,
-		);
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
-		// TODO Something better than this
-		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
-			return Err(PostErr::NotEnoughSpaceInQueue)
-		}
+		session.authored_packet_queue.check_space(fragment_blueprints.len())?;
 
 		// Generate the packets and push them into the queue
-		let request_builder = RequestBuilder::new(
-			&mut rng,
-			&session.topology,
-			ns,
-			destination.map(|destination| destination.mixnode_index),
-		)
-		.map_err(PostErr::Topology)?;
-		let mut max_request_delay = Delay::zero();
-		let mut max_reply_delay = Delay::zero();
+		let mut rng = rand::thread_rng();
+		let request_builder =
+			RequestBuilder::new(&mut rng, &session.topology, ns, *destination_index)?;
+		let mut request_hops = 0;
+		let mut request_forwarding_delay = Delay::zero();
+		let mut reply_hops = 0;
+		let mut reply_forwarding_delay = Delay::zero();
 		for fragment_blueprint in fragment_blueprints {
-			let (packet, delay) = request_builder
-				.build_packet(
-					&mut rng,
-					|fragment, rng| {
-						fragment_blueprint.write_except_surbs(fragment);
-						for surb in fragment_blueprint.surbs(fragment) {
-							// TODO Currently we don't clean up keystore entries on failure
-							let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
-							let num_hops = self.config.num_hops;
-							let delay =
-								request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
-							max_reply_delay = max(max_reply_delay, delay);
-						}
-						Ok(())
-					},
-					self.config.num_hops,
-				)
-				.map_err(PostErr::Topology)?;
+			let (packet, metrics) = request_builder.build_packet(
+				&mut rng,
+				|fragment, rng| {
+					fragment_blueprint.write_except_surbs(fragment);
+					for surb in fragment_blueprint.surbs(fragment) {
+						// TODO Currently we don't clean up keystore entries on failure
+						let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
+						let num_hops = self.config.num_hops;
+						let metrics = request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
+						reply_hops = max(reply_hops, metrics.num_hops);
+						reply_forwarding_delay =
+							max(reply_forwarding_delay, metrics.forwarding_delay);
+					}
+					Ok(())
+				},
+				self.config.num_hops,
+			)?;
 			session.authored_packet_queue.push(packet);
-			max_request_delay = max(max_request_delay, delay);
+			request_hops = max(request_hops, metrics.num_hops);
+			request_forwarding_delay = max(request_forwarding_delay, metrics.forwarding_delay);
 		}
 
-		*destination =
-			Some(MixnodeId { session_index, mixnode_index: request_builder.destination_index() });
-		let max_delay = max_request_delay + max_reply_delay;
-		Ok(max_delay.to_duration(self.config.mean_forwarding_delay))
+		// Calculate metrics
+		let metrics = RequestMetrics {
+			num_hops: request_hops + reply_hops,
+			per_hop_net_delay: self.config.per_hop_net_delay,
+			forwarding_delay: (request_forwarding_delay + reply_forwarding_delay)
+				.to_duration(self.config.mean_forwarding_delay),
+			authored_packet_queue_delay: estimate_authored_packet_queue_delay(
+				&self.config,
+				session,
+			),
+		};
+
+		*destination_index = Some(request_builder.destination_index());
+		Ok(metrics)
 	}
 
 	/// Post a reply message using SURBs. The session index must match the session the SURBs were
@@ -673,7 +814,7 @@ impl Mixnet {
 		surbs: &mut Vec<Surb>,
 		session_index: SessionIndex,
 		message_id: &MessageId,
-		data: &[u8],
+		data: Scattered<u8>,
 	) -> Result<(), PostErr> {
 		// Split the message into fragments
 		let fragment_blueprints = match fragment_blueprints(message_id, data, 0) {
@@ -686,10 +827,7 @@ impl Mixnet {
 
 		// Grab the session and check there's room in the queue
 		let session = post_session(&mut self.sessions, self.session_status, session_index)?;
-		// TODO Something better than this
-		if fragment_blueprints.len() > session.authored_packet_queue.remaining_capacity() {
-			return Err(PostErr::NotEnoughSpaceInQueue)
-		}
+		session.authored_packet_queue.check_space(fragment_blueprints.len())?;
 
 		// Generate the packets and push them into the queue
 		for fragment_blueprint in fragment_blueprints {
@@ -700,20 +838,17 @@ impl Mixnet {
 				&surbs.pop().expect("Checked number of SURBs above"),
 			)
 			.ok_or(PostErr::BadSurb)?;
-			let peer_id = session
-				.topology
-				.mixnode_index_to_peer_id(mixnode_index)
-				.map_err(PostErr::Topology)?;
+			let peer_id = session.topology.mixnode_index_to_peer_id(mixnode_index)?;
 			session.authored_packet_queue.push(AddressedPacket { peer_id, packet });
 		}
 
 		Ok(())
 	}
 
-	/// Clear the invalidated flags. Returns the flags that were cleared.
-	pub fn take_invalidated(&mut self) -> Invalidated {
-		let invalidated = self.invalidated;
-		self.invalidated = Invalidated::empty();
-		invalidated
+	/// Clear the event flags. Returns the flags that were cleared.
+	pub fn take_events(&mut self) -> Events {
+		let events = self.events;
+		self.events = Events::empty();
+		events
 	}
 }

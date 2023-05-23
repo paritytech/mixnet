@@ -22,6 +22,7 @@
 
 use super::{packet_queues::AuthoredPacketQueue, replay_filter::ReplayFilter, topology::Topology};
 use std::{
+	fmt,
 	ops::{Add, Index, IndexMut},
 	time::Duration,
 };
@@ -43,13 +44,28 @@ pub struct Session {
 /// Absolute session index.
 pub type SessionIndex = u32;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 /// Relative session index.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RelSessionIndex {
 	/// The current session.
 	Current,
 	/// The previous session.
 	Prev,
+}
+
+impl RelSessionIndex {
+	/// Returns the `RelSessionIndex` corresponding to `session_index`, or `None` if there is no
+	/// such `RelSessionIndex`.
+	pub fn from_session_index(
+		session_index: SessionIndex,
+		current_session_index: SessionIndex,
+	) -> Option<Self> {
+		match current_session_index.checked_sub(session_index) {
+			Some(0) => Some(Self::Current),
+			Some(1) => Some(Self::Prev),
+			_ => None,
+		}
+	}
 }
 
 impl Add<SessionIndex> for RelSessionIndex {
@@ -58,7 +74,7 @@ impl Add<SessionIndex> for RelSessionIndex {
 	fn add(self, other: SessionIndex) -> Self::Output {
 		match self {
 			Self::Current => other,
-			Self::Prev => other.saturating_sub(1),
+			Self::Prev => other.checked_sub(1).expect("Session index underflow"),
 		}
 	}
 }
@@ -100,6 +116,10 @@ pub struct Sessions {
 }
 
 impl Sessions {
+	pub fn is_empty(&self) -> bool {
+		self.current.is_empty() && self.prev.is_empty()
+	}
+
 	pub fn advance_by_one(&mut self) {
 		self.prev = std::mem::replace(&mut self.current, SessionSlot::Empty);
 	}
@@ -124,12 +144,6 @@ impl Sessions {
 	}
 }
 
-impl Default for Sessions {
-	fn default() -> Self {
-		Self { current: SessionSlot::Empty, prev: SessionSlot::Empty }
-	}
-}
-
 impl Index<RelSessionIndex> for Sessions {
 	type Output = SessionSlot;
 
@@ -150,8 +164,8 @@ impl IndexMut<RelSessionIndex> for Sessions {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Each session should progress through these phases in order.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SessionPhase {
 	/// Connect to the mixnode set for the current session, but only attempt to forward traffic to
 	/// it.
@@ -202,11 +216,29 @@ impl SessionPhase {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl fmt::Display for SessionPhase {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			Self::ConnectToCurrent => write!(fmt, "Connecting to current mixnode set"),
+			Self::CoverToCurrent => write!(fmt, "Generating cover traffic to current mixnode set"),
+			Self::RequestsToCurrent => write!(fmt, "Building requests using current mixnode set"),
+			Self::CoverToPrev => write!(fmt, "Only sending cover traffic to previous mixnode set"),
+			Self::DisconnectFromPrev => write!(fmt, "Only using current mixnode set"),
+		}
+	}
+}
+
 /// The index and phase of the current session.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SessionStatus {
 	/// Index of the current session.
 	pub current_index: SessionIndex,
 	/// Current session phase.
 	pub phase: SessionPhase,
+}
+
+impl fmt::Display for SessionStatus {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		write!(fmt, "Current index {}, phase: {}", self.current_index, self.phase)
+	}
 }

@@ -21,25 +21,25 @@
 #[path = "util.rs"]
 mod util;
 
-use futures::{channel::mpsc, future::Either, prelude::*};
+use futures::{channel::mpsc, executor::ThreadPool, future::Either, prelude::*};
 use libp2p_core::{
-	identity,
 	muxing::StreamMuxerBox,
 	transport::{self, Transport},
-	upgrade, Multiaddr, PeerId as NetworkId,
+	upgrade, Multiaddr,
 };
+use libp2p_identity::PeerId as NetworkId;
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
-use libp2p_swarm::{Swarm, SwarmEvent};
+use libp2p_swarm::{SwarmBuilder, SwarmEvent};
 use libp2p_tcp::{async_io::Transport as TcpTransport, Config as TcpConfig};
 use mixnet::{
 	core::{
-		Config, KxPublicStore, Message, MixnodeId, RelSessionIndex, SessionPhase, SessionStatus,
+		Config, KxPublicStore, Message, RelSessionIndex, SessionPhase, SessionStatus,
 		MESSAGE_ID_SIZE,
 	},
 	network::{MixnetBehaviour, MixnetEvent, Mixnode},
 };
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use std::{sync::Arc, time::Duration};
 use util::log_target;
 
@@ -80,7 +80,7 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let mut transports = Vec::new();
 	for _ in 0..num_peers {
 		let (peer_id, trans) = mk_transport();
-		let kx_public_store = KxPublicStore::new();
+		let kx_public_store = KxPublicStore::new(None);
 		let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
 		mixnodes.push(Mixnode {
 			kx_public: kx_public_store.public_for_session(0).unwrap(),
@@ -97,7 +97,6 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	{
 		let mut config = Config {
 			log_target: log_target(peer_index),
-			min_mixnodes: num_peers,
 			mean_forwarding_delay: Duration::from_millis(50),
 			num_hops: std::cmp::min(3, num_peers - 1),
 			..Default::default()
@@ -111,11 +110,11 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			current_index: 0,
 			phase: SessionPhase::DisconnectFromPrev,
 		});
-		mixnet
-			.maybe_set_mixnodes(RelSessionIndex::Current, || Ok::<_, ()>(mixnodes.iter().cloned()))
-			.unwrap();
+		mixnet.maybe_set_mixnodes(RelSessionIndex::Current, &mut || Ok(mixnodes.iter().cloned()));
 
-		let mut swarm = Swarm::with_threadpool_executor(trans, mixnet, mixnode.peer_id);
+		let thread_pool = ThreadPool::new().unwrap();
+		let mut swarm =
+			SwarmBuilder::with_executor(trans, mixnet, mixnode.peer_id, thread_pool).build();
 		swarm.listen_on(mixnode.external_addresses[0].clone()).unwrap();
 		swarms.push(swarm);
 	}
@@ -184,12 +183,17 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let log_target_0 = log_target(0);
 	for np in 1..num_peers {
 		log::trace!(target: log_target_0, "Sending {message_count} messages to mixnode {np}");
-		let mut destination =
-			Some(MixnodeId { session_index: 0, mixnode_index: np.try_into().unwrap() });
+		let mut destination_index = Some(np.try_into().unwrap());
 		for _ in 0..message_count {
 			peer0_swarm
 				.behaviour_mut()
-				.post_request(&mut destination, &source_message, if with_surb { 1 } else { 0 })
+				.post_request(
+					0,
+					&mut destination_index,
+					&rand::thread_rng().gen(),
+					source_message.as_slice().into(),
+					if with_surb { 1 } else { 0 },
+				)
 				.unwrap();
 		}
 	}
@@ -202,26 +206,31 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 			let mut received = 0;
 			loop {
 				match swarm.select_next_some().await {
-					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request {
-						session_index,
-						data,
-						mut surbs,
-					})) => {
+					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request(mut message))) => {
 						received += 1;
-						log::trace!(target: log_target, "Decoded message {} bytes", data.len());
-						assert_eq!(source_message, &data);
-						assert_eq!(surbs.is_empty(), !with_surb);
-						if !surbs.is_empty() {
+						log::trace!(
+							target: log_target,
+							"Decoded message {} bytes",
+							message.data.len()
+						);
+						assert_eq!(source_message, &message.data);
+						assert_eq!(message.surbs.is_empty(), !with_surb);
+						if !message.surbs.is_empty() {
 							swarm
 								.behaviour_mut()
-								.post_reply(&mut surbs, session_index, &[0; MESSAGE_ID_SIZE], &[42])
+								.post_reply(
+									&mut message.surbs,
+									message.session_index,
+									&[0; MESSAGE_ID_SIZE],
+									[42].as_slice().into(),
+								)
 								.unwrap();
 						}
 						if received == message_count {
 							return swarm
 						}
 					},
-					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply { .. })) =>
+					SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply(_))) =>
 						panic!("only peer 0 should receive this"),
 					_ => {},
 				}
@@ -235,13 +244,12 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 	let spin_future = async move {
 		loop {
 			match peer0_swarm.select_next_some().await {
-				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request { .. })) =>
+				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Request(_))) =>
 					panic!("peer 0 expect a reply only"),
-				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply { id, data })) => {
+				SwarmEvent::Behaviour(MixnetEvent::Message(Message::Reply(message))) => {
 					assert!(with_surb);
 					done_surbs -= 1;
-					assert_eq!(&id, &[0; MESSAGE_ID_SIZE]);
-					assert_eq!(&data, &[42]);
+					assert_eq!(&message.data, &[42]);
 				},
 				_ => {},
 			}
@@ -274,16 +282,13 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 }
 
 fn mk_transport() -> (NetworkId, transport::Boxed<(NetworkId, StreamMuxerBox)>) {
-	let key = identity::ed25519::Keypair::generate();
-	let id_keys = identity::Keypair::Ed25519(key);
+	let id_keys: libp2p_identity::Keypair = libp2p_identity::ed25519::Keypair::generate().into();
 	let peer_id = id_keys.public().to_peer_id();
-	let noise_keys =
-		log_unwrap!(noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys));
 	(
 		peer_id,
 		TcpTransport::new(TcpConfig::new().nodelay(true))
 			.upgrade(upgrade::Version::V1)
-			.authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
+			.authenticate(noise::Config::new(&id_keys).unwrap())
 			.multiplex(mplex::MplexConfig::default())
 			.boxed(),
 	)

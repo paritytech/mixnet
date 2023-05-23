@@ -27,10 +27,13 @@ use arrayvec::ArrayVec;
 use either::Either;
 use multiaddr::Multiaddr;
 use rand::{seq::SliceRandom, CryptoRng, Rng};
-use std::cmp::{max, min};
+use std::{
+	cmp::{max, min},
+	fmt,
+};
 
-#[derive(Clone)]
 /// Key-exchange public key, peer ID, and external addresses for a mixnode.
+#[derive(Clone)]
 pub struct Mixnode {
 	/// Key-exchange public key for the mixnode.
 	pub kx_public: KxPublic,
@@ -48,17 +51,17 @@ enum LocalNode {
 	NonMixnode(Vec<MixnodeIndex>),
 }
 
-#[derive(Debug, thiserror::Error)]
 /// Topology error.
+#[derive(Debug, thiserror::Error)]
 pub enum TopologyErr {
-	#[error("Bad mixnode index ({0})")]
 	/// An out-of-range mixnode index was encountered.
+	#[error("Bad mixnode index ({0})")]
 	BadMixnodeIndex(MixnodeIndex),
-	#[error("Too few mixnodes; this should have been caught earlier")]
 	/// There aren't enough mixnodes.
+	#[error("Too few mixnodes; this should have been caught earlier")]
 	TooFewMixnodes,
-	#[error("The local node has not managed to connect to any gateway mixnodes")]
 	/// The local node has not managed to connect to any gateway mixnodes.
+	#[error("The local node has not managed to connect to any gateway mixnodes")]
 	NoConnectedGatewayMixnodes,
 }
 
@@ -81,6 +84,7 @@ impl Topology {
 		// Determine if the local node is a mixnode. It is possible for another node to publish our
 		// key-exchange public key as theirs, possibly resulting in a bogus index here. This isn't
 		// particularly harmful so we don't bother doing anything about it:
+		//
 		// - It might result in us thinking we're in the mixnode set when we're really not. Note
 		//   that this situation can only occur if we were trying to register anyway; if we weren't,
 		//   we wouldn't have even generated our key-exchange keys before session registration
@@ -153,11 +157,30 @@ impl Topology {
 	}
 }
 
+impl fmt::Display for Topology {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		match &self.local_node {
+			LocalNode::Mixnode(local_index) => write!(fmt, "Local node is mixnode {local_index}"),
+			LocalNode::NonMixnode(gateway_indices) => {
+				write!(fmt, "Local node is not a mixnode; gateway mixnodes are ")?;
+				for (i, gateway_index) in gateway_indices.iter().enumerate() {
+					if i == 0 {
+						gateway_index.fmt(fmt)?;
+					} else {
+						write!(fmt, ", {gateway_index}")?;
+					}
+				}
+				Ok(())
+			},
+		}
+	}
+}
+
 /// A trait for querying the peer ID and connectivity of the local node.
 pub trait NetworkStatus {
 	/// Returns the peer ID of the local node.
 	fn local_peer_id(&self) -> PeerId;
-	/// Returns true iff the local node is currently connected to the specified peer.
+	/// Returns `true` iff the local node is currently connected to the specified peer.
 	fn is_connected(&self, peer_id: &PeerId) -> bool;
 }
 
@@ -172,7 +195,7 @@ pub enum RouteKind {
 	Loop,
 }
 
-struct UsedIndices(ArrayVec<MixnodeIndex, MAX_HOPS>);
+struct UsedIndices(ArrayVec<MixnodeIndex, { MAX_HOPS + 1 }>);
 
 impl UsedIndices {
 	fn new() -> Self {
@@ -250,7 +273,7 @@ impl<'topology> RouteGenerator<'topology> {
 			return Err(TopologyErr::TooFewMixnodes)
 		}
 
-		let mut chosen = rng.gen_range(0, num_allowed);
+		let mut chosen = rng.gen_range(0..num_allowed);
 		for exclude_index in exclude_indices {
 			if chosen >= exclude_index.get() {
 				chosen += 1;
@@ -336,8 +359,8 @@ impl<'topology> RouteGenerator<'topology> {
 			used_indices.insert(index);
 		}
 
-		// If we're not a mixnode, and the message is to be sent by us, the first hop needs to be
-		// to a connected gateway mixnode
+		// If we're not a mixnode, and the packet is to be sent by us, the first hop needs to be to
+		// a connected gateway mixnode
 		let special_first_index = match self.topology.local_node {
 			LocalNode::NonMixnode(_) if from_local => {
 				let index = self.choose_connected_gateway_index(rng, used_indices.as_option())?;
@@ -347,8 +370,8 @@ impl<'topology> RouteGenerator<'topology> {
 			_ => None,
 		};
 
-		// If we're not a mixnode, and the message is to be received by us, the last hop needs to
-		// be from a connected gateway mixnode
+		// If we're not a mixnode, and the packet is to be received by us, the last hop needs to be
+		// from a connected gateway mixnode
 		let special_penultimate_index = match self.topology.local_node {
 			LocalNode::NonMixnode(_) if to_local => {
 				let index = self.choose_connected_gateway_index(rng, used_indices.as_option())?;

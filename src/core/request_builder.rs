@@ -32,6 +32,11 @@ use super::{
 use arrayvec::ArrayVec;
 use rand::{CryptoRng, Rng};
 
+pub struct RouteMetrics {
+	pub num_hops: usize,
+	pub forwarding_delay: Delay,
+}
+
 pub struct RequestBuilder<'topology> {
 	route_generator: RouteGenerator<'topology>,
 	destination_index: MixnodeIndex,
@@ -61,7 +66,7 @@ impl<'topology> RequestBuilder<'topology> {
 		rng: &mut R,
 		write_payload_data: impl FnOnce(&mut PayloadData, &mut R) -> Result<(), TopologyErr>,
 		num_hops: usize,
-	) -> Result<(AddressedPacket, Delay), TopologyErr> {
+	) -> Result<(AddressedPacket, RouteMetrics), TopologyErr> {
 		// Generate route
 		let mut targets = ArrayVec::new();
 		let mut their_kx_publics = ArrayVec::new();
@@ -78,9 +83,12 @@ impl<'topology> RequestBuilder<'topology> {
 		// Build packet
 		let mut packet = default_boxed_array();
 		write_payload_data(mut_payload_data(&mut packet), rng)?;
-		let delay = complete_request_packet(&mut packet, rng, &targets, &their_kx_publics);
+		let forwarding_delay =
+			complete_request_packet(&mut packet, rng, &targets, &their_kx_publics);
 
-		Ok((AddressedPacket { peer_id, packet }, delay))
+		let packet = AddressedPacket { peer_id, packet };
+		let metrics = RouteMetrics { num_hops: their_kx_publics.len(), forwarding_delay };
+		Ok((packet, metrics))
 	}
 
 	pub fn build_surb(
@@ -90,7 +98,7 @@ impl<'topology> RequestBuilder<'topology> {
 		rng: &mut (impl Rng + CryptoRng),
 		id: &SurbId,
 		num_hops: usize,
-	) -> Result<Delay, TopologyErr> {
+	) -> Result<RouteMetrics, TopologyErr> {
 		// Generate route
 		let mut targets = ArrayVec::new();
 		let mut their_kx_publics = ArrayVec::new();
@@ -103,7 +111,7 @@ impl<'topology> RequestBuilder<'topology> {
 		)?;
 
 		// Build SURB
-		Ok(build_surb(
+		let forwarding_delay = build_surb(
 			surb,
 			payload_encryption_keys,
 			rng,
@@ -111,6 +119,8 @@ impl<'topology> RequestBuilder<'topology> {
 			&targets,
 			&their_kx_publics,
 			id,
-		))
+		);
+
+		Ok(RouteMetrics { num_hops: their_kx_publics.len(), forwarding_delay })
 	}
 }

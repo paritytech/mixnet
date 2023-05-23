@@ -29,8 +29,8 @@ pub fn kx_public(packet: &Packet) -> &KxPublic {
 	array_ref![packet, 0, KX_PUBLIC_SIZE]
 }
 
-#[derive(Debug, PartialEq, Eq)]
 /// Action to take with a peeled packet.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Action {
 	/// The packet in `out` should be forwarded to `target` after `delay`.
 	ForwardTo { target: Target, delay: Delay },
@@ -73,8 +73,8 @@ pub fn peel(
 	packet: &Packet,
 	kx_shared_secret: &KxSharedSecret,
 ) -> Result<Action, PeelErr> {
-	// This can only happen in the case of a malicious message sender. I don't believe it would be
-	// a problem to skip this check, however it's cheap and the Sphinx paper says to do it.
+	// This can only happen in the case of a malicious packet sender. I don't believe it would be a
+	// problem to skip this check, however it's cheap and the Sphinx paper says to do it.
 	if kx_shared_secret_is_identity(kx_shared_secret) {
 		return Err(PeelErr::KxPublic)
 	}
@@ -152,7 +152,7 @@ pub fn peel(
 			};
 
 			// Determine the forwarding delay
-			let delay = Delay::from_seed(sds.delay_seed());
+			let delay = Delay::exp(sds.delay_seed());
 
 			// Blind the key-exchange public key
 			*array_mut_ref![out, 0, KX_PUBLIC_SIZE] = blind_kx_public(kx_public, kx_shared_secret);

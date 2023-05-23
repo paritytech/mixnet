@@ -79,15 +79,15 @@ impl ForwardPacketQueue {
 		self.queue.peek().map(|packet| packet.deadline)
 	}
 
-	pub fn remaining_capacity(&self) -> usize {
-		self.capacity.saturating_sub(self.queue.len())
+	pub fn has_space(&self) -> bool {
+		self.queue.len() < self.capacity
 	}
 
-	/// Insert a packet into the queue. Returns true iff the deadline of the item at the head of
+	/// Insert a packet into the queue. Returns `true` iff the deadline of the item at the head of
 	/// the queue changed. Should only be called if there is space in the queue (see
-	/// [`remaining_capacity`](Self::remaining_capacity)).
+	/// [`has_space`](Self::has_space)).
 	pub fn insert(&mut self, packet: ForwardPacket) -> bool {
-		debug_assert!(self.queue.len() < self.capacity);
+		debug_assert!(self.has_space());
 		let prev_deadline = self.next_deadline();
 		self.queue.push(packet);
 		self.next_deadline() != prev_deadline
@@ -98,30 +98,63 @@ impl ForwardPacketQueue {
 	}
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AuthoredPacketQueueConfig {
+	/// Maximum number of packets in the queue. Note that cover packets do not go in the queue;
+	/// they are generated on demand.
+	pub capacity: usize,
+	/// Allow packets for multiple messages in the queue?
+	pub multiple_messages: bool,
+}
+
+pub enum CheckSpaceErr {
+	/// There will never be enough space.
+	Capacity,
+	/// There are too many other packets in the queue at the moment.
+	Len,
+}
+
 pub struct AuthoredPacketQueue {
-	/// Maximum number of packets in the queue. This should match the capacity of `queue`, but we
-	/// don't rely on that.
-	capacity: usize,
+	config: AuthoredPacketQueueConfig,
 	queue: VecDeque<AddressedPacket>,
 }
 
 impl AuthoredPacketQueue {
-	pub fn new(capacity: usize) -> Self {
-		Self { capacity, queue: VecDeque::with_capacity(capacity) }
+	pub fn new(config: AuthoredPacketQueueConfig) -> Self {
+		Self { config, queue: VecDeque::with_capacity(config.capacity) }
 	}
 
-	pub fn remaining_capacity(&self) -> usize {
-		self.capacity.saturating_sub(self.queue.len())
+	pub fn len(&self) -> usize {
+		self.queue.len()
+	}
+
+	pub fn check_space(&self, num_packets: usize) -> Result<(), CheckSpaceErr> {
+		let Some(mut max_len) = self.config.capacity.checked_sub(num_packets) else {
+			return Err(CheckSpaceErr::Capacity)
+		};
+		if !self.config.multiple_messages {
+			max_len = 0;
+		}
+		if self.queue.len() > max_len {
+			Err(CheckSpaceErr::Len)
+		} else {
+			Ok(())
+		}
 	}
 
 	/// Push a packet onto the queue. Should only be called if there is space in the queue (see
-	/// [`remaining_capacity`](Self::remaining_capacity)).
+	/// [`check_space`](Self::check_space)).
 	pub fn push(&mut self, packet: AddressedPacket) {
-		debug_assert!(self.queue.len() < self.capacity);
+		debug_assert!(self.queue.len() < self.config.capacity);
 		self.queue.push_back(packet);
 	}
 
-	pub fn pop(&mut self) -> Option<AddressedPacket> {
-		self.queue.pop_front()
+	/// Pop the packet at the head of the queue and return it, or, if the queue is empty, return
+	/// `None`. Also returns `true` if [`check_space`](Self::check_space) might now succeed where
+	/// it wouldn't before.
+	pub fn pop(&mut self) -> (Option<AddressedPacket>, bool) {
+		let packet = self.queue.pop_front();
+		let space = self.config.multiple_messages || self.queue.is_empty();
+		(packet, space)
 	}
 }

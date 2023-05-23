@@ -30,7 +30,9 @@ mod tests;
 
 pub use self::{
 	build::*,
-	crypto::KxSharedSecret,
+	crypto::{
+		clamp_scalar, derive_kx_public, derive_kx_shared_secret, gen_kx_secret, KxSharedSecret,
+	},
 	delay::Delay,
 	packet::{
 		CoverId, KxPublic, Packet, Payload, PayloadData, PeerId, RawMixnodeIndex, SurbId,

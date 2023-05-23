@@ -20,10 +20,11 @@
 
 // libp2p connection handler for the mixnet protocol.
 
-use crate::network::protocol;
+use super::protocol;
 use futures::{future::BoxFuture, prelude::*};
 use libp2p_core::{upgrade::NegotiationError, UpgradeError};
 use libp2p_swarm::{
+	handler::{ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound},
 	ConnectionHandler, ConnectionHandlerEvent, ConnectionHandlerUpgrErr, KeepAlive,
 	NegotiatedSubstream, SubstreamProtocol,
 };
@@ -34,7 +35,6 @@ use std::{
 	task::{Context, Poll},
 	time::Duration,
 };
-use void::Void;
 
 /// The configuration for the protocol.
 #[derive(Clone, Debug)]
@@ -85,6 +85,8 @@ impl Error for Failure {
 	}
 }
 
+pub type Result = std::result::Result<Packet, Failure>;
+
 /// Protocol handler that handles dispatching packets.
 ///
 /// If the remote doesn't send anything within a time frame, produces an error that closes the
@@ -134,7 +136,7 @@ impl Handler {
 
 impl ConnectionHandler for Handler {
 	type InEvent = Packet;
-	type OutEvent = crate::network::Result;
+	type OutEvent = Result;
 	type Error = Failure;
 	type InboundProtocol = protocol::Mixnet;
 	type OutboundProtocol = protocol::Mixnet;
@@ -145,26 +147,12 @@ impl ConnectionHandler for Handler {
 		SubstreamProtocol::new(protocol::Mixnet, ())
 	}
 
-	fn inject_fully_negotiated_inbound(&mut self, stream: NegotiatedSubstream, (): ()) {
-		self.inbound = Some(protocol::recv_message(stream).boxed());
-	}
-
-	fn inject_fully_negotiated_outbound(&mut self, stream: NegotiatedSubstream, (): ()) {
-		if let Some(packet) = self.pending_packet.take() {
-			let Packet(packet) = packet;
-			let stream = protocol::send_message(stream, packet).boxed();
-			self.outbound = Some(ProtocolState::Sending(stream));
-		} else {
-			self.outbound = Some(ProtocolState::Idle(stream));
-		}
-	}
-
-	fn inject_event(&mut self, packet: Packet) {
+	fn on_behaviour_event(&mut self, packet: Packet) {
 		// Send an outbound packet.
 		match self.outbound.take() {
 			Some(ProtocolState::Idle(stream)) => {
 				let Packet(packet) = packet;
-				let stream = protocol::send_message(stream, packet).boxed();
+				let stream = protocol::send_packet(stream, packet).boxed();
 				self.outbound = Some(ProtocolState::Sending(stream));
 			},
 			Some(ProtocolState::OpenStream) => {
@@ -188,20 +176,45 @@ impl ConnectionHandler for Handler {
 		}
 	}
 
-	fn inject_dial_upgrade_error(&mut self, _info: (), error: ConnectionHandlerUpgrErr<Void>) {
-		let error = match error {
-			ConnectionHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
-				log::warn!(target: self.config.log_target, "Connection upgrade fail on dial");
-				debug_assert_eq!(self.state, State::Active);
-				self.state = State::Inactive { reported: false };
-				return
-			},
-			// Note: This timeout only covers protocol negotiation.
-			ConnectionHandlerUpgrErr::Timeout => Failure::Timeout,
-			e => Failure::Other { error: Box::new(e) },
-		};
+	fn on_connection_event(
+		&mut self,
+		event: ConnectionEvent<protocol::Mixnet, protocol::Mixnet, (), ()>,
+	) {
+		match event {
+			ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
+				protocol: stream,
+				..
+			}) => self.inbound = Some(protocol::recv_packet(stream).boxed()),
+			ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
+				protocol: stream,
+				..
+			}) =>
+				if let Some(packet) = self.pending_packet.take() {
+					let Packet(packet) = packet;
+					let stream = protocol::send_packet(stream, packet).boxed();
+					self.outbound = Some(ProtocolState::Sending(stream));
+				} else {
+					self.outbound = Some(ProtocolState::Idle(stream));
+				},
+			ConnectionEvent::DialUpgradeError(DialUpgradeError { error, .. }) => {
+				let error = match error {
+					ConnectionHandlerUpgrErr::Upgrade(UpgradeError::Select(
+						NegotiationError::Failed,
+					)) => {
+						log::warn!(target: self.config.log_target, "Connection upgrade fail on dial");
+						debug_assert_eq!(self.state, State::Active);
+						self.state = State::Inactive { reported: false };
+						return
+					},
+					// Note: This timeout only covers protocol negotiation.
+					ConnectionHandlerUpgrErr::Timeout => Failure::Timeout,
+					e => Failure::Other { error: Box::new(e) },
+				};
 
-		self.pending_errors.push_front(error);
+				self.pending_errors.push_front(error);
+			},
+			_ => (),
+		}
 	}
 
 	fn connection_keep_alive(&self) -> KeepAlive {
@@ -211,7 +224,7 @@ impl ConnectionHandler for Handler {
 	fn poll(
 		&mut self,
 		cx: &mut Context<'_>,
-	) -> Poll<ConnectionHandlerEvent<protocol::Mixnet, (), crate::network::Result, Self::Error>> {
+	) -> Poll<ConnectionHandlerEvent<protocol::Mixnet, (), Result, Self::Error>> {
 		match self.state {
 			State::Inactive { reported: true } => {
 				return Poll::Pending // nothing to do on this connection
@@ -233,7 +246,7 @@ impl ConnectionHandler for Handler {
 				},
 				Poll::Ready(Ok((stream, packet))) => {
 					// An inbound packet.
-					self.inbound = Some(protocol::recv_message(stream).boxed());
+					self.inbound = Some(protocol::recv_packet(stream).boxed());
 					return Poll::Ready(ConnectionHandlerEvent::Custom(Ok(Packet(packet))))
 				},
 			}
@@ -284,8 +297,9 @@ impl ConnectionHandler for Handler {
 	}
 }
 
-type PacketFuture = BoxFuture<'static, Result<(NegotiatedSubstream, Vec<u8>), io::Error>>;
-type SendFuture = BoxFuture<'static, Result<NegotiatedSubstream, io::Error>>;
+type PacketFuture =
+	BoxFuture<'static, std::result::Result<(NegotiatedSubstream, Vec<u8>), io::Error>>;
+type SendFuture = BoxFuture<'static, std::result::Result<NegotiatedSubstream, io::Error>>;
 
 /// The current state w.r.t. outbound packets.
 enum ProtocolState {
