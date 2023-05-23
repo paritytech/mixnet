@@ -42,6 +42,5 @@ itertools = "0.10.5"
 libp2p-mplex = "0.39.0"
 libp2p-noise = "0.42.2"
 libp2p-tcp = {version = "0.39.0", features = ["async-io"]}
-libp2p-yamux = "0.43.1"
 once_cell = "1.17.1"
 rand_xoshiro = "0.6.0"
