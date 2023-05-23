@@ -30,9 +30,10 @@ use crate::core::{
 	SessionStatus, Surb,
 };
 use futures::FutureExt;
-use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
+use libp2p_identity::PeerId;
 use libp2p_swarm::{
-	IntoConnectionHandler, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
+	behaviour::{ConnectionClosed, ConnectionEstablished},
+	ConnectionId, FromSwarm, NetworkBehaviour, NotifyHandler, PollParameters, ToSwarm,
 };
 use std::{
 	collections::{hash_map::Entry, HashMap, VecDeque},
@@ -183,7 +184,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 		Handler::new(super::handler::Config { log_target: self.log_target, ..Default::default() })
 	}
 
-	fn inject_event(&mut self, peer_id: PeerId, _: ConnectionId, event: Result) {
+	fn on_connection_handler_event(&mut self, peer_id: PeerId, _: ConnectionId, event: Result) {
 		match event {
 			Ok(Packet(packet)) => {
 				log::trace!(target: self.log_target, "Incoming packet from {peer_id}");
@@ -204,59 +205,53 @@ impl NetworkBehaviour for MixnetBehaviour {
 		}
 	}
 
-	fn inject_connection_established(
-		&mut self,
-		peer_id: &PeerId,
-		conn_id: &ConnectionId,
-		_: &ConnectedPoint,
-		_: Option<&Vec<Multiaddr>>,
-		_: usize,
-	) {
-		log::trace!(target: self.log_target, "Connected: {peer_id}, {conn_id:?}");
-		let Some(core_peer_id) = to_core_peer_id(peer_id) else {
-			log::error!(target: self.log_target,
-				"Failed to convert libp2p peer ID {peer_id} to mixnet peer ID");
-			return
-		};
-		match self.peers.connected.entry(core_peer_id) {
-			Entry::Occupied(mut entry) => entry.get_mut().push(*conn_id),
-			Entry::Vacant(entry) => {
-				entry.insert(vec![*conn_id]);
-				self.events.push_back(MixnetEvent::Connected(*peer_id));
-			},
-		}
-	}
-
-	fn inject_connection_closed(
-		&mut self,
-		peer_id: &PeerId,
-		conn_id: &ConnectionId,
-		_: &ConnectedPoint,
-		_: <Self::ConnectionHandler as IntoConnectionHandler>::Handler,
-		_: usize,
-	) {
-		log::trace!(target: self.log_target, "Disconnected: {peer_id}, {conn_id:?}");
-		let Some(core_peer_id) = to_core_peer_id(peer_id) else {
-			log::error!(target: self.log_target,
-				"Failed to convert libp2p peer ID {peer_id} to mixnet peer ID");
-			return
-		};
-		match self.peers.connected.entry(core_peer_id) {
-			Entry::Occupied(mut entry) => {
-				let conn_ids = entry.get_mut();
-				let Some(i) = conn_ids.iter().position(|open_conn_id| open_conn_id == conn_id) else {
+	fn on_swarm_event(&mut self, event: FromSwarm<Self::ConnectionHandler>) {
+		match event {
+			FromSwarm::ConnectionEstablished(ConnectionEstablished {
+				peer_id,
+				connection_id,
+				..
+			}) => {
+				log::trace!(target: self.log_target, "Connected: {peer_id}, {connection_id:?}");
+				let Some(core_peer_id) = to_core_peer_id(&peer_id) else {
 					log::error!(target: self.log_target,
-						"Closed {conn_id:?} not recognised (peer {peer_id})");
+						"Failed to convert libp2p peer ID {peer_id} to mixnet peer ID");
 					return
 				};
-				conn_ids.swap_remove(i);
-				if conn_ids.is_empty() {
-					entry.remove();
-					self.events.push_back(MixnetEvent::Disconnected(*peer_id));
+				match self.peers.connected.entry(core_peer_id) {
+					Entry::Occupied(mut entry) => entry.get_mut().push(connection_id),
+					Entry::Vacant(entry) => {
+						entry.insert(vec![connection_id]);
+						self.events.push_back(MixnetEvent::Connected(peer_id));
+					},
 				}
 			},
-			Entry::Vacant(_) =>
-				log::error!(target: self.log_target, "Disconnected peer {peer_id} not recognised"),
+			FromSwarm::ConnectionClosed(ConnectionClosed { peer_id, connection_id, .. }) => {
+				log::trace!(target: self.log_target, "Disconnected: {peer_id}, {connection_id:?}");
+				let Some(core_peer_id) = to_core_peer_id(&peer_id) else {
+					log::error!(target: self.log_target,
+						"Failed to convert libp2p peer ID {peer_id} to mixnet peer ID");
+					return
+				};
+				match self.peers.connected.entry(core_peer_id) {
+					Entry::Occupied(mut entry) => {
+						let conn_ids = entry.get_mut();
+						let Some(i) = conn_ids.iter().position(|open_conn_id| open_conn_id == &connection_id) else {
+							log::error!(target: self.log_target,
+								"Closed {connection_id:?} not recognised (peer {peer_id})");
+							return
+						};
+						conn_ids.swap_remove(i);
+						if conn_ids.is_empty() {
+							entry.remove();
+							self.events.push_back(MixnetEvent::Disconnected(peer_id));
+						}
+					},
+					Entry::Vacant(_) =>
+						log::error!(target: self.log_target, "Disconnected peer {peer_id} not recognised"),
+				}
+			},
+			_ => (),
 		}
 	}
 
@@ -264,9 +259,9 @@ impl NetworkBehaviour for MixnetBehaviour {
 		&mut self,
 		cx: &mut Context<'_>,
 		_: &mut impl PollParameters,
-	) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
+	) -> Poll<ToSwarm<Self::OutEvent, Packet>> {
 		if let Some(e) = self.events.pop_back() {
-			return Poll::Ready(NetworkBehaviourAction::GenerateEvent(e))
+			return Poll::Ready(ToSwarm::GenerateEvent(e))
 		}
 
 		loop {
@@ -290,7 +285,7 @@ impl NetworkBehaviour for MixnetBehaviour {
 				log::warn!(target: self.log_target, "Packet for offline peer {peer_id}");
 				continue
 			};
-			return Poll::Ready(NetworkBehaviourAction::NotifyHandler {
+			return Poll::Ready(ToSwarm::NotifyHandler {
 				peer_id,
 				handler: NotifyHandler::One(
 					*conn_ids

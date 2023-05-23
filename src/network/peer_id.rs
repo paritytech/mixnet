@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::core::PeerId as CorePeerId;
-use libp2p_core::PeerId;
+use libp2p_identity::PeerId;
 
 /// An invalid mixnet core [`PeerId`](CorePeerId); calling [`from_core_peer_id`] on this will fail
 /// as it does not represent a point on the Ed25519 curve.
@@ -33,16 +33,15 @@ pub fn to_core_peer_id(peer_id: &PeerId) -> Option<CorePeerId> {
 	let Ok(libp2p_core::multihash::Code::Identity) = libp2p_core::multihash::Code::try_from(hash.code()) else {
 		return None
 	};
-	let public = libp2p_core::identity::PublicKey::from_protobuf_encoding(hash.digest()).ok()?;
-	let libp2p_core::identity::PublicKey::Ed25519(public) = public;
-	Some(public.encode())
+	let public = libp2p_identity::PublicKey::try_decode_protobuf(hash.digest()).ok()?;
+	public.try_into_ed25519().ok().map(|public| public.to_bytes())
 }
 
 /// Convert a mixnet core [`PeerId`](CorePeerId) into a libp2p [`PeerId`]. This will succeed only
 /// if `peer_id` represents a point on the Ed25519 curve. Returns `None` on failure.
 pub fn from_core_peer_id(core_peer_id: &CorePeerId) -> Option<PeerId> {
-	let public = libp2p_core::identity::ed25519::PublicKey::decode(core_peer_id).ok()?;
-	let public = libp2p_core::identity::PublicKey::Ed25519(public);
+	let public = libp2p_identity::ed25519::PublicKey::try_from_bytes(core_peer_id).ok()?;
+	let public: libp2p_identity::PublicKey = public.into();
 	Some(public.into())
 }
 

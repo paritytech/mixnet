@@ -21,16 +21,16 @@
 #[path = "util.rs"]
 mod util;
 
-use futures::{channel::mpsc, future::Either, prelude::*};
+use futures::{channel::mpsc, executor::ThreadPool, future::Either, prelude::*};
 use libp2p_core::{
-	identity,
 	muxing::StreamMuxerBox,
 	transport::{self, Transport},
-	upgrade, Multiaddr, PeerId as NetworkId,
+	upgrade, Multiaddr,
 };
+use libp2p_identity::PeerId as NetworkId;
 use libp2p_mplex as mplex;
 use libp2p_noise as noise;
-use libp2p_swarm::{Swarm, SwarmEvent};
+use libp2p_swarm::{SwarmBuilder, SwarmEvent};
 use libp2p_tcp::{async_io::Transport as TcpTransport, Config as TcpConfig};
 use mixnet::{
 	core::{
@@ -112,7 +112,9 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 		});
 		mixnet.maybe_set_mixnodes(RelSessionIndex::Current, &mut || Ok(mixnodes.iter().cloned()));
 
-		let mut swarm = Swarm::with_threadpool_executor(trans, mixnet, mixnode.peer_id);
+		let thread_pool = ThreadPool::new().unwrap();
+		let mut swarm =
+			SwarmBuilder::with_executor(trans, mixnet, mixnode.peer_id, thread_pool).build();
 		swarm.listen_on(mixnode.external_addresses[0].clone()).unwrap();
 		swarms.push(swarm);
 	}
@@ -280,16 +282,13 @@ fn test_messages(num_peers: usize, message_count: usize, message_size: usize, wi
 }
 
 fn mk_transport() -> (NetworkId, transport::Boxed<(NetworkId, StreamMuxerBox)>) {
-	let key = identity::ed25519::Keypair::generate();
-	let id_keys = identity::Keypair::Ed25519(key);
+	let id_keys: libp2p_identity::Keypair = libp2p_identity::ed25519::Keypair::generate().into();
 	let peer_id = id_keys.public().to_peer_id();
-	let noise_keys =
-		log_unwrap!(noise::Keypair::<noise::X25519Spec>::new().into_authentic(&id_keys));
 	(
 		peer_id,
 		TcpTransport::new(TcpConfig::new().nodelay(true))
 			.upgrade(upgrade::Version::V1)
-			.authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
+			.authenticate(noise::Config::new(&id_keys).unwrap())
 			.multiplex(mplex::MplexConfig::default())
 			.boxed(),
 	)

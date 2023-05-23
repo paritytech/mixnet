@@ -20,7 +20,7 @@
 
 use super::peer_id::{to_core_peer_id, INVALID_CORE_PEER_ID};
 use crate::core::{KxPublic, Mixnode as CoreMixnode};
-use libp2p_core::PeerId;
+use libp2p_identity::PeerId;
 use multiaddr::{multiaddr, Multiaddr, Protocol};
 
 /// Just like `CoreMixnode` but with a libp2p peer ID instead of a mixnet peer ID.
