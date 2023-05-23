@@ -130,8 +130,8 @@ mod tests {
 		}
 
 		// The false positive rate should be about 1 in 15,000 with 3m packets in the filter. With
-		// the seeds above we get 61 false positives among 1,000,000 random integers that (most
+		// the seed above we get 63 false positives among 1,000,000 random integers that (most
 		// likely) aren't actually in the set...
-		assert_eq!(false_positives, 61);
+		assert_eq!(false_positives, 63);
 	}
 }

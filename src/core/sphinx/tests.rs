@@ -32,11 +32,11 @@ use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
 
 fn gen_mixnode_index(rng: &mut impl Rng) -> MixnodeIndex {
-	rng.gen_range(0, MAX_MIXNODE_INDEX + 1).try_into().unwrap()
+	rng.gen_range(0..=MAX_MIXNODE_INDEX).try_into().unwrap()
 }
 
 fn gen_targets(rng: &mut impl Rng, num_hops: usize) -> Vec<Target> {
-	let peer_id_i = rng.gen_range(0, num_hops - 1);
+	let peer_id_i = rng.gen_range(0..num_hops - 1);
 	(0..num_hops - 1)
 		.map(|i| {
 			if i == peer_id_i {
@@ -71,7 +71,7 @@ fn gen_payload_data(rng: &mut impl Rng) -> PayloadData {
 fn basic_operation() {
 	let mut rng = rand::thread_rng();
 
-	let num_hops = rng.gen_range(MAX_HOPS - 1, MAX_HOPS + 1);
+	let num_hops = rng.gen_range(MAX_HOPS - 1..=MAX_HOPS);
 	let targets = gen_targets(&mut rng, num_hops);
 	let (their_kx_secrets, their_kx_publics) = gen_their_kx_secrets_and_publics(&mut rng, num_hops);
 	let payload_data = gen_payload_data(&mut rng);
@@ -164,7 +164,7 @@ fn bad_payload_tag() {
 fn surb() {
 	let mut rng = rand::thread_rng();
 
-	let num_hops = rng.gen_range(MAX_HOPS - 1, MAX_HOPS + 1);
+	let num_hops = rng.gen_range(MAX_HOPS - 1..=MAX_HOPS);
 	let first_mixnode_index = gen_mixnode_index(&mut rng);
 	let targets = gen_targets(&mut rng, num_hops);
 	let (their_kx_secrets, their_kx_publics) = gen_their_kx_secrets_and_publics(&mut rng, num_hops);

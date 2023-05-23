@@ -27,11 +27,15 @@
 
 use super::{
 	sessions::SessionIndex,
-	sphinx::{KxPublic, KxSharedSecret},
+	sphinx::{
+		clamp_scalar, derive_kx_public, derive_kx_shared_secret, gen_kx_secret, KxPublic,
+		KxSharedSecret,
+	},
 };
+use curve25519_dalek::scalar::Scalar;
 use rand::rngs::OsRng;
 use std::sync::{Arc, Mutex};
-use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroizing;
 
 struct SessionPublic {
 	index: SessionIndex,
@@ -42,7 +46,7 @@ struct SessionSecret {
 	index: SessionIndex,
 	/// Boxed to avoid leaving copies of the secret key around in memory if `SessionSecret` is
 	/// moved.
-	secret: Box<StaticSecret>,
+	secret: Box<Zeroizing<Scalar>>,
 }
 
 struct KxPublicStoreInner {
@@ -54,9 +58,8 @@ struct KxPublicStoreInner {
 }
 
 impl KxPublicStoreInner {
-	fn insert(&mut self, index: SessionIndex, secret: Box<StaticSecret>) -> KxPublic {
-		let public: PublicKey = secret.as_ref().into();
-		let public = public.to_bytes();
+	fn insert(&mut self, index: SessionIndex, secret: Box<Zeroizing<Scalar>>) -> KxPublic {
+		let public = derive_kx_public(secret.as_ref());
 		self.session_publics.push(SessionPublic { index, public });
 		self.pending_session_secrets.push(SessionSecret { index, secret });
 		public
@@ -76,7 +79,7 @@ impl KxPublicStore {
 			pending_session_secrets: Vec::new(),
 		};
 		if let Some(secret) = session_0_secret {
-			inner.insert(0, Box::new((*secret).into()));
+			inner.insert(0, Box::new(Zeroizing::new(clamp_scalar(*secret))));
 		}
 		Self(Mutex::new(inner))
 	}
@@ -99,7 +102,7 @@ impl KxPublicStore {
 		// We box the secret to avoid leaving copies of it in memory when the SessionSecret is
 		// moved. Note that we will likely leave some copies on the stack here; I'm not aware of
 		// any good way of avoiding this.
-		Some(inner.insert(index, Box::new(StaticSecret::new(OsRng))))
+		Some(inner.insert(index, Box::new(Zeroizing::new(gen_kx_secret(&mut OsRng)))))
 	}
 
 	fn discard_sessions_before(&self, index: SessionIndex) {
@@ -156,7 +159,7 @@ impl KxStore {
 		self.session_secrets
 			.iter()
 			.find(|s| s.index == index)
-			.map(|s| s.secret.diffie_hellman(&(*their_public).into()).to_bytes())
+			.map(|s| derive_kx_shared_secret(their_public, s.secret.as_ref()))
 	}
 }
 
@@ -166,15 +169,14 @@ mod tests {
 
 	#[test]
 	fn basic_operation() {
-		let their_secret = StaticSecret::new(rand::thread_rng());
-		let their_public: PublicKey = (&their_secret).into();
-		let their_public = their_public.to_bytes();
+		let their_secret = gen_kx_secret(&mut rand::thread_rng());
+		let their_public = derive_kx_public(&their_secret);
 
 		let mut store = KxStore::new(Arc::new(KxPublicStore::new(None)));
 
 		for session_index in 0..2 {
 			let our_public = store.public().public_for_session(session_index).unwrap();
-			let shared_secret = their_secret.diffie_hellman(&our_public.into()).to_bytes();
+			let shared_secret = derive_kx_shared_secret(&our_public, &their_secret);
 			store.add_pending_session_secrets();
 			assert_eq!(
 				shared_secret,

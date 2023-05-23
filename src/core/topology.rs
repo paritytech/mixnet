@@ -273,7 +273,7 @@ impl<'topology> RouteGenerator<'topology> {
 			return Err(TopologyErr::TooFewMixnodes)
 		}
 
-		let mut chosen = rng.gen_range(0, num_allowed);
+		let mut chosen = rng.gen_range(0..num_allowed);
 		for exclude_index in exclude_indices {
 			if chosen >= exclude_index.get() {
 				chosen += 1;
