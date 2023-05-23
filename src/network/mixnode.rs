@@ -80,7 +80,7 @@ impl Mixnode {
 	/// converting the peer ID here, there is no guarantee that we will be able to connect to the
 	/// peer or send packets to it. The most common failure case is expected to be that the peer is
 	/// simply unreachable over the network.
-	pub fn to_core(self, log_target: &'static str) -> CoreMixnode {
+	pub fn into_core(self, log_target: &'static str) -> CoreMixnode {
 		CoreMixnode {
 			kx_public: self.kx_public,
 			peer_id: to_core_peer_id(&self.peer_id).unwrap_or_else(|| {

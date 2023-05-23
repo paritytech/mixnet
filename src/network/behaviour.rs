@@ -123,7 +123,7 @@ impl MixnetBehaviour {
 		I: Iterator<Item = Mixnode>,
 	{
 		self.mixnet.maybe_set_mixnodes(rel_session_index, &mut || {
-			Ok(mixnodes()?.map(|mixnode| mixnode.to_core(self.log_target)).collect())
+			Ok(mixnodes()?.map(|mixnode| mixnode.into_core(self.log_target)).collect())
 		});
 		self.handle_core_events();
 	}
