@@ -140,21 +140,21 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		let prev_default_len = self.post_queues.default.len();
 
 		if self.session_status.current_index != session_status.current_index {
-			self.post_queues.default.append(&mut self.post_queues.prev);
+			self.post_queues.default.append(&mut self.post_queues.prev); // Clears prev
 			if session_status.current_index.saturating_sub(self.session_status.current_index) == 1 {
 				std::mem::swap(&mut self.post_queues.current, &mut self.post_queues.prev);
 			} else {
 				// Unexpected session index change. Mixnet core will warn about this, don't bother
 				// warning again here.
-				self.post_queues.default.append(&mut self.post_queues.current);
+				self.post_queues.default.append(&mut self.post_queues.current); // Clears current
 			}
 		}
 
 		if !session_status.phase.allow_requests_and_replies(RelSessionIndex::Current) {
-			self.post_queues.default.append(&mut self.post_queues.current);
+			self.post_queues.default.append(&mut self.post_queues.current); // Clears current
 		}
 		if !session_status.phase.allow_requests_and_replies(RelSessionIndex::Prev) {
-			self.post_queues.default.append(&mut self.post_queues.prev);
+			self.post_queues.default.append(&mut self.post_queues.prev); // Clears prev
 		}
 
 		for state in self.post_queues.default.iter_mut().skip(prev_default_len) {
