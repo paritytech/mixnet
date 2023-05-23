@@ -63,7 +63,7 @@ struct RequestState<R> {
 	request: R,
 
 	destinations_remaining: u32,
-	retries_remaining: u32,
+	attempts_remaining: u32,
 	/// This is decremented on insertion into the post queue.
 	posts_remaining: u32,
 
@@ -192,7 +192,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 			request,
 
 			destinations_remaining: self.config.num_destinations,
-			retries_remaining: 0,
+			attempts_remaining: 0,
 			posts_remaining: 0,
 
 			// The message ID will get generated when retry (below) calls state.new_destination()
@@ -338,19 +338,19 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		context: &C,
 	) {
 		debug_assert_eq!(state.posts_remaining, 0);
-		match state.retries_remaining.checked_sub(1) {
-			Some(retries_remaining) => state.retries_remaining = retries_remaining,
+		match state.attempts_remaining.checked_sub(1) {
+			Some(attempts_remaining) => state.attempts_remaining = attempts_remaining,
 			None => {
 				let Some(destinations_remaining) = state.destinations_remaining.checked_sub(1) else {
 					state.request.handle_retry_limit_reached(context);
 					return
 				};
 				state.destinations_remaining = destinations_remaining;
-				state.retries_remaining = self.config.num_retries_per_destination - 1;
+				state.attempts_remaining = self.config.num_attempts_per_destination - 1;
 				state.new_destination(self.created_at);
 			},
 		}
-		state.posts_remaining = self.config.num_posts_per_retry - 1;
+		state.posts_remaining = self.config.num_posts_per_attempt - 1;
 
 		let rel_session_index = state.session_index.and_then(|session_index| {
 			let rel_session_index = RelSessionIndex::from_session_index(

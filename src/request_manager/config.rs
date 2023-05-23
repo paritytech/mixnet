@@ -24,13 +24,16 @@ pub struct Config {
 	/// Maximum number of requests that can be managed at once.
 	pub capacity: usize,
 
-	/// Number of different destinations to try sending a request to before giving up.
+	/// Number of destinations to try sending a request to before giving up. Note that the
+	/// destinations are chosen randomly with replacement; the same destination might be chosen
+	/// multiple times.
 	pub num_destinations: u32,
-	/// Number of times to retry a destination after timing out before moving on to the next
-	/// destination. Must not be 0.
-	pub num_retries_per_destination: u32,
+	/// Number of times to attempt a destination before moving on to the next. After each attempt,
+	/// we conservatively estimate the round-trip time and wait at least this long before the next
+	/// attempt. Must not be 0.
+	pub num_attempts_per_destination: u32,
 	/// Number of copies of the message to post each time we send a request. Must not be 0.
-	pub num_posts_per_retry: u32,
+	pub num_posts_per_attempt: u32,
 }
 
 impl Default for Config {
@@ -39,8 +42,8 @@ impl Default for Config {
 			capacity: 20,
 
 			num_destinations: 3,
-			num_retries_per_destination: 2,
-			num_posts_per_retry: 2,
+			num_attempts_per_destination: 2,
+			num_posts_per_attempt: 2,
 		}
 	}
 }
