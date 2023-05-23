@@ -1,34 +1,57 @@
-Parity Mix Network Specification
-====================================
+# Parity Mix Network
 
-# 1. Abstract
+## Overview
 
-This describes the high level architecture of the mix network meant to 
-provide anonymous message delivery service. The main intention for this initial version is to allow anonymous blockchain transaction delivery. 
+The mixnet design is loosely based on
+[Loopix](https://www.usenix.org/system/files/conference/usenixsecurity17/sec17-piotrowska.pdf). The
+packet format is based on
+[Sphinx](http://www0.cs.ucl.ac.uk/staff/G.Danezis/papers/sphinx-eprint.pdf).
 
-# 2. System Overview
-------------------
-The design is losely based on [Loopix](https://www.usenix.org/system/files/conference/usenixsecurity17/sec17-piotrowska.pdf) with some simplification listed below. A packet format based on [Sphinx](http://www0.cs.ucl.ac.uk/staff/G.Danezis/papers/sphinx-eprint.pdf) is utilized. The specification is based on (Katzenpost)[https://github.com/katzenpost/docs/blob/master/specs/sphinx.rst]
+Graceful transition between sessions with different topologies is supported, but the transition
+phase and topologies must be synchronised between nodes by the crate user.
 
-The network is homogeneous. All nodes participate in mix traffic. This implementaton has the following simplifications when compared the Loopix/sphinx design:
+## Network topology
 
-* No cover loops are generated, just individual cover messages.
-* SURBs are not supported
-* Sphinx routing information is simplified to a fixed structure instead of a list of routing commands.
-* No replay protection is implemented.
+In the context of a session, the nodes are split into two classes: mixnodes and non-mixnodes.
+Mixnodes are responsible for mixing traffic. Non-mixnodes may send requests into the mixnet and
+receive replies from the mixnet, but do not mix traffic. Non-mixnodes can join and leave the mixnet
+freely, but it is expected that if a node is a mixnode in a session, it will stay connected for the
+duration of the session.
 
-# 3. Network Topology
+The mixnodes for a session are provided by the crate user. They need not be related in any way to
+the mixnodes for the previous/following sessions.
 
-Network topology is defined externally. The user should implement `Topology` trait 
-the defines the relations between nodes and provide access to public keys. 
+Each mixnode in a session has a key-exchange public key which should be known by all other nodes.
+The crate user is responsible for broadcasting these public keys. Note that even if the topology is
+static, the key-exchange public keys will change and must be rebroadcast every session.
 
-# 4. Packet Format Overview
+Currently, the mixnodes traversed by a packet are picked at random from the full set of mixnodes
+with no constraints. This may change in the future.
 
-Each message is split into multiple fixed size fragments, with each fragment being encapsulated into Sphinx packets and routed over random paths within the mix network. The recipient waits for all fragments to arrive and is then able to reconstruct the message.
+## Packet format
 
-TODO: detaild sphinx packet specification
+Each message is split into multiple fixed size fragments, with each fragment being encapsulated into
+a Sphinx packet and routed over a random path within the mixnet. The recipient waits for all
+fragments to arrive and is then able to reconstruct the message.
 
-# 5. Mix Protocol Operation
+For details on the packet format, see `src/core/sphinx/packet.rs` and `src/core/fragment.rs`.
 
-The protocol is implemented as `libp2p::Behaviour` module that can plug into libp2p stack. It implements the "mixnet" protocol. Connections are driven externally and must match the topology reported with the `Topology` trait. Once connection is established peers exhange a handshake that contains the mixing public key. This key is used as fallback if no topology is specified. After that, node start listening for incoming message. For each message the node tries to unwrap a single layer of Sphinx encryption. If the result requires another hop, the unwrapped packet it added to the outbound queue to be sent to the next hop with a delay specified in the packet. If the result is the final payload an attempt is made to reconstruct the full message. If the node has all the fragment of a message it is produced to as an `libp2p::Behaviour` event to the user code. The node generates oubound traffic following Poisson distribution. If no real traffic is to be sent, cover traffic is generated. 
+## Cover traffic
 
+Two types of cover traffic are generated:
+
+- "Drop". Drop cover packets are sent to random mixnodes and are simply dropped on receipt.
+- "Loop". Loop cover packets are sent back to the sending node. They are used to gauge network
+  health.
+
+Request and reply packets always replace drop cover packets. Loop cover packets are never replaced.
+
+Note that both mixnodes and non-mixnodes generate cover traffic, although typically non-mixnodes
+will be configured to generate less traffic (to avoid overwhelming the mixnet when there are a large
+number of them).
+
+## Modules
+
+The core mixnet logic lives in the `core` module and may be used on its own. The `network` module
+provides a libp2p `NetworkBehaviour` implementation. The `request_manager` and `reply_manager`
+modules provide a very simple reliable delivery layer.
