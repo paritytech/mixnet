@@ -188,8 +188,7 @@ impl From<CheckSpaceErr> for PostErr {
 /// packet queue at the far end.
 fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> Duration {
 	let rate_mul =
-		// In the worst case, when transitioning between two sessions with equal rate, the rate is
-		// effectively halved
+		// When transitioning between sessions, the rate is halved
 		0.5 *
 		// Loop cover packets are never replaced with packets from the authored packet queue
 		(1.0 - config.loop_cover_proportion);
@@ -651,21 +650,39 @@ impl Mixnet {
 	/// Returns the delay after which [`pop_next_authored_packet`](Self::pop_next_authored_packet)
 	/// should be called. [`None`] means an infinite delay.
 	pub fn next_authored_packet_delay(&self) -> Option<Duration> {
-		// Send packets at the maximum rate of any active session; pop_next_authored_packet will
-		// choose between the sessions randomly based on their rates
-		self.sessions
+		// Determine the mean period
+		let means: ArrayVec<_, 2> = self
+			.sessions
 			.enumerate()
-			.filter(|(rel_session_index, _)| {
-				self.session_status.phase.gen_cover_packets(*rel_session_index)
+			.filter_map(|(rel_session_index, session)| {
+				self.session_status
+					.phase
+					.gen_cover_packets(rel_session_index)
+					.then_some(session.mean_authored_packet_period.as_secs_f64())
 			})
-			.map(|(_, session)| session.mean_authored_packet_period)
-			.min()
-			.map(|mean| {
-				let delay: f64 = rand::thread_rng().sample(rand_distr::Exp1);
-				// Cap at 10x the mean; this is about the 99.995th percentile. This avoids
-				// potential panics in mul_f64() due to overflow.
-				mean.mul_f64(delay.min(10.0))
-			})
+			.collect();
+		let mean = match means.into_inner() {
+			// Both sessions active. Send at half rate in each. Note that pop_next_authored_packet
+			// will choose between the sessions randomly based on their rates.
+			Ok(means) => (2.0 * means[0] * means[1]) / (means[0] + means[1]),
+			Err(mut means) => {
+				let mean = means.pop()?;
+				// Just one session active
+				if self.session_status.phase.gen_cover_packets(RelSessionIndex::Prev) &&
+					self.session_status.phase.gen_cover_packets(RelSessionIndex::Current)
+				{
+					// Both sessions _should_ be active. Send at half rate.
+					2.0 * mean
+				} else {
+					mean
+				}
+			},
+		};
+
+		let delay: f64 = rand::thread_rng().sample(rand_distr::Exp1);
+		// Cap at 10x the mean; this is about the 99.995th percentile. This avoids potential panics
+		// in from_secs_f64() due to overflow.
+		Some(Duration::from_secs_f64(delay.min(10.0) * mean))
 	}
 
 	/// Either generate and return a cover packet or pop and return the packet at the head of one
