@@ -638,7 +638,8 @@ impl Mixnet {
 	}
 
 	/// Returns the next instant at which
-	/// [`pop_next_forward_packet`](Self::pop_next_forward_packet) should be called.
+	/// [`pop_next_forward_packet`](Self::pop_next_forward_packet) should be called. [`None`] means
+	/// never.
 	pub fn next_forward_packet_deadline(&self) -> Option<Instant> {
 		self.forward_packet_queue.next_deadline()
 	}
@@ -651,7 +652,7 @@ impl Mixnet {
 	}
 
 	/// Returns the delay after which [`pop_next_authored_packet`](Self::pop_next_authored_packet)
-	/// should be called.
+	/// should be called. [`None`] means an infinite delay.
 	pub fn next_authored_packet_delay(&self) -> Option<Duration> {
 		// Send packets at the maximum rate of any active session; pop_next_authored_packet will
 		// choose between the sessions randomly based on their rates
