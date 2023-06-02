@@ -54,7 +54,7 @@ use self::{
 	cover::{gen_cover_packet, CoverKind},
 	fragment::{fragment_blueprints, FragmentAssembler},
 	kx_store::KxStore,
-	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacket, ForwardPacketQueue},
+	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacketQueue},
 	replay_filter::ReplayFilter,
 	request_builder::RequestBuilder,
 	sessions::{Session, SessionSlot, Sessions},
@@ -559,11 +559,8 @@ impl Mixnet {
 					Ok(peer_id) => {
 						let deadline =
 							Instant::now() + delay.to_duration(self.config.mean_forwarding_delay);
-						let forward_packet = ForwardPacket {
-							deadline,
-							packet: AddressedPacket { peer_id, packet: out.into() },
-						};
-						if self.forward_packet_queue.insert(forward_packet) {
+						let packet = AddressedPacket { peer_id, packet: out.into() };
+						if self.forward_packet_queue.insert(deadline, packet) {
 							self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 						}
 					},
@@ -648,7 +645,7 @@ impl Mixnet {
 	/// queue is empty.
 	pub fn pop_next_forward_packet(&mut self) -> Option<AddressedPacket> {
 		self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
-		self.forward_packet_queue.pop().map(|packet| packet.packet)
+		self.forward_packet_queue.pop()
 	}
 
 	/// Returns the delay after which [`pop_next_authored_packet`](Self::pop_next_authored_packet)
