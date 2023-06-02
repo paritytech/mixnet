@@ -154,7 +154,7 @@ impl AuthoredPacketQueue {
 	/// it wouldn't before.
 	pub fn pop(&mut self) -> (Option<AddressedPacket>, bool) {
 		let packet = self.queue.pop_front();
-		let space = self.config.multiple_messages || self.queue.is_empty();
+		let space = packet.is_some() && (self.config.multiple_messages || self.queue.is_empty());
 		(packet, space)
 	}
 }
