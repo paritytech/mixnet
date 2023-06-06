@@ -33,8 +33,9 @@ use super::{
 	},
 };
 use curve25519_dalek::scalar::Scalar;
+use parking_lot::Mutex;
 use rand::rngs::OsRng;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use zeroize::Zeroizing;
 
 struct SessionPublic {
@@ -87,7 +88,7 @@ impl KxPublicStore {
 	/// Returns the public key for the specified session, or [`None`] if the key pair was discarded
 	/// due to age.
 	pub fn public_for_session(&self, index: SessionIndex) -> Option<KxPublic> {
-		let mut inner = self.0.lock().unwrap();
+		let mut inner = self.0.lock();
 
 		if index < inner.discarded_sessions_before {
 			return None
@@ -106,7 +107,7 @@ impl KxPublicStore {
 	}
 
 	fn discard_sessions_before(&self, index: SessionIndex) {
-		let mut inner = self.0.lock().unwrap();
+		let mut inner = self.0.lock();
 		if index > inner.discarded_sessions_before {
 			inner.discarded_sessions_before = index;
 			inner.session_publics.retain(|s| s.index >= index);
@@ -115,7 +116,7 @@ impl KxPublicStore {
 	}
 
 	fn take_pending_session_secrets(&self) -> Vec<SessionSecret> {
-		let mut inner = self.0.lock().unwrap();
+		let mut inner = self.0.lock();
 		std::mem::take(&mut inner.pending_session_secrets)
 	}
 }

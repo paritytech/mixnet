@@ -22,7 +22,7 @@
 //! [Loopix](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/piotrowska).
 
 #![warn(missing_docs)]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 pub mod core;
 pub mod network;

@@ -54,7 +54,7 @@ use self::{
 	cover::{gen_cover_packet, CoverKind},
 	fragment::{fragment_blueprints, FragmentAssembler},
 	kx_store::KxStore,
-	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacket, ForwardPacketQueue},
+	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacketQueue},
 	replay_filter::ReplayFilter,
 	request_builder::RequestBuilder,
 	sessions::{Session, SessionSlot, Sessions},
@@ -188,8 +188,7 @@ impl From<CheckSpaceErr> for PostErr {
 /// packet queue at the far end.
 fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> Duration {
 	let rate_mul =
-		// In the worst case, when transitioning between two sessions with equal rate, the rate is
-		// effectively halved
+		// When transitioning between sessions, the rate is halved
 		0.5 *
 		// Loop cover packets are never replaced with packets from the authored packet queue
 		(1.0 - config.loop_cover_proportion);
@@ -316,10 +315,7 @@ impl Mixnet {
 		Self {
 			config,
 
-			session_status: SessionStatus {
-				current_index: 0,
-				phase: SessionPhase::ConnectToCurrent,
-			},
+			session_status: SessionStatus { current_index: 0, phase: SessionPhase::CoverToCurrent },
 			sessions: Sessions { current: SessionSlot::Empty, prev: SessionSlot::Disabled },
 			kx_store: KxStore::new(kx_public_store),
 
@@ -524,7 +520,8 @@ impl Mixnet {
 		let (action, session_index, session) = match res {
 			None => {
 				// This will usually get hit quite a bit on session changeover after we discard the
-				// keys for the previous session
+				// keys for the previous session. It may get hit just before a new session if other
+				// nodes switch sooner.
 				debug!(
 					target: self.config.log_target,
 					"Failed to peel packet; either bad MAC or unknown secret"
@@ -559,11 +556,8 @@ impl Mixnet {
 					Ok(peer_id) => {
 						let deadline =
 							Instant::now() + delay.to_duration(self.config.mean_forwarding_delay);
-						let forward_packet = ForwardPacket {
-							deadline,
-							packet: AddressedPacket { peer_id, packet: out.into() },
-						};
-						if self.forward_packet_queue.insert(forward_packet) {
+						let packet = AddressedPacket { peer_id, packet: out.into() };
+						if self.forward_packet_queue.insert(deadline, packet) {
 							self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 						}
 					},
@@ -638,7 +632,8 @@ impl Mixnet {
 	}
 
 	/// Returns the next instant at which
-	/// [`pop_next_forward_packet`](Self::pop_next_forward_packet) should be called.
+	/// [`pop_next_forward_packet`](Self::pop_next_forward_packet) should be called. [`None`] means
+	/// never.
 	pub fn next_forward_packet_deadline(&self) -> Option<Instant> {
 		self.forward_packet_queue.next_deadline()
 	}
@@ -647,27 +642,38 @@ impl Mixnet {
 	/// queue is empty.
 	pub fn pop_next_forward_packet(&mut self) -> Option<AddressedPacket> {
 		self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
-		self.forward_packet_queue.pop().map(|packet| packet.packet)
+		self.forward_packet_queue.pop()
 	}
 
 	/// Returns the delay after which [`pop_next_authored_packet`](Self::pop_next_authored_packet)
-	/// should be called.
+	/// should be called. [`None`] means an infinite delay.
 	pub fn next_authored_packet_delay(&self) -> Option<Duration> {
-		// Send packets at the maximum rate of any active session; pop_next_authored_packet will
-		// choose between the sessions randomly based on their rates
-		self.sessions
-			.enumerate()
-			.filter(|(rel_session_index, _)| {
-				self.session_status.phase.gen_cover_packets(*rel_session_index)
-			})
-			.map(|(_, session)| session.mean_authored_packet_period)
-			.min()
-			.map(|mean| {
-				let delay: f64 = rand::thread_rng().sample(rand_distr::Exp1);
-				// Cap at 10x the mean; this is about the 99.995th percentile. This avoids
-				// potential panics in mul_f64() due to overflow.
-				mean.mul_f64(delay.min(10.0))
-			})
+		// Determine the mean period
+		let means: ArrayVec<_, 2> = self
+			.sessions
+			.iter()
+			.map(|session| session.mean_authored_packet_period.as_secs_f64())
+			.collect();
+		let mean = match means.into_inner() {
+			// Both sessions active. Send at half rate in each. Note that pop_next_authored_packet
+			// will choose between the sessions randomly based on their rates.
+			Ok(means) => (2.0 * means[0] * means[1]) / (means[0] + means[1]),
+			Err(mut means) => {
+				let mean = means.pop()?;
+				// Just one session active
+				if self.session_status.phase.need_prev() {
+					// Both sessions _should_ be active. Send at half rate.
+					2.0 * mean
+				} else {
+					mean
+				}
+			},
+		};
+
+		let delay: f64 = rand::thread_rng().sample(rand_distr::Exp1);
+		// Cap at 10x the mean; this is about the 99.995th percentile. This avoids potential panics
+		// in from_secs_f64() due to overflow.
+		Some(Duration::from_secs_f64(delay.min(10.0) * mean))
 	}
 
 	/// Either generate and return a cover packet or pop and return the packet at the head of one
@@ -682,13 +688,7 @@ impl Mixnet {
 		let mut rng = rand::thread_rng();
 
 		// First pick the session
-		let sessions: ArrayVec<_, 2> = self
-			.sessions
-			.enumerate_mut()
-			.filter(|(rel_session_index, _)| {
-				self.session_status.phase.gen_cover_packets(*rel_session_index)
-			})
-			.collect();
+		let sessions: ArrayVec<_, 2> = self.sessions.enumerate_mut().collect();
 		let (rel_session_index, session) = match sessions.into_inner() {
 			Ok(sessions) => {
 				// Both sessions active. We choose randomly based on their rates.
@@ -716,23 +716,44 @@ impl Mixnet {
 		self.events |= Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		// Choose randomly between drop and loop cover packet
-		if rng.gen_bool(self.config.loop_cover_proportion) {
-			gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Loop, &self.config)
+		let cover_kind = if rng.gen_bool(self.config.loop_cover_proportion) {
+			CoverKind::Loop
 		} else {
-			self.session_status
-				.phase
-				.allow_requests_and_replies(rel_session_index)
-				.then(|| {
-					let (packet, space) = session.authored_packet_queue.pop();
-					if space {
-						self.events |= Events::SPACE_IN_AUTHORED_PACKET_QUEUE;
-					}
-					packet
-				})
-				.flatten()
-				.or_else(|| {
-					gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Drop, &self.config)
-				})
+			CoverKind::Drop
+		};
+
+		// Maybe replace drop cover packet with request or reply packet from queue
+		if (cover_kind == CoverKind::Drop) &&
+			self.session_status.phase.allow_requests_and_replies(rel_session_index)
+		{
+			let (packet, space) = session.authored_packet_queue.pop();
+			if space {
+				self.events |= Events::SPACE_IN_AUTHORED_PACKET_QUEUE;
+			}
+			if packet.is_some() {
+				return packet
+			}
+		}
+
+		if !self.config.gen_cover_packets {
+			return None
+		}
+
+		// Generate cover packet
+		match gen_cover_packet(&mut rng, &session.topology, ns, cover_kind, self.config.num_hops) {
+			Ok(packet) => Some(packet),
+			Err(err) => {
+				if (self.session_status.phase == SessionPhase::CoverToCurrent) &&
+					(rel_session_index == RelSessionIndex::Current) &&
+					matches!(err, TopologyErr::NoConnectedGatewayMixnodes)
+				{
+					// Possibly still connecting to mixnodes
+					debug!(target: self.config.log_target, "Failed to generate cover packet: {err}");
+				} else {
+					warn!(target: self.config.log_target, "Failed to generate cover packet: {err}");
+				}
+				None
+			},
 		}
 	}
 

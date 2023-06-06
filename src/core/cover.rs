@@ -21,16 +21,15 @@
 //! Mixnet cover packet generation.
 
 use super::{
-	config::Config,
 	packet_queues::AddressedPacket,
 	sphinx::build_cover_packet,
 	topology::{NetworkStatus, RouteGenerator, RouteKind, Topology, TopologyErr},
 	util::default_boxed_array,
 };
 use arrayvec::ArrayVec;
-use log::warn;
 use rand::{CryptoRng, Rng};
 
+#[derive(PartialEq, Eq)]
 pub enum CoverKind {
 	Drop,
 	Loop,
@@ -41,42 +40,28 @@ pub fn gen_cover_packet(
 	topology: &Topology,
 	ns: &dyn NetworkStatus,
 	kind: CoverKind,
-	config: &Config,
-) -> Option<AddressedPacket> {
-	if !config.gen_cover_packets {
-		return None
-	}
-
-	let mut gen = || -> Result<AddressedPacket, TopologyErr> {
-		// Generate route
-		let route_generator = RouteGenerator::new(topology, ns);
-		let route_kind = match kind {
-			CoverKind::Drop => RouteKind::ToMixnode(route_generator.choose_destination_index(rng)?),
-			CoverKind::Loop => RouteKind::Loop,
-		};
-		let mut targets = ArrayVec::new();
-		let mut their_kx_publics = ArrayVec::new();
-		let first_mixnode_index = route_generator.gen_route(
-			&mut targets,
-			&mut their_kx_publics,
-			rng,
-			route_kind,
-			config.num_hops,
-		)?;
-		let peer_id = topology.mixnode_index_to_peer_id(first_mixnode_index)?;
-
-		// Build packet
-		let mut packet = default_boxed_array();
-		build_cover_packet(&mut packet, rng, &targets, &their_kx_publics, None);
-
-		Ok(AddressedPacket { peer_id, packet })
+	num_hops: usize,
+) -> Result<AddressedPacket, TopologyErr> {
+	// Generate route
+	let route_generator = RouteGenerator::new(topology, ns);
+	let route_kind = match kind {
+		CoverKind::Drop => RouteKind::ToMixnode(route_generator.choose_destination_index(rng)?),
+		CoverKind::Loop => RouteKind::Loop,
 	};
+	let mut targets = ArrayVec::new();
+	let mut their_kx_publics = ArrayVec::new();
+	let first_mixnode_index = route_generator.gen_route(
+		&mut targets,
+		&mut their_kx_publics,
+		rng,
+		route_kind,
+		num_hops,
+	)?;
+	let peer_id = topology.mixnode_index_to_peer_id(first_mixnode_index)?;
 
-	match gen() {
-		Ok(packet) => Some(packet),
-		Err(err) => {
-			warn!(target: config.log_target, "Failed to generate cover packet: {err}");
-			None
-		},
-	}
+	// Build packet
+	let mut packet = default_boxed_array();
+	build_cover_packet(&mut packet, rng, &targets, &their_kx_publics, None);
+
+	Ok(AddressedPacket { peer_id, packet })
 }

@@ -35,11 +35,13 @@ pub struct AddressedPacket {
 	pub packet: Box<Packet>,
 }
 
-pub struct ForwardPacket {
+/// `Eq` and `Ord` are implemented for this to support use in `BinaryHeap`s. Only `deadline` is
+/// compared.
+struct ForwardPacket {
 	/// When the packet should be sent.
-	pub deadline: Instant,
+	deadline: Instant,
 	/// The packet and destination.
-	pub packet: AddressedPacket,
+	packet: AddressedPacket,
 }
 
 impl PartialEq for ForwardPacket {
@@ -86,15 +88,15 @@ impl ForwardPacketQueue {
 	/// Insert a packet into the queue. Returns `true` iff the deadline of the item at the head of
 	/// the queue changed. Should only be called if there is space in the queue (see
 	/// [`has_space`](Self::has_space)).
-	pub fn insert(&mut self, packet: ForwardPacket) -> bool {
+	pub fn insert(&mut self, deadline: Instant, packet: AddressedPacket) -> bool {
 		debug_assert!(self.has_space());
 		let prev_deadline = self.next_deadline();
-		self.queue.push(packet);
+		self.queue.push(ForwardPacket { deadline, packet });
 		self.next_deadline() != prev_deadline
 	}
 
-	pub fn pop(&mut self) -> Option<ForwardPacket> {
-		self.queue.pop()
+	pub fn pop(&mut self) -> Option<AddressedPacket> {
+		self.queue.pop().map(|packet| packet.packet)
 	}
 }
 
@@ -154,7 +156,7 @@ impl AuthoredPacketQueue {
 	/// it wouldn't before.
 	pub fn pop(&mut self) -> (Option<AddressedPacket>, bool) {
 		let packet = self.queue.pop_front();
-		let space = self.config.multiple_messages || self.queue.is_empty();
+		let space = packet.is_some() && (self.config.multiple_messages || self.queue.is_empty());
 		(packet, space)
 	}
 }
