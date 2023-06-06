@@ -180,7 +180,7 @@ impl SessionPhase {
 		self < Self::DisconnectFromPrev
 	}
 
-	/// Should we allowing pushing to and popping from the authored packet queue for the specified
+	/// Should we allow pushing to and popping from the authored packet queue for the specified
 	/// session?
 	pub fn allow_requests_and_replies(self, rel_session_index: RelSessionIndex) -> bool {
 		match rel_session_index {
