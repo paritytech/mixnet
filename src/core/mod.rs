@@ -520,7 +520,8 @@ impl Mixnet {
 		let (action, session_index, session) = match res {
 			None => {
 				// This will usually get hit quite a bit on session changeover after we discard the
-				// keys for the previous session
+				// keys for the previous session. It may get hit just before a new session if other
+				// nodes switch sooner.
 				debug!(
 					target: self.config.log_target,
 					"Failed to peel packet; either bad MAC or unknown secret"
@@ -715,23 +716,44 @@ impl Mixnet {
 		self.events |= Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
 
 		// Choose randomly between drop and loop cover packet
-		if rng.gen_bool(self.config.loop_cover_proportion) {
-			gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Loop, &self.config)
+		let cover_kind = if rng.gen_bool(self.config.loop_cover_proportion) {
+			CoverKind::Loop
 		} else {
-			self.session_status
-				.phase
-				.allow_requests_and_replies(rel_session_index)
-				.then(|| {
-					let (packet, space) = session.authored_packet_queue.pop();
-					if space {
-						self.events |= Events::SPACE_IN_AUTHORED_PACKET_QUEUE;
-					}
-					packet
-				})
-				.flatten()
-				.or_else(|| {
-					gen_cover_packet(&mut rng, &session.topology, ns, CoverKind::Drop, &self.config)
-				})
+			CoverKind::Drop
+		};
+
+		// Maybe replace drop cover packet with request or reply packet from queue
+		if (cover_kind == CoverKind::Drop) &&
+			self.session_status.phase.allow_requests_and_replies(rel_session_index)
+		{
+			let (packet, space) = session.authored_packet_queue.pop();
+			if space {
+				self.events |= Events::SPACE_IN_AUTHORED_PACKET_QUEUE;
+			}
+			if packet.is_some() {
+				return packet
+			}
+		}
+
+		if !self.config.gen_cover_packets {
+			return None
+		}
+
+		// Generate cover packet
+		match gen_cover_packet(&mut rng, &session.topology, ns, cover_kind, self.config.num_hops) {
+			Ok(packet) => Some(packet),
+			Err(err) => {
+				if (self.session_status.phase == SessionPhase::CoverToCurrent) &&
+					(rel_session_index == RelSessionIndex::Current) &&
+					matches!(err, TopologyErr::NoConnectedGatewayMixnodes)
+				{
+					// Possibly still connecting to mixnodes
+					debug!(target: self.config.log_target, "Failed to generate cover packet: {err}");
+				} else {
+					warn!(target: self.config.log_target, "Failed to generate cover packet: {err}");
+				}
+				None
+			},
 		}
 	}
 
