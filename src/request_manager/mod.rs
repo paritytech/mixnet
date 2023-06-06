@@ -114,10 +114,7 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		Self {
 			config,
 			created_at: Instant::now(),
-			session_status: SessionStatus {
-				current_index: 0,
-				phase: SessionPhase::ConnectToCurrent,
-			},
+			session_status: SessionStatus { current_index: 0, phase: SessionPhase::CoverToCurrent },
 			post_queues: PostQueues::new(capacity),
 			retry_queue: VecDeque::with_capacity(capacity),
 			next_retry_deadline_changed: false,

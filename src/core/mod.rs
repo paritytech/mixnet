@@ -315,10 +315,7 @@ impl Mixnet {
 		Self {
 			config,
 
-			session_status: SessionStatus {
-				current_index: 0,
-				phase: SessionPhase::ConnectToCurrent,
-			},
+			session_status: SessionStatus { current_index: 0, phase: SessionPhase::CoverToCurrent },
 			sessions: Sessions { current: SessionSlot::Empty, prev: SessionSlot::Disabled },
 			kx_store: KxStore::new(kx_public_store),
 
@@ -653,13 +650,8 @@ impl Mixnet {
 		// Determine the mean period
 		let means: ArrayVec<_, 2> = self
 			.sessions
-			.enumerate()
-			.filter_map(|(rel_session_index, session)| {
-				self.session_status
-					.phase
-					.gen_cover_packets(rel_session_index)
-					.then_some(session.mean_authored_packet_period.as_secs_f64())
-			})
+			.iter()
+			.map(|session| session.mean_authored_packet_period.as_secs_f64())
 			.collect();
 		let mean = match means.into_inner() {
 			// Both sessions active. Send at half rate in each. Note that pop_next_authored_packet
@@ -668,9 +660,7 @@ impl Mixnet {
 			Err(mut means) => {
 				let mean = means.pop()?;
 				// Just one session active
-				if self.session_status.phase.gen_cover_packets(RelSessionIndex::Prev) &&
-					self.session_status.phase.gen_cover_packets(RelSessionIndex::Current)
-				{
+				if self.session_status.phase.need_prev() {
 					// Both sessions _should_ be active. Send at half rate.
 					2.0 * mean
 				} else {
@@ -697,13 +687,7 @@ impl Mixnet {
 		let mut rng = rand::thread_rng();
 
 		// First pick the session
-		let sessions: ArrayVec<_, 2> = self
-			.sessions
-			.enumerate_mut()
-			.filter(|(rel_session_index, _)| {
-				self.session_status.phase.gen_cover_packets(*rel_session_index)
-			})
-			.collect();
+		let sessions: ArrayVec<_, 2> = self.sessions.enumerate_mut().collect();
 		let (rel_session_index, session) = match sessions.into_inner() {
 			Ok(sessions) => {
 				// Both sessions active. We choose randomly based on their rates.

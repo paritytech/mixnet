@@ -130,12 +130,6 @@ impl Sessions {
 			.filter_map(|session| session.as_option())
 	}
 
-	pub fn enumerate(&self) -> impl Iterator<Item = (RelSessionIndex, &Session)> {
-		[(RelSessionIndex::Current, &self.current), (RelSessionIndex::Prev, &self.prev)]
-			.into_iter()
-			.filter_map(|(index, session)| session.as_option().map(|session| (index, session)))
-	}
-
 	/// This is guaranteed to return the current session first, if it exists.
 	pub fn enumerate_mut(&mut self) -> impl Iterator<Item = (RelSessionIndex, &mut Session)> {
 		[(RelSessionIndex::Current, &mut self.current), (RelSessionIndex::Prev, &mut self.prev)]
@@ -167,9 +161,6 @@ impl IndexMut<RelSessionIndex> for Sessions {
 /// Each session should progress through these phases in order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SessionPhase {
-	/// Connect to the mixnode set for the current session, but only attempt to forward traffic to
-	/// it.
-	ConnectToCurrent,
 	/// Generate cover traffic to the current session's mixnode set.
 	CoverToCurrent,
 	/// Build requests using the current session's mixnode set. The previous session's mixnode set
@@ -187,14 +178,6 @@ impl SessionPhase {
 	/// Is the previous session still needed?
 	pub fn need_prev(self) -> bool {
 		self < Self::DisconnectFromPrev
-	}
-
-	/// Should cover packets be generated for the specified session?
-	pub fn gen_cover_packets(self, rel_session_index: RelSessionIndex) -> bool {
-		match rel_session_index {
-			RelSessionIndex::Prev => self < Self::DisconnectFromPrev,
-			RelSessionIndex::Current => self >= Self::CoverToCurrent,
-		}
 	}
 
 	/// Should we allowing pushing to and popping from the authored packet queue for the specified
@@ -219,7 +202,6 @@ impl SessionPhase {
 impl fmt::Display for SessionPhase {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			Self::ConnectToCurrent => write!(fmt, "Connecting to current mixnode set"),
 			Self::CoverToCurrent => write!(fmt, "Generating cover traffic to current mixnode set"),
 			Self::RequestsToCurrent => write!(fmt, "Building requests using current mixnode set"),
 			Self::CoverToPrev => write!(fmt, "Only sending cover traffic to previous mixnode set"),
