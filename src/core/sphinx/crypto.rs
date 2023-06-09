@@ -45,9 +45,9 @@ use curve25519_dalek::{
 use lioness::LionessDefault;
 use rand::{CryptoRng, Rng};
 
-const KX_BLINDING_FACTOR_PERSONA: &[u8; 16] = b"sphinx-blind-fac";
-const SMALL_DERIVED_SECRETS_PERSONA: &[u8; 16] = b"sphinx-small-d-s";
-const PAYLOAD_ENCRYPTION_KEY_PERSONA: &[u8; 16] = b"sphinx-pl-en-key";
+const KX_BLINDING_FACTOR_PERSONAL: &[u8; 16] = b"sphinx-blind-fac";
+const SMALL_DERIVED_SECRETS_PERSONAL: &[u8; 16] = b"sphinx-small-d-s";
+const PAYLOAD_ENCRYPTION_KEY_PERSONAL: &[u8; 16] = b"sphinx-pl-en-key";
 
 ////////////////////////////////////////////////////////////////////////////////
 // Key exchange
@@ -79,8 +79,8 @@ pub fn derive_kx_public(kx_secret: &Scalar) -> KxPublic {
 fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> Scalar {
 	let kx_public: &GenericArray<_, _> = kx_public.into();
 	let key = kx_public.concat((*kx_shared_secret).into());
-	let h = Blake2bMac::<U32>::new_with_salt_and_personal(&key, b"", KX_BLINDING_FACTOR_PERSONA)
-		.expect("Key, salt, and persona sizes are fixed and small enough");
+	let h = Blake2bMac::<U32>::new_with_salt_and_personal(&key, b"", KX_BLINDING_FACTOR_PERSONAL)
+		.expect("Key, salt, and personalisation sizes are fixed and small enough");
 	clamp_scalar(h.finalize().into_bytes().into())
 }
 
@@ -140,16 +140,16 @@ pub fn gen_kx_public_and_shared_secrets(
 // Additional secret derivation
 ////////////////////////////////////////////////////////////////////////////////
 
-fn derive_secret(derived: &mut [u8], kx_shared_secret: &KxSharedSecret, persona: &[u8; 16]) {
+fn derive_secret(derived: &mut [u8], kx_shared_secret: &KxSharedSecret, personal: &[u8; 16]) {
 	for (i, chunk) in derived.chunks_mut(64).enumerate() {
 		// This is the construction libsodium uses for crypto_kdf_derive_from_key; see
 		// https://doc.libsodium.org/key_derivation/
 		let h = Blake2bMac::<U64>::new_with_salt_and_personal(
 			kx_shared_secret,
 			&i.to_le_bytes(),
-			persona,
+			personal,
 		)
-		.expect("Key, salt, and persona sizes are fixed and small enough");
+		.expect("Key, salt, and personalisation sizes are fixed and small enough");
 		h.finalize_into(GenericArray::from_mut_slice(chunk));
 	}
 }
@@ -166,7 +166,7 @@ pub struct SmallDerivedSecrets([u8; SMALL_DERIVED_SECRETS_SIZE]);
 impl SmallDerivedSecrets {
 	pub fn new(kx_shared_secret: &KxSharedSecret) -> Self {
 		let mut derived = [0; SMALL_DERIVED_SECRETS_SIZE];
-		derive_secret(&mut derived, kx_shared_secret, SMALL_DERIVED_SECRETS_PERSONA);
+		derive_secret(&mut derived, kx_shared_secret, SMALL_DERIVED_SECRETS_PERSONAL);
 		Self(derived)
 	}
 
@@ -192,7 +192,7 @@ pub type PayloadEncryptionKey = [u8; PAYLOAD_ENCRYPTION_KEY_SIZE];
 
 pub fn derive_payload_encryption_key(kx_shared_secret: &KxSharedSecret) -> PayloadEncryptionKey {
 	let mut derived = [0; PAYLOAD_ENCRYPTION_KEY_SIZE];
-	derive_secret(&mut derived, kx_shared_secret, PAYLOAD_ENCRYPTION_KEY_PERSONA);
+	derive_secret(&mut derived, kx_shared_secret, PAYLOAD_ENCRYPTION_KEY_PERSONAL);
 	derived
 }
 
