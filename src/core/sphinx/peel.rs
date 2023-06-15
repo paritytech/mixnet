@@ -71,7 +71,7 @@ fn check_payload_tag(tag: &PayloadTag) -> Result<(), PeelErr> {
 pub fn peel(
 	out: &mut Packet,
 	packet: &Packet,
-	kx_shared_secret: &KxSharedSecret,
+	kx_shared_secret: &SharedSecret,
 ) -> Result<Action, PeelErr> {
 	// This can only happen in the case of a malicious packet sender. I don't believe it would be a
 	// problem to skip this check, however it's cheap and the Sphinx paper says to do it.

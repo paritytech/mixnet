@@ -49,12 +49,14 @@ const KX_BLINDING_FACTOR_PERSONAL: &[u8; 16] = b"sphinx-blind-fac";
 const SMALL_DERIVED_SECRETS_PERSONAL: &[u8; 16] = b"sphinx-small-d-s";
 const PAYLOAD_ENCRYPTION_KEY_PERSONAL: &[u8; 16] = b"sphinx-pl-en-key";
 
+/// Size in bytes of a [`SharedSecret`].
+pub const SHARED_SECRET_SIZE: usize = 32;
+/// Either produced by key exchange or shared in a SURB.
+pub type SharedSecret = [u8; SHARED_SECRET_SIZE];
+
 ////////////////////////////////////////////////////////////////////////////////
 // Key exchange
 ////////////////////////////////////////////////////////////////////////////////
-
-/// Shared secret produced by key exchange between a packet sender and a mixnode.
-pub type KxSharedSecret = [u8; 32];
 
 /// Apply X25519 bit clamping to the given raw bytes to produce a scalar for use with Curve25519.
 pub fn clamp_scalar(mut scalar: [u8; 32]) -> Scalar {
@@ -76,7 +78,7 @@ pub fn derive_kx_public(kx_secret: &Scalar) -> KxPublic {
 	(ED25519_BASEPOINT_TABLE * kx_secret).to_montgomery().to_bytes()
 }
 
-fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> Scalar {
+fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &SharedSecret) -> Scalar {
 	let kx_public: &GenericArray<_, _> = kx_public.into();
 	let key = kx_public.concat((*kx_shared_secret).into());
 	let h = Blake2bMac::<U32>::new_with_salt_and_personal(&key, b"", KX_BLINDING_FACTOR_PERSONAL)
@@ -85,32 +87,28 @@ fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &KxSharedSe
 }
 
 /// Apply the blinding factor to `kx_secret`.
-fn blind_kx_secret(
-	kx_secret: &mut Scalar,
-	kx_public: &KxPublic,
-	kx_shared_secret: &KxSharedSecret,
-) {
+fn blind_kx_secret(kx_secret: &mut Scalar, kx_public: &KxPublic, kx_shared_secret: &SharedSecret) {
 	*kx_secret *= derive_kx_blinding_factor(kx_public, kx_shared_secret);
 }
 
 /// Apply the blinding factor to `kx_public`.
-pub fn blind_kx_public(kx_public: &KxPublic, kx_shared_secret: &KxSharedSecret) -> KxPublic {
+pub fn blind_kx_public(kx_public: &KxPublic, kx_shared_secret: &SharedSecret) -> KxPublic {
 	(MontgomeryPoint(*kx_public) * derive_kx_blinding_factor(kx_public, kx_shared_secret))
 		.to_bytes()
 }
 
-pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &Scalar) -> KxSharedSecret {
+pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &Scalar) -> SharedSecret {
 	(MontgomeryPoint(*kx_public) * kx_secret).to_bytes()
 }
 
-pub fn kx_shared_secret_is_identity(kx_shared_secret: &KxSharedSecret) -> bool {
+pub fn kx_shared_secret_is_identity(kx_shared_secret: &SharedSecret) -> bool {
 	MontgomeryPoint(*kx_shared_secret).is_identity()
 }
 
 /// Generate a public key to go in a packet and the corresponding shared secrets for each hop.
 pub fn gen_kx_public_and_shared_secrets(
 	kx_public: &mut KxPublic,
-	kx_shared_secrets: &mut ArrayVec<KxSharedSecret, MAX_HOPS>,
+	kx_shared_secrets: &mut ArrayVec<SharedSecret, MAX_HOPS>,
 	rng: &mut (impl Rng + CryptoRng),
 	their_kx_publics: &[KxPublic],
 ) {
@@ -140,12 +138,12 @@ pub fn gen_kx_public_and_shared_secrets(
 // Additional secret derivation
 ////////////////////////////////////////////////////////////////////////////////
 
-fn derive_secret(derived: &mut [u8], kx_shared_secret: &KxSharedSecret, personal: &[u8; 16]) {
+fn derive_secret(derived: &mut [u8], shared_secret: &SharedSecret, personal: &[u8; 16]) {
 	for (i, chunk) in derived.chunks_mut(64).enumerate() {
 		// This is the construction libsodium uses for crypto_kdf_derive_from_key; see
 		// https://doc.libsodium.org/key_derivation/
 		let h = Blake2bMac::<U64>::new_with_salt_and_personal(
-			kx_shared_secret,
+			shared_secret,
 			&i.to_le_bytes(),
 			personal,
 		)
@@ -164,9 +162,9 @@ const SMALL_DERIVED_SECRETS_SIZE: usize =
 pub struct SmallDerivedSecrets([u8; SMALL_DERIVED_SECRETS_SIZE]);
 
 impl SmallDerivedSecrets {
-	pub fn new(kx_shared_secret: &KxSharedSecret) -> Self {
+	pub fn new(shared_secret: &SharedSecret) -> Self {
 		let mut derived = [0; SMALL_DERIVED_SECRETS_SIZE];
-		derive_secret(&mut derived, kx_shared_secret, SMALL_DERIVED_SECRETS_PERSONAL);
+		derive_secret(&mut derived, shared_secret, SMALL_DERIVED_SECRETS_PERSONAL);
 		Self(derived)
 	}
 
@@ -190,9 +188,9 @@ impl SmallDerivedSecrets {
 pub const PAYLOAD_ENCRYPTION_KEY_SIZE: usize = 192;
 pub type PayloadEncryptionKey = [u8; PAYLOAD_ENCRYPTION_KEY_SIZE];
 
-pub fn derive_payload_encryption_key(kx_shared_secret: &KxSharedSecret) -> PayloadEncryptionKey {
+pub fn derive_payload_encryption_key(shared_secret: &SharedSecret) -> PayloadEncryptionKey {
 	let mut derived = [0; PAYLOAD_ENCRYPTION_KEY_SIZE];
-	derive_secret(&mut derived, kx_shared_secret, PAYLOAD_ENCRYPTION_KEY_PERSONAL);
+	derive_secret(&mut derived, shared_secret, PAYLOAD_ENCRYPTION_KEY_PERSONAL);
 	derived
 }
 

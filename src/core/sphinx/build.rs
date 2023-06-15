@@ -47,7 +47,7 @@ enum PacketKind<'a> {
 /// hops.
 fn build_header(
 	header: &mut Header,
-	kx_shared_secrets: &mut ArrayVec<KxSharedSecret, MAX_HOPS>,
+	kx_shared_secrets: &mut ArrayVec<SharedSecret, MAX_HOPS>,
 	rng: &mut (impl Rng + CryptoRng),
 	targets: &[Target],
 	their_kx_publics: &[KxPublic],
@@ -234,7 +234,7 @@ pub fn complete_request_packet(
 }
 
 /// Size in bytes of a [`Surb`].
-pub const SURB_SIZE: usize = RAW_MIXNODE_INDEX_SIZE + HEADER_SIZE + PAYLOAD_ENCRYPTION_KEY_SIZE;
+pub const SURB_SIZE: usize = RAW_MIXNODE_INDEX_SIZE + HEADER_SIZE + SHARED_SECRET_SIZE;
 /// A "single-use reply block". This should be treated as an opaque type.
 pub type Surb = [u8; SURB_SIZE];
 
@@ -258,8 +258,8 @@ pub fn build_surb(
 	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
 	debug_assert!(their_kx_publics.len() <= MAX_HOPS);
 
-	let (raw_first_mixnode_index, header, first_payload_encryption_key) =
-		mut_array_refs![surb, RAW_MIXNODE_INDEX_SIZE, HEADER_SIZE, PAYLOAD_ENCRYPTION_KEY_SIZE];
+	let (raw_first_mixnode_index, header, shared_secret) =
+		mut_array_refs![surb, RAW_MIXNODE_INDEX_SIZE, HEADER_SIZE, SHARED_SECRET_SIZE];
 
 	*raw_first_mixnode_index = first_mixnode_index.get().to_le_bytes();
 
@@ -274,10 +274,13 @@ pub fn build_surb(
 		PacketKind::Reply(id),
 	);
 
-	// Generate the payload encryption keys. The first key is totally random, the rest are derived
-	// from the key-exchange shared secrets.
-	rng.fill_bytes(first_payload_encryption_key);
-	payload_encryption_keys.push(*first_payload_encryption_key);
+	// Generate the payload encryption keys. The first key is derived from a totally random shared
+	// secret, the rest are derived from the key-exchange shared secrets. Note that we _could_ just
+	// return the shared secrets here and derive the encryption keys in decrypt_reply_payload. This
+	// wouldn't save much time/space though, and it seems better from a security perspective to not
+	// keep the shared secrets around.
+	rng.fill_bytes(shared_secret);
+	payload_encryption_keys.push(derive_payload_encryption_key(shared_secret));
 	kx_shared_secrets.pop(); // Last hop does not encrypt
 	for kx_shared_secret in &kx_shared_secrets {
 		payload_encryption_keys.push(derive_payload_encryption_key(kx_shared_secret));
@@ -292,8 +295,8 @@ pub fn build_surb(
 /// returned. Will only return [`None`] if the SURB is malformed.
 pub fn complete_reply_packet(packet: &mut Packet, surb: &Surb) -> Option<MixnodeIndex> {
 	let (header, payload) = mut_array_refs![packet, HEADER_SIZE, PAYLOAD_SIZE];
-	let (raw_first_mixnode_index, surb_header, first_payload_encryption_key) =
-		array_refs![surb, RAW_MIXNODE_INDEX_SIZE, HEADER_SIZE, PAYLOAD_ENCRYPTION_KEY_SIZE];
+	let (raw_first_mixnode_index, surb_header, shared_secret) =
+		array_refs![surb, RAW_MIXNODE_INDEX_SIZE, HEADER_SIZE, SHARED_SECRET_SIZE];
 
 	// Copy the header from the SURB across as-is. We can't really check it; we just have to trust
 	// it.
@@ -303,7 +306,7 @@ pub fn complete_reply_packet(packet: &mut Packet, surb: &Surb) -> Option<Mixnode
 	*array_mut_ref![payload, PAYLOAD_DATA_SIZE, PAYLOAD_TAG_SIZE] = PAYLOAD_TAG;
 
 	// Encrypt the payload. Actually "decrypt" to make decrypt_reply_payload slightly simpler.
-	decrypt_payload(payload, first_payload_encryption_key);
+	decrypt_payload(payload, &derive_payload_encryption_key(shared_secret));
 
 	// Return the mixnode index of the first hop from the SURB
 	let raw_first_mixnode_index = RawMixnodeIndex::from_le_bytes(*raw_first_mixnode_index);

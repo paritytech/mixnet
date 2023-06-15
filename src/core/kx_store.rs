@@ -29,7 +29,7 @@ use super::{
 	sessions::SessionIndex,
 	sphinx::{
 		clamp_scalar, derive_kx_public, derive_kx_shared_secret, gen_kx_secret, KxPublic,
-		KxSharedSecret,
+		SharedSecret,
 	},
 };
 use curve25519_dalek::scalar::Scalar;
@@ -156,7 +156,7 @@ impl KxStore {
 		&mut self,
 		index: SessionIndex,
 		their_public: &KxPublic,
-	) -> Option<KxSharedSecret> {
+	) -> Option<SharedSecret> {
 		self.session_secrets
 			.iter()
 			.find(|s| s.index == index)
