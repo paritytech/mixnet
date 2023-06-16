@@ -56,13 +56,13 @@ fn build_header(
 	debug_assert_eq!(targets.len() + 1, their_kx_publics.len());
 	debug_assert!(their_kx_publics.len() <= MAX_HOPS);
 
-	let (kx_public, mac_plus_encrypted) =
-		mut_array_refs![header, KX_PUBLIC_SIZE, MAC_SIZE + ENCRYPTED_HEADER_SIZE];
+	let (kx_public, mac_plus_actions) =
+		mut_array_refs![header, KX_PUBLIC_SIZE, MAC_SIZE + ACTIONS_SIZE];
 
 	gen_kx_public_and_shared_secrets(kx_public, kx_shared_secrets, rng, their_kx_publics);
 
-	// Encrypted part of the header, and current write offset into
-	let encrypted = array_mut_ref![mac_plus_encrypted, MAC_SIZE, ENCRYPTED_HEADER_SIZE];
+	// Routing actions, and current write offset into
+	let actions = array_mut_ref![mac_plus_actions, MAC_SIZE, ACTIONS_SIZE];
 	let mut offset = 0;
 
 	// Total forwarding delay across all hops
@@ -72,32 +72,32 @@ fn build_header(
 	// for the second pass is stashed here. The last hop is handled specially so is excluded here.
 	struct Hop {
 		mac_key: MacKey,
-		encryption_keystream: [u8; ENCRYPTED_HEADER_SIZE + MAX_HEADER_PAD_SIZE],
-		start_offset: u16, // Starting offset of hop in encrypted
+		keystream: [u8; ACTIONS_SIZE + MAX_ACTIONS_PAD_SIZE],
+		start_offset: u16, // Starting offset of hop in actions
 	}
 	let mut hops: ArrayVec<Hop, { MAX_HOPS - 1 }> = ArrayVec::new();
 
-	// Header padding for length invariance, generated from the header encryption keystreams. This
-	// is only needed for computing the MACs.
-	let mut pad = [0; ENCRYPTED_HEADER_SIZE - RAW_ACTION_SIZE];
+	// Padding for length invariance, generated from the keystreams. This is only needed for
+	// computing the MACs.
+	let mut pad = [0; ACTIONS_SIZE - RAW_ACTION_SIZE];
 
 	// Loop over hops forward (excluding the last hop)
 	for (target, kx_shared_secret) in targets.iter().zip(kx_shared_secrets.iter()) {
-		// Write target into the header
+		// Write forward action
 		let start_offset = offset;
 		offset += RAW_ACTION_SIZE;
 		let raw_action = match target {
 			Target::MixnodeIndex(mixnode_index) => mixnode_index.get(),
 			Target::PeerId(peer_id) => {
-				*mut_arr_at(encrypted, offset) = *peer_id;
+				*mut_arr_at(actions, offset) = *peer_id;
 				offset += PEER_ID_SIZE;
 				RAW_ACTION_FORWARD_TO_PEER_ID
 			},
 		};
-		*mut_arr_at(encrypted, start_offset) = raw_action.to_le_bytes();
+		*mut_arr_at(actions, start_offset) = raw_action.to_le_bytes();
 
 		// The MAC for the next hop can't be computed yet. Leave a gap for it. Note that this is
-		// always the last thing in the header for the hop; this is assumed by the backward loop.
+		// always the last part of the action; this is assumed by the backward loop.
 		offset += MAC_SIZE;
 
 		let sds = SmallDerivedSecrets::new(kx_shared_secret);
@@ -106,81 +106,72 @@ fn build_header(
 
 		hops.push(Hop {
 			mac_key: *sds.mac_key(),
-			encryption_keystream: [0; ENCRYPTED_HEADER_SIZE + MAX_HEADER_PAD_SIZE],
+			keystream: [0; ACTIONS_SIZE + MAX_ACTIONS_PAD_SIZE],
 			start_offset: start_offset as u16,
 		});
-		let encryption_keystream =
-			&mut hops.last_mut().expect("Just pushed, so not empty").encryption_keystream;
-		apply_header_encryption_keystream(encryption_keystream, sds.header_encryption_key());
+		let keystream = &mut hops.last_mut().expect("Just pushed, so not empty").keystream;
+		apply_actions_encryption_keystream(keystream, sds.actions_encryption_key());
 
 		// At the end of the loop, pad will contain the padding as seen by the last hop (before
 		// decryption)
-		apply_keystream(
-			&mut pad[..offset],
-			&encryption_keystream[ENCRYPTED_HEADER_SIZE - start_offset..],
-		);
+		apply_keystream(&mut pad[..offset], &keystream[ACTIONS_SIZE - start_offset..]);
 	}
 
 	// Handle the last hop
 	{
-		// Write deliver action into the header
+		// Write deliver action
 		let start_offset = offset;
 		offset += RAW_ACTION_SIZE;
 		let raw_action = match kind {
 			PacketKind::Request => RAW_ACTION_DELIVER_REQUEST,
 			PacketKind::Reply(surb_id) => {
-				*mut_arr_at(encrypted, offset) = *surb_id;
+				*mut_arr_at(actions, offset) = *surb_id;
 				offset += SURB_ID_SIZE;
 				RAW_ACTION_DELIVER_REPLY
 			},
 			PacketKind::Cover(None) => RAW_ACTION_DELIVER_COVER,
 			PacketKind::Cover(Some(cover_id)) => {
-				*mut_arr_at(encrypted, offset) = *cover_id;
+				*mut_arr_at(actions, offset) = *cover_id;
 				offset += COVER_ID_SIZE;
 				RAW_ACTION_DELIVER_COVER_WITH_ID
 			},
 		};
-		*mut_arr_at(encrypted, start_offset) = raw_action.to_le_bytes();
+		*mut_arr_at(actions, start_offset) = raw_action.to_le_bytes();
 
-		// Fill the remainder of the header with random bytes, so the last hop cannot determine the
-		// path length
-		rng.fill_bytes(&mut encrypted[offset..]);
+		// Fill the remainder of the routing actions field with random bytes, so the last hop
+		// cannot determine the path length
+		rng.fill_bytes(&mut actions[offset..]);
 
 		let sds =
 			SmallDerivedSecrets::new(kx_shared_secrets.last().expect("There is at least one hop"));
 
-		// Encrypt the header for the last hop. Note that the padding is not touched here; it is
-		// generated entirely from the keystreams for earlier hops, and effectively gets scrambled
-		// even further when the last hop "decrypts" it.
-		apply_header_encryption_keystream(
-			&mut encrypted[start_offset..],
-			sds.header_encryption_key(),
+		// Encrypt the deliver action (and the random bytes, although this isn't really necessary).
+		// Note that the padding is not touched here; it is generated entirely from the keystreams
+		// for earlier hops, and effectively gets scrambled even further when the last hop
+		// "decrypts" it.
+		apply_actions_encryption_keystream(
+			&mut actions[start_offset..],
+			sds.actions_encryption_key(),
 		);
 
-		// Compute the MAC for the last hop and place it in the appropriate place in the header
-		// (right before the last hop action)
-		*mut_arr_at(mac_plus_encrypted, start_offset) =
-			compute_mac(&encrypted[start_offset..], &pad[..start_offset], sds.mac_key());
+		// Compute the MAC for the last hop and place it in the appropriate place (right before the
+		// deliver action)
+		*mut_arr_at(mac_plus_actions, start_offset) =
+			compute_mac(&actions[start_offset..], &pad[..start_offset], sds.mac_key());
 	}
 
 	// Loop over hops backward (excluding the last hop, which has already been handled)
 	for hop in hops.iter().rev() {
 		let start_offset = hop.start_offset as usize;
 
-		// Encrypt the header and padding for the hop
-		apply_keystream(
-			&mut mac_plus_encrypted[MAC_SIZE + start_offset..],
-			&hop.encryption_keystream,
-		);
-		apply_keystream(
-			&mut pad[..start_offset],
-			&hop.encryption_keystream[ENCRYPTED_HEADER_SIZE - start_offset..],
-		);
+		// Encrypt the actions and padding for the hop
+		apply_keystream(&mut mac_plus_actions[MAC_SIZE + start_offset..], &hop.keystream);
+		apply_keystream(&mut pad[..start_offset], &hop.keystream[ACTIONS_SIZE - start_offset..]);
 
-		// Compute the MAC for the hop and place it in the appropriate place in the header (right
-		// before the hop action)
-		*mut_arr_at(mac_plus_encrypted, start_offset) = compute_mac(
-			&mac_plus_encrypted[MAC_SIZE + start_offset..],
+		// Compute the MAC for the hop and place it in the appropriate place (right before the hop
+		// action)
+		*mut_arr_at(mac_plus_actions, start_offset) = compute_mac(
+			&mac_plus_actions[MAC_SIZE + start_offset..],
 			&pad[..start_offset],
 			&hop.mac_key,
 		);

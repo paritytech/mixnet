@@ -22,7 +22,7 @@
 
 use super::{
 	delay::{DelaySeed, DELAY_SEED_SIZE},
-	packet::{EncryptedHeader, KxPublic, Mac, Payload, MAX_HOPS},
+	packet::{Actions, KxPublic, Mac, Payload, MAX_HOPS},
 };
 use arrayref::array_refs;
 use arrayvec::ArrayVec;
@@ -154,10 +154,10 @@ fn derive_secret(derived: &mut [u8], shared_secret: &SharedSecret, personal: &[u
 
 const MAC_KEY_SIZE: usize = 16;
 pub type MacKey = [u8; MAC_KEY_SIZE];
-const HEADER_ENCRYPTION_KEY_SIZE: usize = 32;
-pub type HeaderEncryptionKey = [u8; HEADER_ENCRYPTION_KEY_SIZE];
+const ACTIONS_ENCRYPTION_KEY_SIZE: usize = 32;
+pub type ActionsEncryptionKey = [u8; ACTIONS_ENCRYPTION_KEY_SIZE];
 const SMALL_DERIVED_SECRETS_SIZE: usize =
-	MAC_KEY_SIZE + HEADER_ENCRYPTION_KEY_SIZE + DELAY_SEED_SIZE;
+	MAC_KEY_SIZE + ACTIONS_ENCRYPTION_KEY_SIZE + DELAY_SEED_SIZE;
 
 pub struct SmallDerivedSecrets([u8; SMALL_DERIVED_SECRETS_SIZE]);
 
@@ -168,15 +168,15 @@ impl SmallDerivedSecrets {
 		Self(derived)
 	}
 
-	fn split(&self) -> (&MacKey, &HeaderEncryptionKey, &DelaySeed) {
-		array_refs![&self.0, MAC_KEY_SIZE, HEADER_ENCRYPTION_KEY_SIZE, DELAY_SEED_SIZE]
+	fn split(&self) -> (&MacKey, &ActionsEncryptionKey, &DelaySeed) {
+		array_refs![&self.0, MAC_KEY_SIZE, ACTIONS_ENCRYPTION_KEY_SIZE, DELAY_SEED_SIZE]
 	}
 
 	pub fn mac_key(&self) -> &MacKey {
 		self.split().0
 	}
 
-	pub fn header_encryption_key(&self) -> &HeaderEncryptionKey {
+	pub fn actions_encryption_key(&self) -> &ActionsEncryptionKey {
 		self.split().1
 	}
 
@@ -198,24 +198,24 @@ pub fn derive_payload_encryption_key(shared_secret: &SharedSecret) -> PayloadEnc
 // MAC computation
 ////////////////////////////////////////////////////////////////////////////////
 
-pub fn compute_mac(encrypted_header: &[u8], pad: &[u8], key: &MacKey) -> Mac {
+pub fn compute_mac(actions: &[u8], pad: &[u8], key: &MacKey) -> Mac {
 	let mut h = Blake2bMac::<U16>::new_from_slice(key).expect("Key size is fixed and small enough");
-	h.update(encrypted_header);
+	h.update(actions);
 	h.update(pad);
 	h.finalize().into_bytes().into()
 }
 
-pub fn mac_ok(mac: &Mac, encrypted_header: &EncryptedHeader, key: &MacKey) -> bool {
+pub fn mac_ok(mac: &Mac, actions: &Actions, key: &MacKey) -> bool {
 	let mut h = Blake2bMac::<U16>::new_from_slice(key).expect("Key size is fixed and small enough");
-	h.update(encrypted_header);
+	h.update(actions);
 	h.verify(mac.into()).is_ok()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Header encryption
+// Actions encryption
 ////////////////////////////////////////////////////////////////////////////////
 
-pub fn apply_header_encryption_keystream(data: &mut [u8], key: &HeaderEncryptionKey) {
+pub fn apply_actions_encryption_keystream(data: &mut [u8], key: &ActionsEncryptionKey) {
 	// Key is only used once, so fine for nonce to be 0
 	let mut c = ChaCha20::new(key.into(), &[0; 8].into());
 	c.apply_keystream(data);

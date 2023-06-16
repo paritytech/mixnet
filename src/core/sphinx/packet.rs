@@ -25,12 +25,12 @@
 //! - [`Header`]:
 //!   - Key-exchange public key ([`KxPublic`], alpha in the Sphinx paper).
 //!   - [`Mac`] (gamma in the Sphinx paper).
-//!   - [`EncryptedHeader`] (beta in the Sphinx paper).
+//!   - Routing actions ([`Actions`], beta in the Sphinx paper).
 //! - [`Payload`] (delta in the Sphinx paper):
 //!   - [`PayloadData`].
 //!   - [`PayloadTag`] (for detecting tampering).
 //!
-//! For each hop, the encrypted header contains, in order:
+//! For each hop, the routing actions field contains, in order:
 //!
 //! - A [`RawAction`]. Always a deliver action for the last hop and a forward action for earlier
 //!   hops.
@@ -68,19 +68,19 @@ pub const PEER_ID_SIZE: usize = 32;
 /// Globally unique identifier for a network peer. The [`core`](crate::core) module treats this as
 /// an opaque type.
 pub type PeerId = [u8; PEER_ID_SIZE];
-/// Maximum amount of padding that might need to be appended to the header for length invariance at
-/// each hop.
-pub const MAX_HEADER_PAD_SIZE: usize = RAW_ACTION_SIZE + PEER_ID_SIZE + MAC_SIZE;
+/// Maximum amount of padding that might need to be appended to the routing actions for length
+/// invariance at each hop.
+pub const MAX_ACTIONS_PAD_SIZE: usize = RAW_ACTION_SIZE + PEER_ID_SIZE + MAC_SIZE;
 pub const SURB_COVER_ID_SIZE: usize = 16;
 pub const SURB_ID_SIZE: usize = SURB_COVER_ID_SIZE;
 pub type SurbId = [u8; SURB_ID_SIZE];
 pub const COVER_ID_SIZE: usize = SURB_COVER_ID_SIZE;
 pub type CoverId = [u8; COVER_ID_SIZE];
-pub const ENCRYPTED_HEADER_SIZE: usize = (MAX_HOPS * (RAW_ACTION_SIZE + MAC_SIZE)) +
+pub const ACTIONS_SIZE: usize = (MAX_HOPS * (RAW_ACTION_SIZE + MAC_SIZE)) +
 	PEER_ID_SIZE + // Allow one hop to use a peer ID
 	SURB_COVER_ID_SIZE // Last hop may have a SURB ID or a cover ID...
 	- MAC_SIZE; // ...but no next-hop MAC
-pub type EncryptedHeader = [u8; ENCRYPTED_HEADER_SIZE];
+pub type Actions = [u8; ACTIONS_SIZE];
 
 pub const PAYLOAD_DATA_SIZE: usize = 2048;
 pub type PayloadData = [u8; PAYLOAD_DATA_SIZE];
@@ -88,7 +88,7 @@ pub const PAYLOAD_TAG_SIZE: usize = 16;
 pub type PayloadTag = [u8; PAYLOAD_TAG_SIZE];
 pub const PAYLOAD_TAG: PayloadTag = [0; PAYLOAD_TAG_SIZE];
 
-pub const HEADER_SIZE: usize = KX_PUBLIC_SIZE + MAC_SIZE + ENCRYPTED_HEADER_SIZE;
+pub const HEADER_SIZE: usize = KX_PUBLIC_SIZE + MAC_SIZE + ACTIONS_SIZE;
 pub type Header = [u8; HEADER_SIZE];
 pub const PAYLOAD_SIZE: usize = PAYLOAD_DATA_SIZE + PAYLOAD_TAG_SIZE;
 pub type Payload = [u8; PAYLOAD_SIZE];
