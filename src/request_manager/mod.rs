@@ -78,11 +78,15 @@ impl<R> RequestState<R> {
 	/// `past` should be some instant in the past.
 	fn new_destination(&mut self, past: Instant) {
 		// Change message ID when changing destination; a message ID should only be known by the
-		// sender and receiver. Assuming that message IDs are used to identify replies, this will
-		// mean that we no longer recognise replies from the previous destination. We only switch
-		// if there is an issue with the previous destination (eg the session is ending, or it has
-		// not replied), so this shouldn't matter much. TODO We could keep the old message ID
-		// around as well as the new one and match against it in remove().
+		// sender and receiver. Additionally, if we're changing session, and happen to pick the
+		// same node in the new session, we really need a different message ID to avoid old SURBs
+		// getting used in the new session.
+		//
+		// Assuming that message IDs are used to identify replies, this will mean that we no longer
+		// recognise replies from the previous destination. We only switch if there is an issue
+		// with the previous destination (eg the session is ending, or it has not replied), so this
+		// shouldn't matter much. TODO We could keep the old message ID around as well as the new
+		// one and match against it in remove().
 		rand::thread_rng().fill_bytes(&mut self.message_id);
 		self.session_index = None;
 		self.destination_index = None;
