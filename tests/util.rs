@@ -18,15 +18,14 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use once_cell::sync::Lazy;
-use std::{collections::HashMap, sync::Mutex};
+use parking_lot::Mutex;
+use std::{collections::HashMap, sync::OnceLock};
 
 pub fn log_target(peer_index: usize) -> &'static str {
-	static LOG_TARGETS: Lazy<Mutex<HashMap<usize, &'static str>>> =
-		Lazy::new(|| Mutex::new(HashMap::new()));
+	static LOG_TARGETS: OnceLock<Mutex<HashMap<usize, &'static str>>> = OnceLock::new();
 	LOG_TARGETS
+		.get_or_init(|| Mutex::new(HashMap::new()))
 		.lock()
-		.unwrap()
 		.entry(peer_index)
 		.or_insert_with(|| Box::leak(format!("mixnet({peer_index})").into_boxed_str()))
 }
