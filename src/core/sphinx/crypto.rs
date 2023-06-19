@@ -101,6 +101,7 @@ pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &Scalar) -> Shar
 	(MontgomeryPoint(*kx_public) * kx_secret).to_bytes()
 }
 
+/// Returns `true` if `kx_shared_secret` is the identity point.
 pub fn kx_shared_secret_is_identity(kx_shared_secret: &SharedSecret) -> bool {
 	MontgomeryPoint(*kx_shared_secret).is_identity()
 }

@@ -45,10 +45,6 @@ pub enum Action {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PeelErr {
-	#[error(
-		"Bad key-exchange public key in header (Diffie-Hellman exchange produced identity point)"
-	)]
-	KxPublic,
 	#[error("Bad MAC in header")]
 	Mac,
 	#[error("Bad action in header")]
@@ -73,12 +69,6 @@ pub fn peel(
 	packet: &Packet,
 	kx_shared_secret: &SharedSecret,
 ) -> Result<Action, PeelErr> {
-	// This can only happen in the case of a malicious packet sender. I don't believe it would be a
-	// problem to skip this check, however it's cheap and the Sphinx paper says to do it.
-	if kx_shared_secret_is_identity(kx_shared_secret) {
-		return Err(PeelErr::KxPublic)
-	}
-
 	// (kx_public, mac, actions, payload) correspond to (alpha, gamma, beta, delta) in the Sphinx
 	// paper
 	let (kx_public, mac, actions, payload) =

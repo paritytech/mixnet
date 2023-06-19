@@ -45,8 +45,9 @@ pub use self::{
 	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		Delay, KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
-		MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
+		kx_shared_secret_is_identity, Delay, KxPublic, MixnodeIndex, Packet, PeerId,
+		RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE,
+		PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
@@ -497,27 +498,36 @@ impl Mixnet {
 
 		let mut out = [0; PACKET_SIZE];
 		let res = self.sessions.enumerate_mut().find_map(|(rel_session_index, session)| {
-			if session.replay_filter.contains(kx_public(packet)) {
-				return Some(Err(Either::Left(
-					"Packet key-exchange public key found in replay filter",
-				)))
-			}
-
 			let session_index = rel_session_index + self.session_status.current_index;
 			// If secret key for session not found, try other session
 			let kx_shared_secret =
 				self.kx_store.session_exchange(session_index, kx_public(packet))?;
+
+			// This can only happen in the case of a malicious packet sender. I don't believe it
+			// would be a problem to skip this check, however it's cheap and the Sphinx paper says
+			// to do it.
+			if kx_shared_secret_is_identity(&kx_shared_secret) {
+				return Some(Err(Either::Left(
+					"Bad key-exchange public key in header \
+					(Diffie-Hellman exchange produced identity point)",
+				)))
+			}
+
+			let replay_tag = session.replay_filter.tag(&kx_shared_secret);
+			if session.replay_filter.contains(replay_tag) {
+				return Some(Err(Either::Left("Packet found in replay filter")))
+			}
 
 			match peel(&mut out, packet, &kx_shared_secret) {
 				// Bad MAC possibly means we used the wrong secret; try other session
 				Err(PeelErr::Mac) => None,
 				// Any other error means the packet is bad; just discard it
 				Err(err) => Some(Err(Either::Right(err))),
-				Ok(action) => Some(Ok((action, session_index, session))),
+				Ok(action) => Some(Ok((action, session_index, session, replay_tag))),
 			}
 		});
 
-		let (action, session_index, session) = match res {
+		let (action, session_index, session, replay_tag) = match res {
 			None => {
 				// This will usually get hit quite a bit on session changeover after we discard the
 				// keys for the previous session. It may get hit just before a new session if other
@@ -550,7 +560,7 @@ impl Mixnet {
 
 				// After the is_mixnode check to avoid inserting anything into the replay filters
 				// for sessions where we are not a mixnode
-				session.replay_filter.insert(kx_public(packet));
+				session.replay_filter.insert(replay_tag);
 
 				match session.topology.target_to_peer_id(&target) {
 					Ok(peer_id) => {
@@ -580,7 +590,7 @@ impl Mixnet {
 
 				// After the is_mixnode check to avoid inserting anything into the replay filters
 				// for sessions where we are not a mixnode
-				session.replay_filter.insert(kx_public(packet));
+				session.replay_filter.insert(replay_tag);
 
 				// Add to fragment assembler and return any completed message
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
