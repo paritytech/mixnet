@@ -40,7 +40,6 @@ use c2_chacha::{
 };
 use curve25519_dalek::{
 	constants::ED25519_BASEPOINT_TABLE, montgomery::MontgomeryPoint, scalar::Scalar,
-	traits::IsIdentity,
 };
 use lioness::LionessDefault;
 use rand::{CryptoRng, Rng};
@@ -99,11 +98,6 @@ pub fn blind_kx_public(kx_public: &KxPublic, kx_shared_secret: &SharedSecret) ->
 
 pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &Scalar) -> SharedSecret {
 	(MontgomeryPoint(*kx_public) * kx_secret).to_bytes()
-}
-
-/// Returns `true` if `kx_shared_secret` is the identity point.
-pub fn kx_shared_secret_is_identity(kx_shared_secret: &SharedSecret) -> bool {
-	MontgomeryPoint(*kx_shared_secret).is_identity()
 }
 
 /// Generate a public key to go in a packet and the corresponding shared secrets for each hop.

@@ -45,9 +45,8 @@ pub use self::{
 	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		kx_shared_secret_is_identity, Delay, KxPublic, MixnodeIndex, Packet, PeerId,
-		RawMixnodeIndex, Surb, KX_PUBLIC_SIZE, MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE,
-		PEER_ID_SIZE, SURB_SIZE,
+		Delay, KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
+		MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
@@ -502,16 +501,6 @@ impl Mixnet {
 			// If secret key for session not found, try other session
 			let kx_shared_secret =
 				self.kx_store.session_exchange(session_index, kx_public(packet))?;
-
-			// This can only happen in the case of a malicious packet sender. I don't believe it
-			// would be a problem to skip this check, however it's cheap and the Sphinx paper says
-			// to do it.
-			if kx_shared_secret_is_identity(&kx_shared_secret) {
-				return Some(Err(Either::Left(
-					"Bad key-exchange public key in header \
-					(Diffie-Hellman exchange produced identity point)",
-				)))
-			}
 
 			let replay_tag = session.replay_filter.tag(&kx_shared_secret);
 			if session.replay_filter.contains(replay_tag) {
