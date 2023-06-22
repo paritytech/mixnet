@@ -105,6 +105,8 @@ pub struct RequestMessage {
 /// A reply to a previously sent request.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReplyMessage {
+	/// ID of the request message this reply was sent in response to.
+	pub request_id: MessageId,
 	/// The message contents.
 	pub data: Vec<u8>,
 }
@@ -601,12 +603,15 @@ impl Mixnet {
 				// necessary. The main reason for avoiding the replay filter here is so that it
 				// does not need to be allocated at all for sessions where we are not a mixnode.
 
-				// Lookup payload encryption keys and decrypt payload
+				// Lookup payload encryption keys and decrypt payload. The original request message
+				// ID is stored alongside the keys; it is simply returned with any completed
+				// message to provide context.
 				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
 					warn!(target: self.config.log_target,
 						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
 					return None
 				};
+				let request_id = *entry.message_id();
 				let res = decrypt_reply_payload(payload, entry.keys());
 				entry.remove();
 				if let Err(err) = res {
@@ -622,7 +627,7 @@ impl Mixnet {
 							error!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
-						Message::Reply(ReplyMessage { data: message.data })
+						Message::Reply(ReplyMessage { request_id, data: message.data })
 					},
 				)
 			},
@@ -795,7 +800,8 @@ impl Mixnet {
 					fragment_blueprint.write_except_surbs(fragment);
 					for surb in fragment_blueprint.surbs(fragment) {
 						// TODO Currently we don't clean up keystore entries on failure
-						let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
+						let (id, keys) =
+							self.surb_keystore.insert(rng, message_id, self.config.log_target);
 						let num_hops = self.config.num_hops;
 						let metrics = request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
 						reply_hops = max(reply_hops, metrics.num_hops);

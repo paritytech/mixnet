@@ -243,6 +243,7 @@ fn basic_operation() {
 					let Message::Reply(message) = message else {
 						panic!("Expected reply message")
 					};
+					assert_eq!(message.request_id, request_message_id);
 					assert_eq!(message.data, reply_data);
 				},
 				_ => panic!("Unexpected message"),
