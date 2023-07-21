@@ -65,8 +65,7 @@ pub const RAW_ACTION_DELIVER_COVER: RawAction = 0xff03;
 pub const RAW_ACTION_DELIVER_COVER_WITH_ID: RawAction = 0xff04;
 /// Size in bytes of a [`PeerId`].
 pub const PEER_ID_SIZE: usize = 32;
-/// Globally unique identifier for a network peer. The [`core`](crate::core) module treats this as
-/// an opaque type.
+/// Globally unique identifier for a network peer. This is treated as an opaque type.
 pub type PeerId = [u8; PEER_ID_SIZE];
 /// Maximum amount of padding that might need to be appended to the routing actions for length
 /// invariance at each hop.

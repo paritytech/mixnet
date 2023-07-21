@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Mixnet core logic. This module tries to be network agnostic.
+//! Mixnet core logic.
 
 // Get a bunch of these from [mut_]array_refs
 #![allow(clippy::ptr_offset_with_cast)]
@@ -278,7 +278,7 @@ bitflags! {
 	}
 }
 
-/// Network-agnostic mixnet core.
+/// Mixnet core state.
 pub struct Mixnet {
 	config: Config,
 

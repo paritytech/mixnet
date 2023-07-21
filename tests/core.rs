@@ -20,20 +20,26 @@
 
 //! Mixnet core tests.
 
-#[path = "util.rs"]
-mod util;
-
 use mixnet::core::{
 	Config, Events, KxPublicStore, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId,
 	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
 use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
+use parking_lot::Mutex;
 use rand::{Rng, RngCore};
 use std::{
 	collections::{HashMap, HashSet},
-	sync::Arc,
+	sync::{Arc, OnceLock},
 };
-use util::log_target;
+
+fn log_target(peer_index: usize) -> &'static str {
+	static LOG_TARGETS: OnceLock<Mutex<HashMap<usize, &'static str>>> = OnceLock::new();
+	LOG_TARGETS
+		.get_or_init(|| Mutex::new(HashMap::new()))
+		.lock()
+		.entry(peer_index)
+		.or_insert_with(|| Box::leak(format!("mixnet({peer_index})").into_boxed_str()))
+}
 
 fn multiaddr_from_peer_id(id: &PeerId) -> Multiaddr {
 	multiaddr!(P2p(Multihash::wrap(0, id).unwrap()))
