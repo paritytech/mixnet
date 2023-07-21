@@ -244,9 +244,7 @@ fn basic_operation() {
 				},
 				1 => {
 					assert_eq!(peer_index, request_from_peer_index);
-					let Message::Reply(message) = message else {
-						panic!("Expected reply message")
-					};
+					let Message::Reply(message) = message else { panic!("Expected reply message") };
 					assert_eq!(message.request_id, request_message_id);
 					assert_eq!(message.data, reply_data);
 				},

@@ -342,7 +342,8 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		match state.attempts_remaining.checked_sub(1) {
 			Some(attempts_remaining) => state.attempts_remaining = attempts_remaining,
 			None => {
-				let Some(destinations_remaining) = state.destinations_remaining.checked_sub(1) else {
+				let Some(destinations_remaining) = state.destinations_remaining.checked_sub(1)
+				else {
 					state.request.handle_retry_limit_reached(context);
 					return
 				};
