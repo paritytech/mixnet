@@ -20,7 +20,10 @@
 
 //! Mixnet sessions.
 
-use super::{packet_queues::AuthoredPacketQueue, replay_filter::ReplayFilter, topology::Topology};
+use super::{
+	kx_pair::KxPair, packet_queues::AuthoredPacketQueue, replay_filter::ReplayFilter,
+	topology::Topology,
+};
 use std::{
 	fmt,
 	ops::{Add, Index, IndexMut},
@@ -28,6 +31,8 @@ use std::{
 };
 
 pub struct Session {
+	/// Key-exchange key pair.
+	pub kx_pair: KxPair,
 	/// Mixnode topology.
 	pub topology: Topology,
 	/// Queue of packets authored by us, to be dispatched in place of drop cover traffic.
@@ -81,6 +86,7 @@ impl Add<SessionIndex> for RelSessionIndex {
 
 pub enum SessionSlot {
 	Empty,
+	KxPair(KxPair),
 	/// Like [`Empty`](Self::Empty), but we should not try to create a [`Session`] struct.
 	Disabled,
 	Full(Session),
@@ -89,10 +95,6 @@ pub enum SessionSlot {
 impl SessionSlot {
 	pub fn is_empty(&self) -> bool {
 		matches!(self, Self::Empty)
-	}
-
-	pub fn is_full(&self) -> bool {
-		matches!(self, Self::Full(_))
 	}
 
 	pub fn as_option(&self) -> Option<&Session> {
@@ -118,10 +120,6 @@ pub struct Sessions {
 impl Sessions {
 	pub fn is_empty(&self) -> bool {
 		self.current.is_empty() && self.prev.is_empty()
-	}
-
-	pub fn advance_by_one(&mut self) {
-		self.prev = std::mem::replace(&mut self.current, SessionSlot::Empty);
 	}
 
 	pub fn iter(&self) -> impl Iterator<Item = &Session> {
