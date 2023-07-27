@@ -42,12 +42,13 @@ fn log_target(peer_index: usize) -> &'static str {
 }
 
 fn multiaddr_from_peer_id(id: &PeerId) -> Multiaddr {
-	multiaddr!(P2p(Multihash::wrap(0, id).unwrap()))
+	// Just need to be able to get id back out in peer_id_from_multiaddr. Abuse Certhash to store.
+	multiaddr!(Certhash(Multihash::wrap(0, id).unwrap()))
 }
 
 fn peer_id_from_multiaddr(multiaddr: &Multiaddr) -> PeerId {
 	let mut protocols = multiaddr.into_iter();
-	let multiaddr::Protocol::P2p(hash) = protocols.next().unwrap() else { unreachable!() };
+	let multiaddr::Protocol::Certhash(hash) = protocols.next().unwrap() else { unreachable!() };
 	assert!(protocols.next().is_none());
 	assert_eq!(hash.code(), 0);
 	hash.digest().try_into().unwrap()
