@@ -86,13 +86,13 @@ impl ReplyContext {
 	}
 
 	fn post_reply(&mut self, reply: &Reply, mixnet: &mut Mixnet, config: &Config) {
-		let data = [self.message_id.as_slice(), &reply.data];
-		let data = data.as_slice().into();
-
 		for _ in 0..config.max_posts {
-			if let Err(err) =
-				mixnet.post_reply(&mut self.surbs, self.session_index, &reply.message_id, data)
-			{
+			if let Err(err) = mixnet.post_reply(
+				&mut self.surbs,
+				self.session_index,
+				&reply.message_id,
+				reply.data.as_slice().into(),
+			) {
 				warn!(target: config.log_target,
 					"Failed to post reply to request with message ID {:x?}: {err}",
 					self.message_id);
@@ -197,9 +197,7 @@ impl ReplyManager {
 		}
 	}
 
-	/// Complete a request. This will post the reply and cache it for repeat requests. Note that
-	/// the reply message is implicitly prefixed with the request message ID
-	/// (`reply_context.message_id()`).
+	/// Complete a request. This will post the reply and cache it for repeat requests.
 	pub fn complete(
 		&mut self,
 		mut reply_context: ReplyContext,

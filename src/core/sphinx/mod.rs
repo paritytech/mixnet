@@ -31,7 +31,7 @@ mod tests;
 pub use self::{
 	build::*,
 	crypto::{
-		clamp_scalar, derive_kx_public, derive_kx_shared_secret, gen_kx_secret, KxSharedSecret,
+		clamp_scalar, derive_kx_public, derive_kx_shared_secret, gen_kx_secret, SharedSecret,
 	},
 	delay::Delay,
 	packet::{

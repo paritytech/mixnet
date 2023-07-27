@@ -20,28 +20,35 @@
 
 //! Mixnet core tests.
 
-#[path = "util.rs"]
-mod util;
-
 use mixnet::core::{
-	Config, Events, KxPublicStore, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId,
-	RelSessionIndex, SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
+	Config, Events, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId, RelSessionIndex,
+	SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
 use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
+use parking_lot::Mutex;
 use rand::{Rng, RngCore};
 use std::{
 	collections::{HashMap, HashSet},
-	sync::Arc,
+	sync::OnceLock,
 };
-use util::log_target;
+
+fn log_target(peer_index: usize) -> &'static str {
+	static LOG_TARGETS: OnceLock<Mutex<HashMap<usize, &'static str>>> = OnceLock::new();
+	LOG_TARGETS
+		.get_or_init(|| Mutex::new(HashMap::new()))
+		.lock()
+		.entry(peer_index)
+		.or_insert_with(|| Box::leak(format!("mixnet({peer_index})").into_boxed_str()))
+}
 
 fn multiaddr_from_peer_id(id: &PeerId) -> Multiaddr {
-	multiaddr!(P2p(Multihash::wrap(0, id).unwrap()))
+	// Just need to be able to get id back out in peer_id_from_multiaddr. Abuse Certhash to store.
+	multiaddr!(Certhash(Multihash::wrap(0, id).unwrap()))
 }
 
 fn peer_id_from_multiaddr(multiaddr: &Multiaddr) -> PeerId {
 	let mut protocols = multiaddr.into_iter();
-	let multiaddr::Protocol::P2p(hash) = protocols.next().unwrap() else { unreachable!() };
+	let multiaddr::Protocol::Certhash(hash) = protocols.next().unwrap() else { unreachable!() };
 	assert!(protocols.next().is_none());
 	assert_eq!(hash.code(), 0);
 	hash.digest().try_into().unwrap()
@@ -49,7 +56,6 @@ fn peer_id_from_multiaddr(multiaddr: &Multiaddr) -> PeerId {
 
 struct Peer {
 	id: PeerId,
-	kx_public_store: Arc<KxPublicStore>,
 	mixnet: Mixnet,
 }
 
@@ -77,12 +83,7 @@ struct Network {
 impl Network {
 	fn new(rng: &mut impl Rng, mut config: impl FnMut(usize) -> Config, num_peers: usize) -> Self {
 		let peers = (0..num_peers)
-			.map(|peer_index| {
-				let id = rng.gen();
-				let kx_public_store = Arc::new(KxPublicStore::new(None));
-				let mixnet = Mixnet::new(config(peer_index), kx_public_store.clone());
-				Peer { id, kx_public_store, mixnet }
-			})
+			.map(|peer_index| Peer { id: rng.gen(), mixnet: Mixnet::new(config(peer_index)) })
 			.collect();
 		Self { current_session_index: 0, peers, connections: HashMap::new() }
 	}
@@ -94,25 +95,24 @@ impl Network {
 		}
 	}
 
-	fn maybe_set_mixnodes(
-		&mut self,
-		rel_session_index: RelSessionIndex,
-		peer_indices: impl Iterator<Item = usize>,
-	) {
-		let session_index = rel_session_index + self.current_session_index;
-		let mixnodes: Vec<_> = peer_indices
+	fn maybe_set_mixnodes(&mut self, rel_session_index: RelSessionIndex, mixnodes: &[Mixnode]) {
+		for peer in &mut self.peers {
+			peer.mixnet
+				.maybe_set_mixnodes(rel_session_index, &mut || Ok(mixnodes.to_owned()));
+		}
+	}
+
+	fn next_mixnodes(&mut self, peer_indices: impl Iterator<Item = usize>) -> Vec<Mixnode> {
+		peer_indices
 			.map(|index| {
-				let peer = &self.peers[index];
+				let peer = &mut self.peers[index];
 				Mixnode {
-					kx_public: peer.kx_public_store.public_for_session(session_index).unwrap(),
+					kx_public: *peer.mixnet.next_kx_public(),
 					peer_id: peer.id,
 					external_addresses: vec![multiaddr_from_peer_id(&peer.id)],
 				}
 			})
-			.collect();
-		for peer in &mut self.peers {
-			peer.mixnet.maybe_set_mixnodes(rel_session_index, &mut || Ok(mixnodes.clone()));
-		}
+			.collect()
 	}
 
 	fn tick(&mut self, mut handle_message: impl FnMut(usize, &mut Peer, Message)) {
@@ -201,10 +201,15 @@ fn basic_operation() {
 		30,
 	);
 	network.set_session_status(SessionStatus {
+		current_index: 0,
+		phase: SessionPhase::DisconnectFromPrev,
+	});
+	let mixnodes = network.next_mixnodes(0..20);
+	network.set_session_status(SessionStatus {
 		current_index: 1,
 		phase: SessionPhase::DisconnectFromPrev,
 	});
-	network.maybe_set_mixnodes(RelSessionIndex::Current, 0..20);
+	network.maybe_set_mixnodes(RelSessionIndex::Current, &mixnodes);
 
 	let request_from_peer_index = 20;
 	let mut request_message_id = [0; MESSAGE_ID_SIZE];
@@ -240,9 +245,8 @@ fn basic_operation() {
 				},
 				1 => {
 					assert_eq!(peer_index, request_from_peer_index);
-					let Message::Reply(message) = message else {
-						panic!("Expected reply message")
-					};
+					let Message::Reply(message) = message else { panic!("Expected reply message") };
+					assert_eq!(message.request_id, request_message_id);
 					assert_eq!(message.data, reply_data);
 				},
 				_ => panic!("Unexpected message"),

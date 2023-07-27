@@ -20,11 +20,15 @@
 
 //! A mixnet loosely based on
 //! [Loopix](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/piotrowska).
+//!
+//! This crate is mostly network agnostic. While it determines which nodes should be connected and
+//! which packets should be sent where, it does not care _how_ this is done. It's not entirely
+//! agnostic; it uses multiaddrs for peer addresses and assumes that peers have 32-byte
+//! globally-unique identifiers.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod core;
-pub mod network;
 pub mod reply_manager;
 pub mod request_manager;

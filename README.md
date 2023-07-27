@@ -52,6 +52,5 @@ number of them).
 
 ## Modules
 
-The core mixnet logic lives in the `core` module and may be used on its own. The `network` module
-provides a libp2p `NetworkBehaviour` implementation. The `request_manager` and `reply_manager`
-modules provide a very simple reliable delivery layer.
+The core mixnet logic lives in the `core` module and may be used on its own. The `request_manager`
+and `reply_manager` modules provide a very simple reliable delivery layer.

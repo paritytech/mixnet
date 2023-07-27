@@ -48,6 +48,9 @@ pub struct Config {
 	/// mixnode, we connect to all other mixnodes.
 	pub num_gateway_mixnodes: u32,
 
+	/// The key-exchange secret key to use in session 0. This option is intended for testing
+	/// purposes only.
+	pub session_0_kx_secret: Option<[u8; 32]>,
 	/// Used by sessions in which the local node is a mixnode. If this is not the same for all
 	/// nodes, delay estimates may be off.
 	pub mixnode_session: SessionConfig,
@@ -92,6 +95,7 @@ impl Default for Config {
 
 			num_gateway_mixnodes: 3,
 
+			session_0_kx_secret: None,
 			mixnode_session: SessionConfig {
 				authored_packet_queue: AuthoredPacketQueueConfig {
 					capacity: 50,

@@ -47,12 +47,7 @@ impl<'a, T> Scattered<'a, T> {
 		let Some(mut mid_in_remaining) = mid.checked_sub(self.first_slice.len()) else {
 			let (first_slice_left, first_slice_right) = self.first_slice.split_at(mid);
 			return (
-				Self {
-					len: mid,
-					first_slice: first_slice_left,
-					mid_slices: &[],
-					last_slice: &[],
-				},
+				Self { len: mid, first_slice: first_slice_left, mid_slices: &[], last_slice: &[] },
 				Self {
 					len: right_len,
 					first_slice: first_slice_right,

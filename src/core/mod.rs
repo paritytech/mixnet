@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Mixnet core logic. This module tries to be network agnostic.
+//! Mixnet core logic.
 
 // Get a bunch of these from [mut_]array_refs
 #![allow(clippy::ptr_offset_with_cast)]
@@ -26,7 +26,7 @@
 mod config;
 mod cover;
 mod fragment;
-mod kx_store;
+mod kx_pair;
 mod packet_queues;
 mod replay_filter;
 mod request_builder;
@@ -40,7 +40,6 @@ mod util;
 pub use self::{
 	config::{Config, SessionConfig},
 	fragment::{MessageId, MESSAGE_ID_SIZE},
-	kx_store::KxPublicStore,
 	packet_queues::AddressedPacket,
 	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
@@ -53,7 +52,7 @@ pub use self::{
 use self::{
 	cover::{gen_cover_packet, CoverKind},
 	fragment::{fragment_blueprints, FragmentAssembler},
-	kx_store::KxStore,
+	kx_pair::KxPair,
 	packet_queues::{AuthoredPacketQueue, CheckSpaceErr, ForwardPacketQueue},
 	replay_filter::ReplayFilter,
 	request_builder::RequestBuilder,
@@ -76,7 +75,6 @@ use rand::Rng;
 use std::{
 	cmp::{max, min},
 	collections::HashSet,
-	sync::Arc,
 	time::{Duration, Instant},
 };
 
@@ -105,6 +103,8 @@ pub struct RequestMessage {
 /// A reply to a previously sent request.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReplyMessage {
+	/// ID of the request message this reply was sent in response to.
+	pub request_id: MessageId,
 	/// The message contents.
 	pub data: Vec<u8>,
 }
@@ -132,7 +132,7 @@ pub enum PostErr {
 	SessionNotActiveYet(SessionIndex),
 	/// Mixnodes not yet known for the session.
 	#[error("Mixnodes not yet known for session {0}")]
-	SessionEmpty(SessionIndex),
+	SessionMixnodesNotKnown(SessionIndex),
 	/// Mixnet disabled for the session.
 	#[error("Mixnet disabled for session {0}")]
 	SessionDisabled(SessionIndex),
@@ -166,7 +166,7 @@ fn post_session(
 		})
 	}
 	match &mut sessions[rel_index] {
-		SessionSlot::Empty => Err(PostErr::SessionEmpty(index)),
+		SessionSlot::Empty | SessionSlot::KxPair(_) => Err(PostErr::SessionMixnodesNotKnown(index)),
 		// Note that in the case where the session has been disabled because it is no longer
 		// needed, we will enter the !allow_requests_and_replies if above and not get here
 		SessionSlot::Disabled => Err(PostErr::SessionDisabled(index)),
@@ -276,16 +276,16 @@ bitflags! {
 	}
 }
 
-/// Network-agnostic mixnet core.
+/// Mixnet core state.
 pub struct Mixnet {
 	config: Config,
 
 	/// Index and phase of current session.
 	session_status: SessionStatus,
-	/// Keystore for the per-session key-exchange keys.
-	kx_store: KxStore,
 	/// Current and previous sessions.
 	sessions: Sessions,
+	/// Key-exchange key pair for the next session.
+	next_kx_pair: Option<KxPair>,
 
 	/// Queue of packets to be forwarded, after some delay.
 	forward_packet_queue: ForwardPacketQueue,
@@ -302,7 +302,14 @@ pub struct Mixnet {
 
 impl Mixnet {
 	/// Create a new `Mixnet`.
-	pub fn new(config: Config, kx_public_store: Arc<KxPublicStore>) -> Self {
+	pub fn new(config: Config) -> Self {
+		let sessions = Sessions {
+			current: config
+				.session_0_kx_secret
+				.map_or(SessionSlot::Empty, |secret| SessionSlot::KxPair(secret.into())),
+			prev: SessionSlot::Disabled,
+		};
+
 		let forward_packet_queue = ForwardPacketQueue::new(config.forward_packet_queue_capacity);
 
 		let surb_keystore = SurbKeystore::new(config.surb_keystore_capacity);
@@ -316,8 +323,8 @@ impl Mixnet {
 			config,
 
 			session_status: SessionStatus { current_index: 0, phase: SessionPhase::CoverToCurrent },
-			sessions: Sessions { current: SessionSlot::Empty, prev: SessionSlot::Disabled },
-			kx_store: KxStore::new(kx_public_store),
+			sessions,
+			next_kx_pair: None,
 
 			forward_packet_queue,
 
@@ -340,49 +347,35 @@ impl Mixnet {
 			return
 		}
 
-		// Shift sessions in self.sessions when current session changes
+		// Shift sessions when current session index changes
 		if self.session_status.current_index != session_status.current_index {
-			if session_status.current_index.saturating_sub(self.session_status.current_index) == 1 {
-				// This will discard any replay filter we have for the (old) previous session. The
-				// corresponding secret key will be discarded by the discard_sessions_before() call
-				// below.
-				self.sessions.advance_by_one();
-			} else if !self.sessions.is_empty() {
-				warn!(
-					target: self.config.log_target,
-					"Unexpected session index {}; previous session index was {}",
-					session_status.current_index,
-					self.session_status.current_index
-				);
-				// If discarding any replay filters, also discard the corresponding secret keys.
-				// This is a bit overzealous in some cases, but this should never really happen so
-				// don't worry about it too much.
-				if self.sessions.current.is_full() {
-					let Some(next_session_index) = self.session_status.current_index.checked_add(1) else {
-						panic!("Session index overflow")
-					};
-					self.kx_store.discard_sessions_before(next_session_index);
-				} else if self.sessions.prev.is_full() {
-					self.kx_store.discard_sessions_before(self.session_status.current_index);
-				}
-				self.sessions = Sessions { current: SessionSlot::Empty, prev: SessionSlot::Empty };
+			let next_session = std::mem::take(&mut self.next_kx_pair)
+				.map_or(SessionSlot::Empty, SessionSlot::KxPair);
+			match session_status.current_index.saturating_sub(self.session_status.current_index) {
+				1 =>
+					self.sessions.prev = std::mem::replace(&mut self.sessions.current, next_session),
+				2 => {
+					self.sessions.prev = next_session;
+					self.sessions.current = SessionSlot::Empty;
+				},
+				_ =>
+					if !self.sessions.is_empty() || !next_session.is_empty() {
+						warn!(
+							target: self.config.log_target,
+							"Unexpected session index {}; previous session index was {}",
+							session_status.current_index,
+							self.session_status.current_index
+						);
+						self.sessions =
+							Sessions { current: SessionSlot::Empty, prev: SessionSlot::Empty };
+					},
 			}
 		}
 
-		// Discard sessions which are no longer needed. Also, avoid ever having a previous session
+		// Discard previous session if it is not needed. Also, avoid ever having a previous session
 		// when the current session index is 0... there is no sensible index for it.
 		if !session_status.phase.need_prev() || (session_status.current_index == 0) {
 			self.sessions.prev = SessionSlot::Disabled;
-		}
-		if session_status.current_index != 0 {
-			let min_needed_rel_session_index = if session_status.phase.need_prev() {
-				RelSessionIndex::Prev
-			} else {
-				RelSessionIndex::Current
-			};
-			self.kx_store.discard_sessions_before(
-				min_needed_rel_session_index + session_status.current_index,
-			);
 		}
 
 		// For simplicity just assume these have changed. This should happen at most once a minute
@@ -413,16 +406,15 @@ impl Mixnet {
 		rel_session_index: RelSessionIndex,
 		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode>, MixnodesErr>,
 	) {
-		// Create the Session only if the slot is empty. If the slot is disabled, don't even try.
 		let session = &mut self.sessions[rel_session_index];
-		if !session.is_empty() {
+		if !matches!(session, SessionSlot::Empty | SessionSlot::KxPair(_)) {
 			return
 		}
 
 		let session_index = rel_session_index + self.session_status.current_index;
 		let mut rng = rand::thread_rng();
 
-		// Build Topology struct
+		// Determine mixnodes
 		let mut mixnodes = match mixnodes() {
 			Ok(mixnodes) => mixnodes,
 			Err(err) => {
@@ -441,15 +433,17 @@ impl Mixnet {
 			);
 			mixnodes.truncate(max_mixnodes);
 		}
-		let Some(local_kx_public) = self.kx_store.public().public_for_session(session_index) else {
-			error!(target: self.config.log_target,
-				"Session {session_index}: Key-exchange keys discarded already; \
-				mixnet will not be available");
-			*session = SessionSlot::Disabled;
-			return
+
+		// Determine key-exchange key pair for the local node. Note that from this point on, we are
+		// guaranteed to either panic or overwrite *session.
+		let kx_pair = match std::mem::replace(session, SessionSlot::Empty) {
+			SessionSlot::KxPair(kx_pair) => kx_pair,
+			_ => KxPair::gen(&mut rng),
 		};
+
+		// Build Topology struct
 		let topology =
-			Topology::new(&mut rng, mixnodes, &local_kx_public, self.config.num_gateway_mixnodes);
+			Topology::new(&mut rng, mixnodes, kx_pair.public(), self.config.num_gateway_mixnodes);
 
 		// Determine session config
 		let config = if topology.is_mixnode() {
@@ -471,6 +465,7 @@ impl Mixnet {
 
 		// Build Session struct
 		*session = SessionSlot::Full(Session {
+			kx_pair,
 			topology,
 			authored_packet_queue: AuthoredPacketQueue::new(config.authored_packet_queue),
 			mean_authored_packet_period: config.mean_authored_packet_period,
@@ -479,6 +474,13 @@ impl Mixnet {
 
 		self.events |=
 			Events::RESERVED_PEERS_CHANGED | Events::NEXT_AUTHORED_PACKET_DEADLINE_CHANGED;
+	}
+
+	/// Returns the key-exchange public key for the next session.
+	pub fn next_kx_public(&mut self) -> &KxPublic {
+		self.next_kx_pair
+			.get_or_insert_with(|| KxPair::gen(&mut rand::thread_rng()))
+			.public()
 	}
 
 	/// Returns the addresses of the peers we should try to maintain connections to.
@@ -493,31 +495,25 @@ impl Mixnet {
 	/// Handle an incoming packet. If the packet completes a message, the message is returned.
 	/// Otherwise, [`None`] is returned.
 	pub fn handle_packet(&mut self, packet: &Packet) -> Option<Message> {
-		self.kx_store.add_pending_session_secrets();
-
 		let mut out = [0; PACKET_SIZE];
 		let res = self.sessions.enumerate_mut().find_map(|(rel_session_index, session)| {
-			if session.replay_filter.contains(kx_public(packet)) {
-				return Some(Err(Either::Left(
-					"Packet key-exchange public key found in replay filter",
-				)))
-			}
+			let kx_shared_secret = session.kx_pair.exchange(kx_public(packet));
 
-			let session_index = rel_session_index + self.session_status.current_index;
-			// If secret key for session not found, try other session
-			let kx_shared_secret =
-				self.kx_store.session_exchange(session_index, kx_public(packet))?;
+			let replay_tag = session.replay_filter.tag(&kx_shared_secret);
+			if session.replay_filter.contains(replay_tag) {
+				return Some(Err(Either::Left("Packet found in replay filter")))
+			}
 
 			match peel(&mut out, packet, &kx_shared_secret) {
 				// Bad MAC possibly means we used the wrong secret; try other session
 				Err(PeelErr::Mac) => None,
 				// Any other error means the packet is bad; just discard it
 				Err(err) => Some(Err(Either::Right(err))),
-				Ok(action) => Some(Ok((action, session_index, session))),
+				Ok(action) => Some(Ok((action, rel_session_index, session, replay_tag))),
 			}
 		});
 
-		let (action, session_index, session) = match res {
+		let (action, rel_session_index, session, replay_tag) = match res {
 			None => {
 				// This will usually get hit quite a bit on session changeover after we discard the
 				// keys for the previous session. It may get hit just before a new session if other
@@ -550,7 +546,7 @@ impl Mixnet {
 
 				// After the is_mixnode check to avoid inserting anything into the replay filters
 				// for sessions where we are not a mixnode
-				session.replay_filter.insert(kx_public(packet));
+				session.replay_filter.insert(replay_tag);
 
 				match session.topology.target_to_peer_id(&target) {
 					Ok(peer_id) => {
@@ -580,13 +576,13 @@ impl Mixnet {
 
 				// After the is_mixnode check to avoid inserting anything into the replay filters
 				// for sessions where we are not a mixnode
-				session.replay_filter.insert(kx_public(packet));
+				session.replay_filter.insert(replay_tag);
 
 				// Add to fragment assembler and return any completed message
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
 					|message| {
 						Message::Request(RequestMessage {
-							session_index,
+							session_index: rel_session_index + self.session_status.current_index,
 							id: message.id,
 							data: message.data,
 							surbs: message.surbs,
@@ -602,12 +598,15 @@ impl Mixnet {
 				// necessary. The main reason for avoiding the replay filter here is so that it
 				// does not need to be allocated at all for sessions where we are not a mixnode.
 
-				// Lookup payload encryption keys and decrypt payload
+				// Lookup payload encryption keys and decrypt payload. The original request message
+				// ID is stored alongside the keys; it is simply returned with any completed
+				// message to provide context.
 				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
 					warn!(target: self.config.log_target,
 						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
 					return None
 				};
+				let request_id = *entry.message_id();
 				let res = decrypt_reply_payload(payload, entry.keys());
 				entry.remove();
 				if let Err(err) = res {
@@ -623,7 +622,7 @@ impl Mixnet {
 							error!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
-						Message::Reply(ReplyMessage { data: message.data })
+						Message::Reply(ReplyMessage { request_id, data: message.data })
 					},
 				)
 			},
@@ -796,7 +795,8 @@ impl Mixnet {
 					fragment_blueprint.write_except_surbs(fragment);
 					for surb in fragment_blueprint.surbs(fragment) {
 						// TODO Currently we don't clean up keystore entries on failure
-						let (id, keys) = self.surb_keystore.insert(rng, self.config.log_target);
+						let (id, keys) =
+							self.surb_keystore.insert(rng, message_id, self.config.log_target);
 						let num_hops = self.config.num_hops;
 						let metrics = request_builder.build_surb(surb, keys, rng, &id, num_hops)?;
 						reply_hops = max(reply_hops, metrics.num_hops);
