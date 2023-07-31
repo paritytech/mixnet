@@ -7,6 +7,10 @@ The mixnet design is loosely based on
 packet format is based on
 [Sphinx](http://www0.cs.ucl.ac.uk/staff/G.Danezis/papers/sphinx-eprint.pdf).
 
+[Protocol documentation.](https://github.com/zdave-parity/mixnet-spec/blob/main/src/SUMMARY.md)
+
+# Implementatin details.
+
 Graceful transition between sessions with different topologies is supported, but the transition
 phase and topologies must be synchronised between nodes by the crate user.
 
