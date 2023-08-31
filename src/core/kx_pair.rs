@@ -21,15 +21,14 @@
 //! Mixnet key-exchange key pair.
 
 use super::sphinx::{
-	clamp_scalar, derive_kx_public, derive_kx_shared_secret, gen_kx_secret, KxPublic, SharedSecret,
+	derive_kx_public, derive_kx_shared_secret, gen_kx_secret, KxPublic, KxSecret, SharedSecret,
 };
-use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
 use zeroize::Zeroizing;
 
 pub struct KxPair {
-	/// Boxed to avoid leaving copies of the secret key around in memory if `KxPair` is moved.
-	secret: Box<Zeroizing<Scalar>>,
+	/// Unclamped secret key. Boxed to avoid leaving copies around in memory if `KxPair` is moved.
+	secret: Box<Zeroizing<KxSecret>>,
 	public: KxPublic,
 }
 
@@ -47,19 +46,13 @@ impl KxPair {
 	}
 }
 
-impl From<Scalar> for KxPair {
-	fn from(secret: Scalar) -> Self {
+impl From<KxSecret> for KxPair {
+	fn from(secret: KxSecret) -> Self {
 		// We box the secret to avoid leaving copies of it in memory when the KxPair is moved. Note
 		// that we will likely leave some copies on the stack here; I'm not aware of any good way
 		// of avoiding this.
 		let secret = Box::new(Zeroizing::new(secret));
 		let public = derive_kx_public(secret.as_ref());
 		Self { secret, public }
-	}
-}
-
-impl From<[u8; 32]> for KxPair {
-	fn from(secret: [u8; 32]) -> Self {
-		clamp_scalar(secret).into()
 	}
 }

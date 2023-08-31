@@ -28,7 +28,6 @@ use super::{
 	*,
 };
 use arrayref::array_mut_ref;
-use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, Rng};
 
 fn gen_mixnode_index(rng: &mut impl Rng) -> MixnodeIndex {
@@ -51,7 +50,7 @@ fn gen_targets(rng: &mut impl Rng, num_hops: usize) -> Vec<Target> {
 fn gen_their_kx_secrets_and_publics(
 	rng: &mut (impl Rng + CryptoRng),
 	num_hops: usize,
-) -> (Vec<Scalar>, Vec<KxPublic>) {
+) -> (Vec<KxSecret>, Vec<KxPublic>) {
 	(0..num_hops)
 		.map(|_i| {
 			let secret = gen_kx_secret(rng);

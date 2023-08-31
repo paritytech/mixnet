@@ -38,9 +38,7 @@ use c2_chacha::{
 	stream_cipher::{NewStreamCipher, SyncStreamCipher},
 	ChaCha20,
 };
-use curve25519_dalek::{
-	constants::ED25519_BASEPOINT_TABLE, montgomery::MontgomeryPoint, scalar::Scalar,
-};
+use curve25519_dalek::{scalar::clamp_integer, MontgomeryPoint, Scalar};
 use lioness::LionessDefault;
 use rand::{CryptoRng, Rng};
 
@@ -57,47 +55,39 @@ pub type SharedSecret = [u8; SHARED_SECRET_SIZE];
 // Key exchange
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Apply X25519 bit clamping to the given raw bytes to produce a scalar for use with Curve25519.
-pub fn clamp_scalar(mut scalar: [u8; 32]) -> Scalar {
-	scalar[0] &= 248;
-	scalar[31] &= 127;
-	scalar[31] |= 64;
-	Scalar::from_bits(scalar)
-}
+/// An _unclamped_ key-exchange secret key.
+pub type KxSecret = [u8; 32];
 
-/// Generate a key-exchange secret key.
-pub fn gen_kx_secret(rng: &mut (impl Rng + CryptoRng)) -> Scalar {
+/// Generate an _unclamped_ key-exchange secret key.
+pub fn gen_kx_secret(rng: &mut (impl Rng + CryptoRng)) -> KxSecret {
 	let mut secret = [0; 32];
 	rng.fill_bytes(&mut secret);
-	clamp_scalar(secret)
+	secret
 }
 
 /// Derive the public key corresponding to a secret key.
-pub fn derive_kx_public(kx_secret: &Scalar) -> KxPublic {
-	(ED25519_BASEPOINT_TABLE * kx_secret).to_montgomery().to_bytes()
+pub fn derive_kx_public(kx_secret: &KxSecret) -> KxPublic {
+	MontgomeryPoint::mul_base_clamped(*kx_secret).to_bytes()
 }
 
-fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &SharedSecret) -> Scalar {
+/// Returns the _unclamped_ blinding factor.
+fn derive_kx_blinding_factor(kx_public: &KxPublic, kx_shared_secret: &SharedSecret) -> [u8; 32] {
 	let kx_public: &GenericArray<_, _> = kx_public.into();
 	let key = kx_public.concat((*kx_shared_secret).into());
 	let h = Blake2bMac::<U32>::new_with_salt_and_personal(&key, b"", KX_BLINDING_FACTOR_PERSONAL)
 		.expect("Key, salt, and personalisation sizes are fixed and small enough");
-	clamp_scalar(h.finalize().into_bytes().into())
-}
-
-/// Apply the blinding factor to `kx_secret`.
-fn blind_kx_secret(kx_secret: &mut Scalar, kx_public: &KxPublic, kx_shared_secret: &SharedSecret) {
-	*kx_secret *= derive_kx_blinding_factor(kx_public, kx_shared_secret);
+	h.finalize().into_bytes().into()
 }
 
 /// Apply the blinding factor to `kx_public`.
 pub fn blind_kx_public(kx_public: &KxPublic, kx_shared_secret: &SharedSecret) -> KxPublic {
-	(MontgomeryPoint(*kx_public) * derive_kx_blinding_factor(kx_public, kx_shared_secret))
+	MontgomeryPoint(*kx_public)
+		.mul_clamped(derive_kx_blinding_factor(kx_public, kx_shared_secret))
 		.to_bytes()
 }
 
-pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &Scalar) -> SharedSecret {
-	(MontgomeryPoint(*kx_public) * kx_secret).to_bytes()
+pub fn derive_kx_shared_secret(kx_public: &KxPublic, kx_secret: &KxSecret) -> SharedSecret {
+	MontgomeryPoint(*kx_public).mul_clamped(*kx_secret).to_bytes()
 }
 
 /// Generate a public key to go in a packet and the corresponding shared secrets for each hop.
@@ -107,25 +97,26 @@ pub fn gen_kx_public_and_shared_secrets(
 	rng: &mut (impl Rng + CryptoRng),
 	their_kx_publics: &[KxPublic],
 ) {
-	let mut kx_secret = gen_kx_secret(rng);
+	let kx_secret = gen_kx_secret(rng);
 	*kx_public = derive_kx_public(&kx_secret);
-	let mut kx_public = *kx_public;
 
+	let mut kx_secret = Scalar::from_bytes_mod_order(clamp_integer(kx_secret));
+	let mut kx_public = *kx_public;
 	for (i, their_kx_public) in their_kx_publics.iter().enumerate() {
 		if i != 0 {
 			if i != 1 {
 				// An alternative would be to use blind_kx_public, but this is much cheaper
-				kx_public = derive_kx_public(&kx_secret);
+				kx_public = MontgomeryPoint::mul_base(&kx_secret).to_bytes();
 			}
-			blind_kx_secret(
-				&mut kx_secret,
-				&kx_public,
-				kx_shared_secrets.last().expect(
-					"On at least second iteration of loop, shared secret pushed every iteration",
-				),
+			let kx_shared_secret = kx_shared_secrets.last().expect(
+				"On at least second iteration of loop, shared secret pushed every iteration",
 			);
+			kx_secret *= Scalar::from_bytes_mod_order(clamp_integer(derive_kx_blinding_factor(
+				&kx_public,
+				kx_shared_secret,
+			)));
 		}
-		kx_shared_secrets.push(derive_kx_shared_secret(their_kx_public, &kx_secret));
+		kx_shared_secrets.push((MontgomeryPoint(*their_kx_public) * kx_secret).to_bytes());
 	}
 }
 

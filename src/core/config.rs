@@ -20,7 +20,10 @@
 
 //! Mixnet configuration.
 
-use super::{packet_queues::AuthoredPacketQueueConfig, sphinx::MAX_HOPS};
+use super::{
+	packet_queues::AuthoredPacketQueueConfig,
+	sphinx::{KxSecret, MAX_HOPS},
+};
 use std::time::Duration;
 
 /// Configuration that can vary between sessions depending on whether the local node is a mixnode
@@ -50,7 +53,7 @@ pub struct Config {
 
 	/// The key-exchange secret key to use in session 0. This option is intended for testing
 	/// purposes only.
-	pub session_0_kx_secret: Option<[u8; 32]>,
+	pub session_0_kx_secret: Option<KxSecret>,
 	/// Used by sessions in which the local node is a mixnode. If this is not the same for all
 	/// nodes, delay estimates may be off.
 	pub mixnode_session: SessionConfig,
