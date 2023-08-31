@@ -44,8 +44,8 @@ pub use self::{
 	scattered::Scattered,
 	sessions::{RelSessionIndex, SessionIndex, SessionPhase, SessionStatus},
 	sphinx::{
-		Delay, KxPublic, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb, KX_PUBLIC_SIZE,
-		MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
+		Delay, KxPublic, KxSecret, MixnodeIndex, Packet, PeerId, RawMixnodeIndex, Surb,
+		KX_PUBLIC_SIZE, MAX_HOPS, MAX_MIXNODE_INDEX, PACKET_SIZE, PEER_ID_SIZE, SURB_SIZE,
 	},
 	topology::{Mixnode, NetworkStatus, TopologyErr},
 };
