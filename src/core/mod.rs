@@ -69,7 +69,7 @@ use arrayref::{array_mut_ref, array_ref};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use either::Either;
-use log::{debug, error, info, warn};
+use log::{debug, info, trace};
 use multiaddr::Multiaddr;
 use rand::Rng;
 use std::{
@@ -360,7 +360,7 @@ impl Mixnet {
 				},
 				_ =>
 					if !self.sessions.is_empty() || !next_session.is_empty() {
-						warn!(
+						debug!(
 							target: self.config.log_target,
 							"Unexpected session index {}; previous session index was {}",
 							session_status.current_index,
@@ -426,7 +426,7 @@ impl Mixnet {
 		};
 		let max_mixnodes = (MAX_MIXNODE_INDEX + 1) as usize;
 		if mixnodes.len() > max_mixnodes {
-			warn!(
+			debug!(
 				target: self.config.log_target,
 				"Session {session_index}: Too many mixnodes ({}, max {max_mixnodes}); ignoring excess",
 				mixnodes.len()
@@ -518,14 +518,14 @@ impl Mixnet {
 				// This will usually get hit quite a bit on session changeover after we discard the
 				// keys for the previous session. It may get hit just before a new session if other
 				// nodes switch sooner.
-				debug!(
+				trace!(
 					target: self.config.log_target,
 					"Failed to peel packet; either bad MAC or unknown secret"
 				);
 				return None
 			},
 			Some(Err(err)) => {
-				error!(target: self.config.log_target, "Failed to peel packet: {err}");
+				debug!(target: self.config.log_target, "Failed to peel packet: {err}");
 				return None
 			},
 			Some(Ok(x)) => x,
@@ -534,13 +534,13 @@ impl Mixnet {
 		match action {
 			Action::ForwardTo { target, delay } => {
 				if !session.topology.is_mixnode() {
-					error!(target: self.config.log_target,
+					debug!(target: self.config.log_target,
 						"Received packet to forward despite not being a mixnode in the session; discarding");
 					return None
 				}
 
 				if !self.forward_packet_queue.has_space() {
-					warn!(target: self.config.log_target, "Dropped forward packet; forward queue full");
+					debug!(target: self.config.log_target, "Dropped forward packet; forward queue full");
 					return None
 				}
 
@@ -557,7 +557,7 @@ impl Mixnet {
 							self.events |= Events::NEXT_FORWARD_PACKET_DEADLINE_CHANGED;
 						}
 					},
-					Err(err) => error!(
+					Err(err) => debug!(
 						target: self.config.log_target,
 						"Failed to map target {target:?} to peer ID: {err}"
 					),
@@ -569,7 +569,7 @@ impl Mixnet {
 				let payload_data = array_ref![out, 0, PAYLOAD_DATA_SIZE];
 
 				if !session.topology.is_mixnode() {
-					error!(target: self.config.log_target,
+					debug!(target: self.config.log_target,
 						"Received request packet despite not being a mixnode in the session; discarding");
 					return None
 				}
@@ -602,7 +602,7 @@ impl Mixnet {
 				// ID is stored alongside the keys; it is simply returned with any completed
 				// message to provide context.
 				let Some(entry) = self.surb_keystore.entry(&surb_id) else {
-					warn!(target: self.config.log_target,
+					debug!(target: self.config.log_target,
 						"Received reply with unrecognised SURB ID {surb_id:x?}; discarding");
 					return None
 				};
@@ -610,7 +610,7 @@ impl Mixnet {
 				let res = decrypt_reply_payload(payload, entry.keys());
 				entry.remove();
 				if let Err(err) = res {
-					error!(target: self.config.log_target, "Failed to decrypt reply payload: {err}");
+					debug!(target: self.config.log_target, "Failed to decrypt reply payload: {err}");
 					return None
 				}
 				let payload_data = array_ref![payload, 0, PAYLOAD_DATA_SIZE];
@@ -619,7 +619,7 @@ impl Mixnet {
 				self.fragment_assembler.insert(payload_data, self.config.log_target).map(
 					|message| {
 						if !message.surbs.is_empty() {
-							error!(target: self.config.log_target,
+							debug!(target: self.config.log_target,
 								"Reply message included SURBs; discarding them");
 						}
 						Message::Reply(ReplyMessage { request_id, data: message.data })
@@ -747,9 +747,9 @@ impl Mixnet {
 					matches!(err, TopologyErr::NoConnectedGatewayMixnodes)
 				{
 					// Possibly still connecting to mixnodes
-					debug!(target: self.config.log_target, "Failed to generate cover packet: {err}");
+					trace!(target: self.config.log_target, "Failed to generate cover packet: {err}");
 				} else {
-					warn!(target: self.config.log_target, "Failed to generate cover packet: {err}");
+					debug!(target: self.config.log_target, "Failed to generate cover packet: {err}");
 				}
 				None
 			},

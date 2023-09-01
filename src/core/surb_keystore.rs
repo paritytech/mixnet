@@ -25,7 +25,7 @@ use super::{
 	sphinx::{SurbId, SurbPayloadEncryptionKeys, SURB_ID_SIZE},
 };
 use hashlink::{linked_hash_map, LinkedHashMap};
-use log::warn;
+use log::debug;
 use rand::{CryptoRng, Rng};
 
 struct Value {
@@ -73,7 +73,7 @@ impl SurbKeystore {
 		// Discard the oldest SURB if we're already at capacity
 		debug_assert!(self.surbs.len() <= self.capacity);
 		if self.surbs.len() == self.capacity {
-			warn!(target: log_target, "Too many entries in SURB keystore; evicting oldest");
+			debug!(target: log_target, "Too many entries in SURB keystore; evicting oldest");
 			self.surbs.pop_front();
 		}
 

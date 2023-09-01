@@ -26,7 +26,7 @@ use super::{
 };
 use arrayref::{array_mut_ref, array_refs, mut_array_refs};
 use hashlink::{linked_hash_map::Entry, LinkedHashMap};
-use log::{error, log, warn, Level};
+use log::{debug, log, Level};
 use std::cmp::{max, min};
 
 /// Size in bytes of a [`MessageId`].
@@ -255,7 +255,7 @@ impl FragmentAssembler {
 	/// each fragment insertion.
 	fn maybe_evict(&mut self, log_target: &str) {
 		if self.need_eviction() {
-			warn!(target: log_target, "Too many incomplete messages; evicting LRU");
+			debug!(target: log_target, "Too many incomplete messages; evicting LRU");
 			let incomplete_message = self
 				.incomplete_messages
 				.pop_front()
@@ -276,7 +276,7 @@ impl FragmentAssembler {
 	/// returned.
 	pub fn insert(&mut self, fragment: &Fragment, log_target: &str) -> Option<GenericMessage> {
 		if let Err(err) = check_fragment(fragment) {
-			error!(target: log_target, "Received bad fragment: {err}");
+			debug!(target: log_target, "Received bad fragment: {err}");
 			return None
 		}
 		let num_fragments = num_fragments(fragment);
@@ -292,7 +292,7 @@ impl FragmentAssembler {
 				if let Err(err) = incomplete_message.insert(fragment) {
 					let level = match err {
 						IncompleteMessageInsertErr::AlreadyHave => Level::Trace,
-						_ => Level::Error,
+						_ => Level::Debug,
 					};
 					log!(target: log_target, level, "Fragment insert failed: {err}");
 					return None

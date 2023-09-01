@@ -24,7 +24,7 @@
 
 use super::core::{MessageId, Mixnet, RequestMessage, SessionIndex, Surb, MESSAGE_ID_SIZE};
 use hashlink::{linked_hash_map::Entry, LinkedHashMap};
-use log::{debug, warn};
+use log::{debug, trace};
 use rand::RngCore;
 use std::time::{Duration, Instant};
 
@@ -93,7 +93,7 @@ impl ReplyContext {
 				&reply.message_id,
 				reply.data.as_slice().into(),
 			) {
-				warn!(target: config.log_target,
+				debug!(target: config.log_target,
 					"Failed to post reply to request with message ID {:x?}: {err}",
 					self.message_id);
 				break
@@ -154,13 +154,13 @@ impl ReplyManager {
 		match self.states.entry(message.id) {
 			Entry::Occupied(mut entry) => {
 				match entry.get_mut() {
-					ReplyState::Pending => debug!(target: self.config.log_target,
+					ReplyState::Pending => trace!(target: self.config.log_target,
 						"Ignoring repeat request with message ID {:x?}; currently handling", message.id),
 					ReplyState::Complete { reply, last_post } => {
 						let now = Instant::now();
 						let since_last = now.saturating_duration_since(*last_post);
 						if since_last < self.config.cooldown {
-							debug!(target: self.config.log_target,
+							trace!(target: self.config.log_target,
 								"Ignoring repeat request with message ID {:x?}; posted a reply {:.1}s ago",
 								message.id, since_last.as_secs_f32());
 						} else {
@@ -188,7 +188,7 @@ impl ReplyManager {
 				ReplyState::Pending => {
 					entry.remove();
 				},
-				ReplyState::Complete { .. } => warn!(
+				ReplyState::Complete { .. } => debug!(
 					target: self.config.log_target,
 					"Ignoring abandon of request with message ID {:x?}; already completed",
 					reply_context.message_id
@@ -208,7 +208,7 @@ impl ReplyManager {
 			Entry::Occupied(entry) => match entry.into_mut() {
 				state @ ReplyState::Pending => state,
 				ReplyState::Complete { .. } => {
-					warn!(target: self.config.log_target,
+					debug!(target: self.config.log_target,
 						"Request with message ID {:x?} completed twice",
 						reply_context.message_id);
 					return
