@@ -23,8 +23,7 @@
 //!
 //! This crate is mostly network agnostic. While it determines which nodes should be connected and
 //! which packets should be sent where, it does not care _how_ this is done. It's not entirely
-//! agnostic; it uses multiaddrs for peer addresses and assumes that peers have 32-byte
-//! globally-unique identifiers.
+//! agnostic; it assumes that peers have 32-byte globally-unique identifiers.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]

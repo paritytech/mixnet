@@ -37,15 +37,15 @@ pub struct RouteMetrics {
 	pub forwarding_delay: Delay,
 }
 
-pub struct RequestBuilder<'topology> {
-	route_generator: RouteGenerator<'topology>,
+pub struct RequestBuilder<'topology, X> {
+	route_generator: RouteGenerator<'topology, X>,
 	destination_index: MixnodeIndex,
 }
 
-impl<'topology> RequestBuilder<'topology> {
+impl<'topology, X> RequestBuilder<'topology, X> {
 	pub fn new(
 		rng: &mut (impl Rng + CryptoRng),
-		topology: &'topology Topology,
+		topology: &'topology Topology<X>,
 		ns: &dyn NetworkStatus,
 		destination_index: Option<MixnodeIndex>,
 	) -> Result<Self, TopologyErr> {

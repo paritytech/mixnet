@@ -25,22 +25,21 @@ use super::sphinx::{
 };
 use arrayvec::ArrayVec;
 use either::Either;
-use multiaddr::Multiaddr;
 use rand::{seq::SliceRandom, CryptoRng, Rng};
 use std::{
 	cmp::{max, min},
 	fmt,
 };
 
-/// Key-exchange public key, peer ID, and external addresses for a mixnode.
+/// Per-mixnode data.
 #[derive(Clone)]
-pub struct Mixnode {
+pub struct Mixnode<X> {
 	/// Key-exchange public key for the mixnode.
 	pub kx_public: KxPublic,
 	/// Peer ID for the mixnode.
 	pub peer_id: PeerId,
-	/// External addresses for the mixnode.
-	pub external_addresses: Vec<Multiaddr>,
+	/// Extra data; for use by the crate user.
+	pub extra: X,
 }
 
 enum LocalNode {
@@ -65,17 +64,17 @@ pub enum TopologyErr {
 	NoConnectedGatewayMixnodes,
 }
 
-pub struct Topology {
-	mixnodes: Vec<Mixnode>,
+pub struct Topology<X> {
+	mixnodes: Vec<Mixnode<X>>,
 	local_kx_public: KxPublic,
 	local_node: LocalNode,
 }
 
-impl Topology {
+impl<X> Topology<X> {
 	/// `mixnodes` must be no longer than [`MAX_MIXNODE_INDEX + 1`](MAX_MIXNODE_INDEX).
 	pub fn new(
 		rng: &mut impl Rng,
-		mixnodes: Vec<Mixnode>,
+		mixnodes: Vec<Mixnode<X>>,
 		local_kx_public: &KxPublic,
 		num_gateway_mixnodes: u32,
 	) -> Self {
@@ -129,7 +128,7 @@ impl Topology {
 		matches!(self.local_node, LocalNode::Mixnode(_))
 	}
 
-	pub fn reserved_peer_addresses(&self) -> impl Iterator<Item = &Multiaddr> {
+	pub fn reserved_peers(&self) -> impl Iterator<Item = &Mixnode<X>> {
 		let indices = match &self.local_node {
 			LocalNode::Mixnode(local_index) => Either::Left({
 				// Connect to all other mixnodes (ie exclude the local node)
@@ -139,7 +138,7 @@ impl Topology {
 			LocalNode::NonMixnode(gateway_indices) =>
 				Either::Right(gateway_indices.iter().map(|index| index.get())),
 		};
-		indices.flat_map(|index| self.mixnodes[index as usize].external_addresses.iter())
+		indices.map(|index| &self.mixnodes[index as usize])
 	}
 
 	pub fn mixnode_index_to_peer_id(&self, index: MixnodeIndex) -> Result<PeerId, TopologyErr> {
@@ -157,7 +156,7 @@ impl Topology {
 	}
 }
 
-impl fmt::Display for Topology {
+impl<X> fmt::Display for Topology<X> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		match &self.local_node {
 			LocalNode::Mixnode(local_index) => write!(fmt, "Local node is mixnode {local_index}"),
@@ -222,16 +221,16 @@ impl UsedIndices {
 	}
 }
 
-pub struct RouteGenerator<'topology> {
-	topology: &'topology Topology,
+pub struct RouteGenerator<'topology, X> {
+	topology: &'topology Topology<X>,
 	local_peer_id: PeerId,
 	/// Always empty if the local node is a mixnode. Otherwise, the subset of the gateway mixnodes
 	/// from the topology that are currently connected.
 	connected_gateway_indices: ArrayVec<MixnodeIndex, MAX_CONNECTED_GATEWAY_INDICES>,
 }
 
-impl<'topology> RouteGenerator<'topology> {
-	pub fn new(topology: &'topology Topology, ns: &dyn NetworkStatus) -> Self {
+impl<'topology, X> RouteGenerator<'topology, X> {
+	pub fn new(topology: &'topology Topology<X>, ns: &dyn NetworkStatus) -> Self {
 		let connected_gateway_indices = match &topology.local_node {
 			LocalNode::Mixnode(_) => ArrayVec::new(),
 			// If we're not a mixnode, we should have attempted to connect to a number of "gateway"
@@ -251,7 +250,7 @@ impl<'topology> RouteGenerator<'topology> {
 		Self { topology, local_peer_id: ns.local_peer_id(), connected_gateway_indices }
 	}
 
-	pub fn topology(&self) -> &'topology Topology {
+	pub fn topology(&self) -> &'topology Topology<X> {
 		self.topology
 	}
 
