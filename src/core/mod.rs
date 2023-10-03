@@ -70,11 +70,9 @@ use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use either::Either;
 use log::{debug, info, trace};
-use multiaddr::Multiaddr;
 use rand::Rng;
 use std::{
 	cmp::{max, min},
-	collections::HashSet,
 	time::{Duration, Instant},
 };
 
@@ -147,11 +145,11 @@ pub enum PostErr {
 	BadSurb,
 }
 
-fn post_session(
-	sessions: &mut Sessions,
+fn post_session<X>(
+	sessions: &mut Sessions<X>,
 	status: SessionStatus,
 	index: SessionIndex,
-) -> Result<&mut Session, PostErr> {
+) -> Result<&mut Session<X>, PostErr> {
 	let Some(rel_index) = RelSessionIndex::from_session_index(index, status.current_index) else {
 		return Err(if index < status.current_index {
 			PostErr::SessionNoLongerActive(index)
@@ -186,7 +184,7 @@ impl From<CheckSpaceErr> for PostErr {
 /// Returns a conservative estimate of the time taken for the last packet in the authored packet
 /// queue to get dispatched plus the time taken for all reply packets to get through the authored
 /// packet queue at the far end.
-fn estimate_authored_packet_queue_delay(config: &Config, session: &Session) -> Duration {
+fn estimate_authored_packet_queue_delay<X>(config: &Config, session: &Session<X>) -> Duration {
 	let rate_mul =
 		// When transitioning between sessions, the rate is halved
 		0.5 *
@@ -261,7 +259,7 @@ impl RequestMetrics {
 bitflags! {
 	/// Flags to indicate events that have occurred. Note that these may be set spuriously.
 	pub struct Events: u32 {
-		/// The reserved peers returned by [`Mixnet::reserved_peer_addresses`] have changed.
+		/// The reserved peers returned by [`Mixnet::reserved_peers`] have changed.
 		const RESERVED_PEERS_CHANGED = 0b1;
 		/// The deadline returned by [`Mixnet::next_forward_packet_deadline`] has changed.
 		const NEXT_FORWARD_PACKET_DEADLINE_CHANGED = 0b10;
@@ -276,14 +274,15 @@ bitflags! {
 	}
 }
 
-/// Mixnet core state.
-pub struct Mixnet {
+/// Mixnet core state. `X` is the type of the extra data stored for each mixnode
+/// ([`Mixnode::extra`]).
+pub struct Mixnet<X> {
 	config: Config,
 
 	/// Index and phase of current session.
 	session_status: SessionStatus,
 	/// Current and previous sessions.
-	sessions: Sessions,
+	sessions: Sessions<X>,
 	/// Key-exchange key pair for the next session.
 	next_kx_pair: Option<KxPair>,
 
@@ -300,7 +299,7 @@ pub struct Mixnet {
 	events: Events,
 }
 
-impl Mixnet {
+impl<X> Mixnet<X> {
 	/// Create a new `Mixnet`.
 	pub fn new(config: Config) -> Self {
 		let sessions = Sessions {
@@ -398,13 +397,10 @@ impl Mixnet {
 	///
 	/// - Checking for connectivity (they are passed to [`NetworkStatus::is_connected`]).
 	/// - Sending packets (they are put in [`AddressedPacket::peer_id`]).
-	///
-	/// The mixnode external addresses are merely collated and returned by
-	/// [`reserved_peer_addresses`](Self::reserved_peer_addresses).
 	pub fn maybe_set_mixnodes(
 		&mut self,
 		rel_session_index: RelSessionIndex,
-		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode>, MixnodesErr>,
+		mixnodes: &mut dyn FnMut() -> Result<Vec<Mixnode<X>>, MixnodesErr>,
 	) {
 		let session = &mut self.sessions[rel_session_index];
 		if !matches!(session, SessionSlot::Empty | SessionSlot::KxPair(_)) {
@@ -483,13 +479,9 @@ impl Mixnet {
 			.public()
 	}
 
-	/// Returns the addresses of the peers we should try to maintain connections to.
-	pub fn reserved_peer_addresses(&self) -> HashSet<Multiaddr> {
-		self.sessions
-			.iter()
-			.flat_map(|session| session.topology.reserved_peer_addresses())
-			.cloned()
-			.collect()
+	/// Returns the mixnodes we should try to maintain connections to.
+	pub fn reserved_peers(&self) -> impl Iterator<Item = &Mixnode<X>> {
+		self.sessions.iter().flat_map(|session| session.topology.reserved_peers())
 	}
 
 	/// Handle an incoming packet. If the packet completes a message, the message is returned.

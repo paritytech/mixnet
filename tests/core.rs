@@ -24,7 +24,6 @@ use mixnet::core::{
 	Config, Events, Message, MessageId, Mixnet, Mixnode, NetworkStatus, PeerId, RelSessionIndex,
 	SessionIndex, SessionPhase, SessionStatus, MESSAGE_ID_SIZE,
 };
-use multiaddr::{multiaddr, multihash::Multihash, Multiaddr};
 use parking_lot::Mutex;
 use rand::{Rng, RngCore};
 use std::{
@@ -41,22 +40,9 @@ fn log_target(peer_index: usize) -> &'static str {
 		.or_insert_with(|| Box::leak(format!("mixnet({peer_index})").into_boxed_str()))
 }
 
-fn multiaddr_from_peer_id(id: &PeerId) -> Multiaddr {
-	// Just need to be able to get id back out in peer_id_from_multiaddr. Abuse Certhash to store.
-	multiaddr!(Certhash(Multihash::wrap(0, id).unwrap()))
-}
-
-fn peer_id_from_multiaddr(multiaddr: &Multiaddr) -> PeerId {
-	let mut protocols = multiaddr.into_iter();
-	let multiaddr::Protocol::Certhash(hash) = protocols.next().unwrap() else { unreachable!() };
-	assert!(protocols.next().is_none());
-	assert_eq!(hash.code(), 0);
-	hash.digest().try_into().unwrap()
-}
-
 struct Peer {
 	id: PeerId,
-	mixnet: Mixnet,
+	mixnet: Mixnet<()>,
 }
 
 struct PeerNetworkStatus<'id, 'connections> {
@@ -95,22 +81,18 @@ impl Network {
 		}
 	}
 
-	fn maybe_set_mixnodes(&mut self, rel_session_index: RelSessionIndex, mixnodes: &[Mixnode]) {
+	fn maybe_set_mixnodes(&mut self, rel_session_index: RelSessionIndex, mixnodes: &[Mixnode<()>]) {
 		for peer in &mut self.peers {
 			peer.mixnet
 				.maybe_set_mixnodes(rel_session_index, &mut || Ok(mixnodes.to_owned()));
 		}
 	}
 
-	fn next_mixnodes(&mut self, peer_indices: impl Iterator<Item = usize>) -> Vec<Mixnode> {
+	fn next_mixnodes(&mut self, peer_indices: impl Iterator<Item = usize>) -> Vec<Mixnode<()>> {
 		peer_indices
 			.map(|index| {
 				let peer = &mut self.peers[index];
-				Mixnode {
-					kx_public: *peer.mixnet.next_kx_public(),
-					peer_id: peer.id,
-					external_addresses: vec![multiaddr_from_peer_id(&peer.id)],
-				}
+				Mixnode { kx_public: *peer.mixnet.next_kx_public(), peer_id: peer.id, extra: () }
 			})
 			.collect()
 	}
@@ -122,11 +104,7 @@ impl Network {
 			if events.contains(Events::RESERVED_PEERS_CHANGED) {
 				self.connections.insert(
 					peer.id,
-					peer.mixnet
-						.reserved_peer_addresses()
-						.iter()
-						.map(peer_id_from_multiaddr)
-						.collect(),
+					peer.mixnet.reserved_peers().map(|mixnode| mixnode.peer_id).collect(),
 				);
 			}
 			let ns = PeerNetworkStatus { id: &peer.id, connections: &self.connections };

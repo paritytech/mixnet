@@ -85,7 +85,7 @@ impl ReplyContext {
 		&self.message_id
 	}
 
-	fn post_reply(&mut self, reply: &Reply, mixnet: &mut Mixnet, config: &Config) {
+	fn post_reply<X>(&mut self, reply: &Reply, mixnet: &mut Mixnet<X>, config: &Config) {
 		for _ in 0..config.max_posts {
 			if let Err(err) = mixnet.post_reply(
 				&mut self.surbs,
@@ -140,10 +140,10 @@ impl ReplyManager {
 	/// If `Some` is returned, the caller should handle the request and then call either
 	/// [`abandon`](Self::abandon) or [`complete`](Self::complete) with the [`ReplyContext`]. The
 	/// `Vec<u8>` contains the request message data.
-	pub fn insert(
+	pub fn insert<X>(
 		&mut self,
 		message: RequestMessage,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 	) -> Option<(ReplyContext, Vec<u8>)> {
 		let mut reply_context = ReplyContext {
 			session_index: message.session_index,
@@ -198,11 +198,11 @@ impl ReplyManager {
 	}
 
 	/// Complete a request. This will post the reply and cache it for repeat requests.
-	pub fn complete(
+	pub fn complete<X>(
 		&mut self,
 		mut reply_context: ReplyContext,
 		data: Vec<u8>,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 	) {
 		let state = match self.states.entry(reply_context.message_id) {
 			Entry::Occupied(entry) => match entry.into_mut() {

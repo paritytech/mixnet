@@ -35,9 +35,9 @@ pub enum CoverKind {
 	Loop,
 }
 
-pub fn gen_cover_packet(
+pub fn gen_cover_packet<X>(
 	rng: &mut (impl Rng + CryptoRng),
-	topology: &Topology,
+	topology: &Topology<X>,
 	ns: &dyn NetworkStatus,
 	kind: CoverKind,
 	num_hops: usize,

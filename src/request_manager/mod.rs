@@ -127,9 +127,9 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 
 	/// Update the current session index and phase. This should be called after
 	/// [`Mixnet::set_session_status`]. This may post messages to `mixnet`.
-	pub fn update_session_status(
+	pub fn update_session_status<X>(
 		&mut self,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 		ns: &dyn NetworkStatus,
 		context: &C,
 	) {
@@ -187,7 +187,13 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 	///   [`Request::handle_post_err`] is called.
 	/// - The retry limit is reached. In this case, [`Request::handle_retry_limit_reached`] is
 	///   called.
-	pub fn insert(&mut self, request: R, mixnet: &mut Mixnet, ns: &dyn NetworkStatus, context: &C) {
+	pub fn insert<X>(
+		&mut self,
+		request: R,
+		mixnet: &mut Mixnet<X>,
+		ns: &dyn NetworkStatus,
+		context: &C,
+	) {
 		debug_assert!(self.has_space());
 		let state = RequestState {
 			request,
@@ -224,10 +230,10 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		None
 	}
 
-	fn process_post_queue(
+	fn process_post_queue<X>(
 		&mut self,
 		rel_session_index: Option<RelSessionIndex>,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 		ns: &dyn NetworkStatus,
 		context: &C,
 	) {
@@ -305,9 +311,9 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 	/// when the
 	/// [`SPACE_IN_AUTHORED_PACKET_QUEUE`](super::core::Events::SPACE_IN_AUTHORED_PACKET_QUEUE)
 	/// event fires.
-	pub fn process_post_queues(
+	pub fn process_post_queues<X>(
 		&mut self,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 		ns: &dyn NetworkStatus,
 		context: &C,
 	) {
@@ -331,10 +337,10 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 		}
 	}
 
-	fn retry(
+	fn retry<X>(
 		&mut self,
 		mut state: RequestState<R>,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 		ns: &dyn NetworkStatus,
 		context: &C,
 	) {
@@ -395,9 +401,9 @@ impl<C, R: Request<Context = C>> RequestManager<R> {
 	/// Pop the next request from the internal retry queue. This should be called whenever the
 	/// deadline returned by [`next_retry_deadline`](Self::next_retry_deadline) is reached. This
 	/// may post messages to `mixnet`. Returns `false` if the internal retry queue is empty.
-	pub fn pop_next_retry(
+	pub fn pop_next_retry<X>(
 		&mut self,
-		mixnet: &mut Mixnet,
+		mixnet: &mut Mixnet<X>,
 		ns: &dyn NetworkStatus,
 		context: &C,
 	) -> bool {

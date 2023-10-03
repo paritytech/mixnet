@@ -30,11 +30,11 @@ use std::{
 	time::Duration,
 };
 
-pub struct Session {
+pub struct Session<X> {
 	/// Key-exchange key pair.
 	pub kx_pair: KxPair,
 	/// Mixnode topology.
-	pub topology: Topology,
+	pub topology: Topology<X>,
 	/// Queue of packets authored by us, to be dispatched in place of drop cover traffic.
 	pub authored_packet_queue: AuthoredPacketQueue,
 	/// See [`SessionConfig`](super::config::SessionConfig::mean_authored_packet_period).
@@ -84,27 +84,27 @@ impl Add<SessionIndex> for RelSessionIndex {
 	}
 }
 
-pub enum SessionSlot {
+pub enum SessionSlot<X> {
 	Empty,
 	KxPair(KxPair),
 	/// Like [`Empty`](Self::Empty), but we should not try to create a [`Session`] struct.
 	Disabled,
-	Full(Session),
+	Full(Session<X>),
 }
 
-impl SessionSlot {
+impl<X> SessionSlot<X> {
 	pub fn is_empty(&self) -> bool {
 		matches!(self, Self::Empty)
 	}
 
-	pub fn as_option(&self) -> Option<&Session> {
+	pub fn as_option(&self) -> Option<&Session<X>> {
 		match self {
 			Self::Full(session) => Some(session),
 			_ => None,
 		}
 	}
 
-	pub fn as_mut_option(&mut self) -> Option<&mut Session> {
+	pub fn as_mut_option(&mut self) -> Option<&mut Session<X>> {
 		match self {
 			Self::Full(session) => Some(session),
 			_ => None,
@@ -112,32 +112,32 @@ impl SessionSlot {
 	}
 }
 
-pub struct Sessions {
-	pub current: SessionSlot,
-	pub prev: SessionSlot,
+pub struct Sessions<X> {
+	pub current: SessionSlot<X>,
+	pub prev: SessionSlot<X>,
 }
 
-impl Sessions {
+impl<X> Sessions<X> {
 	pub fn is_empty(&self) -> bool {
 		self.current.is_empty() && self.prev.is_empty()
 	}
 
-	pub fn iter(&self) -> impl Iterator<Item = &Session> {
+	pub fn iter(&self) -> impl Iterator<Item = &Session<X>> {
 		[&self.current, &self.prev]
 			.into_iter()
 			.filter_map(|session| session.as_option())
 	}
 
 	/// This is guaranteed to return the current session first, if it exists.
-	pub fn enumerate_mut(&mut self) -> impl Iterator<Item = (RelSessionIndex, &mut Session)> {
+	pub fn enumerate_mut(&mut self) -> impl Iterator<Item = (RelSessionIndex, &mut Session<X>)> {
 		[(RelSessionIndex::Current, &mut self.current), (RelSessionIndex::Prev, &mut self.prev)]
 			.into_iter()
 			.filter_map(|(index, session)| session.as_mut_option().map(|session| (index, session)))
 	}
 }
 
-impl Index<RelSessionIndex> for Sessions {
-	type Output = SessionSlot;
+impl<X> Index<RelSessionIndex> for Sessions<X> {
+	type Output = SessionSlot<X>;
 
 	fn index(&self, index: RelSessionIndex) -> &Self::Output {
 		match index {
@@ -147,7 +147,7 @@ impl Index<RelSessionIndex> for Sessions {
 	}
 }
 
-impl IndexMut<RelSessionIndex> for Sessions {
+impl<X> IndexMut<RelSessionIndex> for Sessions<X> {
 	fn index_mut(&mut self, index: RelSessionIndex) -> &mut Self::Output {
 		match index {
 			RelSessionIndex::Current => &mut self.current,
